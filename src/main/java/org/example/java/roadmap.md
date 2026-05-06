@@ -24,7 +24,8 @@ java/
 │   ├── datetime.md
 │   ├── strings.md
 │   ├── concurrency_advanced.md
-│   └── collections_internals.md
+│   ├── collections_internals.md
+│   └── errors.md
 ├── patterns/                       ← Design Patterns deep dive
 │   ├── creational.md
 │   ├── structural.md
@@ -91,6 +92,7 @@ java/
 | 15 | String Deep Dive – String Pool, immutability, Compact Strings, StringBuilder, regex (Pattern/Matcher), text blocks, Charset | core/strings.md | ✅ |
 | 16 | Concurrency Advanced – Fork/Join (work-stealing), ThreadLocal internals (memory leak), Lock-free/CAS/ABA, Phaser/Exchanger, CompletableFuture advanced, Flow API | core/concurrency_advanced.md | ✅ |
 | 17 | Collections Internals – PriorityQueue (binary heap/sift-up/sift-down), ArrayDeque (circular buffer), EnumSet/EnumMap, WeakHashMap, IdentityHashMap, Spliterator, immutable collections (Java 9+) | core/collections_internals.md | ✅ |
+| 18 | Java Error – Error hierarchy, OOM (heap/metaspace/GC overhead/native thread), StackOverflow, LinkageError, AssertionError, ExceptionInInitializerError, chẩn đoán JVM, tuning production | core/errors.md | ✅ |
 
 ### Design Patterns (GoF)
 | STT | Chủ đề | File | Trạng thái |
