@@ -43,12 +43,18 @@ java/
 │   ├── records.md
 │   ├── sealed_classes.md
 │   ├── pattern_matching.md
-│   └── virtual_threads.md
+│   ├── virtual_threads.md
+│   └── java_modules.md             ← JPMS, module-info.java, jlink
 ├── spring/                         ← Spring Framework deep dive
 │   ├── spring_core.md
 │   ├── spring_aop.md
 │   ├── spring_boot.md
-│   └── spring_mvc_transaction.md
+│   ├── spring_mvc_transaction.md
+│   └── spring_security.md          ← JWT, OAuth2, method security
+├── core/ (bổ sung)
+│   ├── testing.md                  ← JUnit 5, Mockito, Testcontainers
+│   ├── reactive.md                 ← Project Reactor, WebFlux, R2DBC
+│   └── performance_tuning.md       ← JMH, JFR, async-profiler, HikariCP
 └── data/                           ← Data Access deep dive
     ├── jdbc.md
     ├── jpa_hibernate.md
@@ -121,6 +127,7 @@ java/
 | 17.2 | Sealed Classes (Java 17) – ADT/sum types, permits, exhaustive switch, Result<T> monad | modern/sealed_classes.md | ✅ |
 | 17.3 | Pattern Matching – instanceof (Java 16), switch patterns (Java 21), guarded, deconstruction, unnamed `_` | modern/pattern_matching.md | ✅ |
 | 17.4 | Virtual Threads (Java 21) – Project Loom, mount/unmount, StructuredTaskScope, pinning, ScopedValue | modern/virtual_threads.md | ✅ |
+| 17.5 | Java Modules (JPMS) – module-info.java (requires/exports/opens/uses/provides), module types, ServiceLoader SPI, jlink custom JRE, migration từ classpath | modern/java_modules.md | ✅ |
 
 ### Spring Framework
 | STT | Chủ đề | File | Trạng thái |
@@ -130,6 +137,7 @@ java/
 | 15.3 | Spring Boot – auto-configuration, @ConditionalOn*, starters, @ConfigurationProperties, profiles, Actuator | spring/spring_boot.md | ✅ |
 | 15.4 | Spring MVC – DispatcherServlet lifecycle, request binding, ResponseEntity, @ControllerAdvice | spring/spring_mvc_transaction.md | ✅ |
 | 15.5 | Spring Transaction – 7 propagation types, 4 isolation levels, rollback rules, @TransactionalEventListener, pitfalls | spring/spring_mvc_transaction.md | ✅ |
+| 15.6 | Spring Security – SecurityFilterChain (lambda DSL), JWT (JJWT, OncePerRequestFilter), OAuth2 (Resource Server, Client), method security (@PreAuthorize SpEL), CSRF/CORS, password encoding | spring/spring_security.md | ✅ |
 
 ### Data Access
 | STT | Chủ đề | File | Trạng thái |
@@ -138,17 +146,27 @@ java/
 | 16.2 | JPA & Hibernate – Entity lifecycle, persistence context, N+1 fix (JOIN FETCH/@BatchSize/@EntityGraph), JPQL/Criteria/Native, locking | data/jpa_hibernate.md | ✅ |
 | 16.3 | Spring Data JPA – Repository hierarchy, query derivation, @Query, Specification, Pageable, Auditing, projections | data/spring_data_jpa.md | ✅ |
 
+### Advanced Topics (bổ sung)
+| STT | Chủ đề | File | Trạng thái |
+|-----|--------|------|-----------|
+| 18.1 | Spring Security – Authentication (JWT/Session), Authorization (@PreAuthorize, method security), CSRF, CORS | spring/spring_security.md | ✅ |
+| 18.2 | Testing – JUnit 5 (@ParameterizedTest/@TestFactory, Extension API), Mockito (mock/spy/ArgumentCaptor/MockedStatic), AssertJ, @WebMvcTest/@DataJpaTest, Testcontainers | core/testing.md | ✅ |
+| 18.3 | Reactive Programming – Project Reactor (Mono/Flux, cold/hot, backpressure), operators (flatMap/switchMap/zip), Schedulers, WebFlux, R2DBC, StepVerifier | core/reactive.md | ✅ |
+| 18.4 | Java Modules (JPMS) – module-info.java, requires/exports/opens, migration from classpath | modern/java_modules.md | ✅ |
+| 18.5 | Performance Tuning & Profiling – JVM flags (ZGC/G1, container-aware), JFR, async-profiler, JMH microbenchmarking, HikariCP, Foreign Memory API | core/performance_tuning.md | ✅ |
+
 ---
 
 ## Chủ đề tiếp theo ⬜
 
-### Advanced Topics
-| STT | Chủ đề | File | Trạng thái |
-|-----|--------|------|-----------|
-| 18.1 | Spring Security – Authentication (JWT/Session), Authorization (@PreAuthorize, method security), CSRF, CORS | ⬜ |
-| 18.2 | Testing – JUnit 5 (@ParameterizedTest/@TestFactory), Mockito (mock/spy/verify/ArgumentCaptor), @WebMvcTest, @DataJpaTest, Testcontainers | ⬜ |
-| 18.3 | Reactive Programming – Project Reactor (Mono/Flux), backpressure, Schedulers, WebFlux, R2DBC | ⬜ |
-| 18.4 | Java Modules (JPMS) – module-info.java, requires/exports/opens, migration from classpath | ⬜ |
+### Có thể bổ sung thêm
+| STT | Chủ đề | Ghi chú | Trạng thái |
+|-----|--------|---------|-----------|
+| 19.1 | Logging – SLF4J/Logback, structured logging (JSON), MDC, async appender, log aggregation | ELK/Loki integration | ⬜ |
+| 19.2 | Observability – Micrometer, Prometheus, distributed tracing (OpenTelemetry, Zipkin/Jaeger) | Spring Boot Actuator integration | ⬜ |
+| 19.3 | Messaging – Spring Kafka, Spring AMQP (RabbitMQ), transactional outbox pattern | Event-driven architecture | ⬜ |
+| 19.4 | gRPC & Protobuf – code generation, streaming (unary/server/client/bidi), deadline/retry | Service-to-service communication | ⬜ |
+| 19.5 | GraalVM Native Image – AOT compilation, reflection config, native hints, build size | Alternative to jlink for small images | ⬜ |
 
 ## Chú thích trạng thái
 - ✅ Hoàn thành – đã có file deep dive
