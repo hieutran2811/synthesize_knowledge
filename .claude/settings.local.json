@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(Remove-Item -Recurse -Force \"D:\\\\MyProject\\\\synthesize_knowledge\\\\src\\\\main\\\\java\\\\org\\\\example\\\\spring_boot\")"
+      "Bash(Remove-Item -Recurse -Force \"D:\\\\MyProject\\\\synthesize_knowledge\\\\src\\\\main\\\\java\\\\org\\\\example\\\\spring_boot\")",
+      "Bash(Get-ChildItem *)",
+      "PowerShell(ls -Path \"D:\\\\MyProject\\\\synthesize_knowledge\\\\src\\\\main\\\\java\\\\org\\\\example\\\\\" | ? { $_.PSIsContainer })"
     ]
   }
 }

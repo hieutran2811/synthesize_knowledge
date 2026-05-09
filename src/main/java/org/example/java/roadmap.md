@@ -157,16 +157,14 @@ java/
 
 ---
 
-## Chủ đề tiếp theo ⬜
-
-### Có thể bổ sung thêm
-| STT | Chủ đề | Ghi chú | Trạng thái |
-|-----|--------|---------|-----------|
-| 19.1 | Logging – SLF4J/Logback, structured logging (JSON), MDC, async appender, log aggregation | ELK/Loki integration | ⬜ |
-| 19.2 | Observability – Micrometer, Prometheus, distributed tracing (OpenTelemetry, Zipkin/Jaeger) | Spring Boot Actuator integration | ⬜ |
-| 19.3 | Messaging – Spring Kafka, Spring AMQP (RabbitMQ), transactional outbox pattern | Event-driven architecture | ⬜ |
-| 19.4 | gRPC & Protobuf – code generation, streaming (unary/server/client/bidi), deadline/retry | Service-to-service communication | ⬜ |
-| 19.5 | GraalVM Native Image – AOT compilation, reflection config, native hints, build size | Alternative to jlink for small images | ⬜ |
+### Production & Infrastructure (bổ sung)
+| STT | Chủ đề | File | Trạng thái |
+|-----|--------|------|-----------|
+| 19.1 | Logging – SLF4J/Logback, structured logging (JSON), MDC, async appender, ELK/Loki | core/logging.md | ✅ |
+| 19.2 | Observability – Micrometer, Prometheus, distributed tracing (OpenTelemetry, Zipkin/Jaeger) | core/observability.md | ✅ |
+| 19.3 | Messaging – Spring Kafka (producer/consumer/transactions/DLT), Spring AMQP, Outbox pattern | core/messaging.md | ✅ |
+| 19.4 | gRPC & Protobuf – code generation, all 4 streaming types, interceptors, deadline/retry | core/grpc_protobuf.md | ✅ |
+| 19.5 | GraalVM Native Image – AOT compilation, reflection config, native hints, Spring Native, PGO | modern/graalvm_native.md | ✅ |
 
 ## Chú thích trạng thái
 - ✅ Hoàn thành – đã có file deep dive

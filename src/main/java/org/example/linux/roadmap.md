@@ -45,37 +45,39 @@ linux/
 
 ---
 
-## Chủ đề tiếp theo ⬜
+## Chủ đề đã hoàn thành ✅
 
 ### Commands Deep Dive
 | STT | Chủ đề | File | Trạng thái |
 |-----|--------|------|-----------|
-| 11.1 | File Management Advanced – find (exec, xargs), locate/updatedb, inotify, lsof, fuser | commands/file_management.md | ⬜ |
-| 11.2 | Text Processing Advanced – regex deep dive, awk one-liners, sed chaining, jq (JSON) | commands/text_processing.md | ⬜ |
-| 11.3 | Process & Resource Management – cgroups v2, namespaces, ulimit, strace, ltrace | commands/process_management.md | ⬜ |
-| 11.4 | Networking Deep Dive – tcpdump, iptables/nftables, netfilter, conntrack, VPN basics | commands/networking.md | ⬜ |
-| 11.5 | Disk & Storage – LVM (PV/VG/LV), RAID levels, NFS/CIFS mount, ZFS basics | commands/disk_storage.md | ⬜ |
+| 11.1 | File Management Advanced – find (exec, xargs), locate/updatedb, inotify, lsof, fuser | commands/file_management.md | ✅ |
+| 11.2 | Text Processing Advanced – regex deep dive, awk one-liners, sed chaining, jq (JSON) | commands/text_processing.md | ✅ |
+| 11.3 | Process & Resource Management – cgroups v2, namespaces, ulimit, strace, ltrace | commands/process_management.md | ✅ |
+| 11.4 | Networking Deep Dive – tcpdump, iptables/nftables, netfilter, conntrack, VPN basics | commands/networking.md | ✅ |
+| 11.5 | Disk & Storage – LVM (PV/VG/LV), RAID levels, NFS/CIFS mount, ZFS basics | commands/disk_storage.md | ✅ |
 
 ### Bash Scripting Deep Dive
 | STT | Chủ đề | File | Trạng thái |
 |-----|--------|------|-----------|
-| 12.1 | Bash Basics – variable types, string ops, arrays, math, here-docs | scripting/bash_basics.md | ⬜ |
-| 12.2 | Bash Advanced – process substitution, subshell, coprocess, regex matching, getopts | scripting/bash_advanced.md | ⬜ |
-| 12.3 | Script Patterns – idempotent scripts, locking, logging, CI/CD integration, testing | scripting/script_patterns.md | ⬜ |
+| 12.1 | Bash Basics – variable types, string ops, arrays, math, here-docs | scripting/bash_basics.md | ✅ |
+| 12.2 | Bash Advanced – process substitution, subshell, coprocess, regex matching, getopts | scripting/bash_advanced.md | ✅ |
+| 12.3 | Script Patterns – idempotent scripts, locking, logging, CI/CD integration, testing | scripting/script_patterns.md | ✅ |
 
 ### System Administration Deep Dive
 | STT | Chủ đề | File | Trạng thái |
 |-----|--------|------|-----------|
-| 13.1 | systemd Deep Dive – unit types, dependencies, targets, socket activation, timers | admin/systemd.md | ⬜ |
-| 13.2 | Security Hardening – SSH hardening, fail2ban, firewall rules, SELinux/AppArmor basics | admin/security_hardening.md | ⬜ |
-| 13.3 | Performance Tuning – CPU/memory/network/disk tuning, sysctl, profiling tools | admin/performance_tuning.md | ⬜ |
-| 13.4 | Backup & Recovery – rsync strategies, LVM snapshots, disaster recovery | admin/backup_recovery.md | ⬜ |
+| 13.1 | systemd Deep Dive – unit types, dependencies, targets, socket activation, timers | admin/systemd.md | ✅ |
+| 13.2 | Security Hardening – SSH hardening, fail2ban, firewall rules, SELinux/AppArmor basics | admin/security_hardening.md | ✅ |
+| 13.3 | Performance Tuning – CPU/memory/network/disk tuning, sysctl, profiling tools | admin/performance_tuning.md | ✅ |
+| 13.4 | Backup & Recovery – rsync strategies, LVM snapshots, disaster recovery | admin/backup_recovery.md | ✅ |
 
 ### Container Internals (Linux layer)
 | STT | Chủ đề | File | Trạng thái |
 |-----|--------|------|-----------|
-| 14.1 | Namespaces & cgroups – PID/net/mnt/uts/user/ipc namespaces, cgroups v2 resource limits | containers/namespaces_cgroups.md | ⬜ |
-| 14.2 | Docker Internals – overlay fs, veth pairs, iptables NAT, seccomp, capabilities | containers/docker_internals.md | ⬜ |
+| 14.1 | Namespaces & cgroups – PID/net/mnt/uts/user/ipc namespaces, cgroups v2 resource limits | containers/namespaces_cgroups.md | ✅ |
+| 14.2 | Docker Internals – overlay fs, veth pairs, iptables NAT, seccomp, capabilities | containers/docker_internals.md | ✅ |
+
+---
 
 ---
 
@@ -83,3 +85,7 @@ linux/
 - ✅ Hoàn thành – đã có file deep dive
 - 🔄 Đang làm
 - ⬜ Chưa làm
+
+---
+
+*Cập nhật lần cuối: 2026-05-09 – Hoàn thành toàn bộ 14 topics Linux deep dive*

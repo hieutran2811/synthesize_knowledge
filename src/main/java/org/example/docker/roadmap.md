@@ -22,7 +22,9 @@ docker/
 │   └── performance_tuning.md       ← resource limits, JVM in containers, OOM tuning
 └── orchestration/                  ← Orchestration
     ├── swarm_advanced.md           ← Swarm networking, secrets, HA setup
-    └── k8s_intro.md               ← Kubernetes so sánh, basic concepts từ Docker
+    ├── k8s_intro.md               ← Kubernetes so sánh, basic concepts từ Docker
+    ├── k8s_advanced.md            ← RBAC, Network Policies, Helm, GitOps (ArgoCD/Flux)
+    └── service_mesh.md            ← Istio/Linkerd, mTLS, traffic management, observability
 ```
 
 ---
@@ -66,7 +68,7 @@ docker/
 | STT | Chủ đề | File | Trạng thái |
 |-----|--------|------|-----------|
 | 14.1 | Compose Patterns – local dev, testing, staging environments, wait-for scripts | compose/compose_patterns.md | ✅ |
-| 14.2 | Compose Production – health checks, blue-green với Traefik/Nginx, secrets management | compose/compose_production.md | ⬜ |
+| 14.2 | Compose Production – health checks, blue-green với Traefik/Nginx, secrets management | compose/compose_production.md | ✅ |
 
 ### Security Deep Dive
 | STT | Chủ đề | File | Trạng thái |
@@ -90,14 +92,11 @@ docker/
 
 ---
 
-## Chủ đề tiếp theo ⬜
-
-### Còn lại
+### Kubernetes & Service Mesh
 | STT | Chủ đề | File | Trạng thái |
 |-----|--------|------|-----------|
-| 14.2 | Compose Production – health checks, blue-green với Traefik/Nginx, secrets management | compose/compose_production.md | ⬜ |
-| 18.1 | Kubernetes Advanced – RBAC, Network Policies, Helm, GitOps (ArgoCD/Flux) | orchestration/k8s_advanced.md | ⬜ |
-| 18.2 | Service Mesh – Istio/Linkerd, mTLS, traffic management, observability | orchestration/service_mesh.md | ⬜ |
+| 18.1 | Kubernetes Advanced – RBAC, Network Policies, Helm charts, GitOps (ArgoCD/Flux) | orchestration/k8s_advanced.md | ✅ |
+| 18.2 | Service Mesh – Istio/Linkerd, mTLS, VirtualService/DestinationRule, Kiali observability | orchestration/service_mesh.md | ✅ |
 
 ---
 
