@@ -25,7 +25,14 @@ java/
 │   ├── strings.md
 │   ├── concurrency_advanced.md
 │   ├── collections_internals.md
-│   └── errors.md
+│   ├── errors.md
+│   ├── nested_classes.md          ← static/member/local/anonymous, synthetic this$0, memory leak
+│   ├── enums.md                   ← enum internals, strategy enum, EnumSet/EnumMap, singleton
+│   ├── object_methods.md          ← equals/hashCode/Comparable/Comparator/clone contracts
+│   ├── serialization.md           ← Serializable, insecure deserialization (RCE), JEP 290
+│   ├── json_jackson.md            ← ObjectMapper, annotations, custom (de)serializer, polymorphic
+│   ├── bean_validation.md         ← Jakarta Validation, @Valid/@Validated, custom constraint
+│   └── networking_http.md         ← Socket, java.net.http.HttpClient, RestClient/WebClient/Feign
 ├── patterns/                       ← Design Patterns deep dive
 │   ├── creational.md
 │   ├── structural.md
@@ -50,7 +57,11 @@ java/
 │   ├── spring_aop.md
 │   ├── spring_boot.md
 │   ├── spring_mvc_transaction.md
-│   └── spring_security.md          ← JWT, OAuth2, method security
+│   ├── spring_security.md          ← JWT, OAuth2, method security
+│   ├── spring_cloud.md             ← Config/Eureka/Gateway/OpenFeign/Resilience4j
+│   └── spring_cache_scheduling.md  ← @Cacheable, @Scheduled, @Async, ShedLock
+├── build/                          ← Build tools deep dive
+│   └── build_tools.md              ← Maven (lifecycle/BOM/multi-module) & Gradle (DSL/cache)
 ├── core/ (bổ sung)
 │   ├── testing.md                  ← JUnit 5, Mockito, Testcontainers
 │   ├── reactive.md                 ← Project Reactor, WebFlux, R2DBC
@@ -165,6 +176,36 @@ java/
 | 19.3 | Messaging – Spring Kafka (producer/consumer/transactions/DLT), Spring AMQP, Outbox pattern | core/messaging.md | ✅ |
 | 19.4 | gRPC & Protobuf – code generation, all 4 streaming types, interceptors, deadline/retry | core/grpc_protobuf.md | ✅ |
 | 19.5 | GraalVM Native Image – AOT compilation, reflection config, native hints, Spring Native, PGO | modern/graalvm_native.md | ✅ |
+
+### Bổ sung 2026-06 – Core Language, Data, Cloud, Build (lấp gap chuyên gia)
+
+**Cụm A – Core Language Completeness**
+| STT | Chủ đề | File | Trạng thái |
+|-----|--------|------|-----------|
+| 20.1 | Nested & Inner Classes – static/member/local/anonymous, synthetic `this$0`, capture & effectively final, Nestmates (JEP 181), memory leak, anonymous vs lambda | core/nested_classes.md | ✅ |
+| 20.2 | Enums Deep Dive – compiler internals (extends Enum), constant-specific body, strategy enum, enum implements interface, EnumSet (bit vector)/EnumMap (array), singleton, ordinal pitfalls | core/enums.md | ✅ |
+| 20.3 | Object Contract Methods – equals (5 quy tắc, getClass vs instanceof), hashCode (3 quy tắc), Comparable vs Comparator, clone/Cloneable vs copy constructor, toString | core/object_methods.md | ✅ |
+
+**Cụm B – Serialization, JSON & Validation**
+| STT | Chủ đề | File | Trạng thái |
+|-----|--------|------|-----------|
+| 20.4 | Java Serialization – serialVersionUID, transient, writeObject/readObject, Externalizable, readResolve, record serialization, **insecure deserialization (RCE, gadget chain, ysoserial), JEP 290 ObjectInputFilter** | core/serialization.md | ✅ |
+| 20.5 | JSON với Jackson – ObjectMapper (thread-safe, reuse), data binding/tree/streaming, annotations, custom (de)serializer, polymorphic typing, **default typing RCE**, so sánh Gson/JSON-B | core/json_jackson.md | ✅ |
+| 20.6 | Bean Validation – Jakarta/Hibernate Validator, NotNull/NotEmpty/NotBlank, @Valid (cascade) vs @Validated (groups), custom ConstraintValidator, cross-field, method validation, i18n | core/bean_validation.md | ✅ |
+
+**Cụm C – HTTP & Spring Cloud**
+| STT | Chủ đề | File | Trạng thái |
+|-----|--------|------|-----------|
+| 20.7 | Networking & HTTP Client – TCP/UDP Socket, thread-per-connection vs NIO vs virtual threads, java.net.http.HttpClient (HTTP/2, async, WebSocket), so sánh RestTemplate/WebClient/RestClient/Feign, timeout/pool/resilience | core/networking_http.md | ✅ |
+| 20.8 | Spring Cloud & Microservices – Config Server (@RefreshScope), Service Discovery (Eureka), LoadBalancer, OpenFeign, **Resilience4j** (CircuitBreaker 3 trạng thái/Retry/RateLimiter/Bulkhead/TimeLimiter), Gateway, tracing, vs Service Mesh | spring/spring_cloud.md | ✅ |
+
+**Cụm D – Spring Features & Build Tools**
+| STT | Chủ đề | File | Trạng thái |
+|-----|--------|------|-----------|
+| 20.9 | Spring Cache + Scheduling + Async – @Cacheable/@CachePut/@CacheEvict, CacheManager (Caffeine/Redis), @Scheduled (cron/fixedRate/fixedDelay), @Async (TaskExecutor), self-invocation, ShedLock, virtual threads | spring/spring_cache_scheduling.md | ✅ |
+| 20.10 | Build Tools – Maven (lifecycle/phase/goal, scopes, mediation nearest-wins, dependencyManagement/BOM, multi-module) & Gradle (DSL, api vs implementation, build cache/daemon/incremental, version catalog), so sánh + bảo mật dependency | build/build_tools.md | ✅ |
+
+---
 
 ## Chú thích trạng thái
 - ✅ Hoàn thành – đã có file deep dive
