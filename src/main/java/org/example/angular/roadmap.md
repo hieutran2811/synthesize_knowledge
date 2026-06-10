@@ -10,7 +10,16 @@ angular/
 ├── angular_rxjs.md                    ← RxJS: Observables, Subjects, Operators (switchMap/mergeMap/...), Error handling, async pipe
 ├── angular_state_management.md        ← BehaviorSubject pattern, NgRx (Store/Actions/Reducers/Effects/Selectors), Signals (Angular 16+)
 ├── angular_performance_production.md  ← OnPush + Signals, @defer, SSR (Angular Universal), Bundle optimization, PWA, Testing
-└── angular_security_best_practices.md ← XSS (DomSanitizer), CSRF, Auth guards, HTTP Interceptor (token), CSP, HTTPS
+├── angular_security_best_practices.md ← XSS (DomSanitizer), CSRF, Auth guards, HTTP Interceptor (token), CSP, HTTPS
+│
+│   ── Bổ sung 2026-06 (lấp gap chuyên gia) ──
+├── angular_signals_zoneless.md        ← Reactive graph, signal-based components (input/model/output/queries), effect, linkedSignal/resource, zoneless CD
+├── angular_http_communication.md      ← HttpClient, provideHttpClient/withFetch, functional interceptors, retry, caching, upload/download, HttpContext, TransferState
+├── angular_testing.md                 ← TestBed/ComponentFixture, HttpTestingController, CDK Harness, marble testing, fakeAsync, signals, Playwright/Cypress
+├── angular_material_cdk_a11y.md       ← CDK (Overlay/Portal/VirtualScroll/DragDrop/A11y), Material + theming M3 tokens, accessibility (WCAG/ARIA)
+├── angular_animations.md              ← @angular/animations (trigger/state/transition/keyframes/stagger), route/page transitions, View Transitions API
+├── angular_cli_nx_monorepo.md         ← CLI/builders (esbuild/Vite)/schematics, budgets, ng update, libraries (ng-packagr), Nx monorepo (affected/cache/boundaries)
+└── angular_microfrontends_i18n.md     ← Module Federation/Native Federation, Angular Elements, i18n (localize vs transloco), runtime config/feature flags, Docker/CI-CD
 ```
 
 > **Prerequisite**: Biết TypeScript, HTML/CSS cơ bản, hiểu JavaScript ES6+
@@ -28,6 +37,18 @@ angular/
 | 5 | State Management – BehaviorSubject service pattern, NgRx full stack (Store/Actions/Reducers/Effects/Selectors/Entity), Angular Signals (Angular 16+), comparison | angular_state_management.md | ✅ |
 | 6 | Performance & Production – OnPush+Signals, trackBy, @defer (Angular 17+), SSR (Angular Universal/SSR), preloading, esbuild, bundle analysis, PWA, Testing (TestBed/Cypress) | angular_performance_production.md | ✅ |
 | 7 | Security & Best Practices – XSS/DomSanitizer, CSRF, Auth + Refresh Token interceptor, Route guards, CSP headers, HTTPS, Angular audit checklist | angular_security_best_practices.md | ✅ |
+
+### Bổ sung 2026-06 – Lấp gap chuyên gia (4 cụm)
+
+| STT | Chủ đề | File | Trạng thái |
+|-----|--------|------|-----------|
+| 8 | Signals & Zoneless – reactive graph (push-pull, glitch-free), effect (cleanup/untracked), signal-based components (input/input.required/model/output, viewChild/contentChild signal queries), linkedSignal, resource()/rxResource (v19), zoneless change detection (provideExperimentalZonelessChangeDetection) | angular_signals_zoneless.md | ✅ |
+| 9 | HTTP Communication – provideHttpClient/withFetch, typed request, HttpParams/observe/responseType, error handling + retry backoff, **functional interceptors** (auth/error/loading/cache), HttpContext, caching, upload/download progress, cancellation, SSR TransferState | angular_http_communication.md | ✅ |
+| 10 | Testing – TestBed/ComponentFixture/DebugElement, spies/mocks, **HttpTestingController**, fakeAsync/tick & waitForAsync, **CDK Component Harnesses**, **marble testing** (TestScheduler), testing signals/zoneless, E2E Playwright vs Cypress | angular_testing.md | ✅ |
+| 11 | Material, CDK & a11y – CDK (Overlay/Portal/VirtualScroll/DragDrop/Layout/A11y FocusTrap/LiveAnnouncer), Material components, **theming Material 3 (design tokens, dark mode)**, accessibility (semantic HTML/ARIA/keyboard/focus, WCAG) | angular_material_cdk_a11y.md | ✅ |
+| 12 | Animations – @angular/animations (trigger/state/transition/animate/keyframes/group/sequence/query/stagger), :enter/:leave, route transitions, View Transitions API, callbacks/disable/reusable, GPU performance, vs CSS | angular_animations.md | ✅ |
+| 13 | CLI, Build & Nx Monorepo – CLI/workspace, schematics, **builders (esbuild/Vite application builder)**, budgets/environments, ng update migrations, libraries (ng-packagr), **Nx** (project graph, module boundaries/tags, affected, computation caching, generators/executors) | angular_cli_nx_monorepo.md | ✅ |
+| 14 | Micro-frontends, i18n & Deploy – **Module Federation / Native Federation**, Angular Elements (Custom Elements), i18n (@angular/localize vs transloco/ngx-translate), runtime config + feature flags (build once), Docker multi-stage + nginx SPA, CI/CD | angular_microfrontends_i18n.md | ✅ |
 
 ---
 
