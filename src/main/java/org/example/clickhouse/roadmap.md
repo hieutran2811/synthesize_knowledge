@@ -9,7 +9,13 @@ clickhouse/
 ├── clickhouse_sql.md                 ← SQL dialect, Arrays, Maps, JSON, Window functions, CTEs, ASOF JOIN
 ├── clickhouse_performance.md         ← Primary index, Skip indexes, Partitioning, Materialized Views, Projections
 ├── clickhouse_operations.md          ← Replication, Sharding, Distributed tables, Backup, Monitoring
-└── clickhouse_production.md          ← Schema design, Query optimization, Integration (Kafka/S3/Spark), Use cases
+├── clickhouse_production.md          ← Schema design, Query optimization, Integration (Kafka/S3/Spark), Use cases
+│
+│   ── Bổ sung 2026-06 (lấp gap chuyên gia) ──
+├── clickhouse_security.md            ← RBAC (users/roles/grants), row policies, quotas, settings profiles, TLS/mTLS, LDAP/Kerberos, encryption, audit
+├── clickhouse_functions.md           ← Aggregate combinators (-If/-State/-Merge/-Array...), uniq*/quantile*/topK, funnel/retention, higher-order array, date-time/string
+├── clickhouse_ingestion_formats.md   ← Batch vs async_insert, formats (Native/Parquet/JSONEachRow...), clickhouse-client/local, insert dedup, DEFAULT/MATERIALIZED columns
+└── clickhouse_query_execution.md     ← Vectorized pipeline, PREWHERE, EXPLAIN PLAN/PIPELINE, JOIN algorithms, GLOBAL IN/JOIN, external aggregation, troubleshooting/anti-patterns
 ```
 
 > **Prerequisite**: Hiểu SQL cơ bản, RDBMS, distributed systems basics
@@ -26,6 +32,15 @@ clickhouse/
 | 4 | Performance – Primary key & sparse index (granules/marks), Skip indexes (minmax/bloom_filter/set/tokenbf), Partitioning strategy, Materialized Views (incremental aggregation), Projections (alternative sort orders), Query profiling (system.query_log/EXPLAIN) | clickhouse_performance.md | ✅ |
 | 5 | Operations – ReplicatedMergeTree + ZooKeeper/Keeper, Distributed table (sharding key/replication factor), ClickHouse Keeper vs ZooKeeper, Backup (clickhouse-backup/FREEZE/S3), ALTER mutations, TTL, System tables, Monitoring (Prometheus/Grafana) | clickhouse_operations.md | ✅ |
 | 6 | Production – Schema design (wide vs narrow, star schema), Deduplication strategies, Kafka→ClickHouse pipeline, S3 as cold storage, Integration with dbt/Spark/Superset, Multi-tenancy, Cost optimization, Real-world use cases | clickhouse_production.md | ✅ |
+
+### Bổ sung 2026-06 – Lấp gap chuyên gia (4 cụm)
+
+| STT | Chủ đề | File | Trạng thái |
+|-----|--------|------|-----------|
+| 7 | Security & Access Control – SQL RBAC (CREATE USER/ROLE, GRANT granular tới cột), authentication (sha256/bcrypt/LDAP/Kerberos/SSL cert), **row policies** (multi-tenant), quotas, settings profiles + constraints, column masking, network/TLS/mTLS, encryption (at rest/in transit/column), audit (session_log/query_log) | clickhouse_security.md | ✅ |
+| 8 | Functions & Aggregate Combinators – hệ thống combinator (-If/-Array/-Map/-ForEach/-Distinct/-OrNull/-Resample/**-State/-Merge**), catalog (uniq*/quantile*/topK/argMin-Max/groupArray/sumMap), **funnel/retention/sequenceMatch**, higher-order array (arrayMap/Filter/Reduce/Fold), date-time/string/conditional/type-conversion | clickhouse_functions.md | ✅ |
+| 9 | Data Ingestion & Formats – write path & "too many parts", batch strategy, **async_insert** (wait/timeout), INSERT (VALUES/SELECT/INFILE/table function s3-url-file), formats (Native/RowBinary/Parquet/JSONEachRow/Avro/Protobuf), format settings & error tolerance, **clickhouse-client/clickhouse-local**, insert dedup token, schema inference, DEFAULT/MATERIALIZED/EPHEMERAL | clickhouse_ingestion_formats.md | ✅ |
+| 10 | Query Execution & Troubleshooting – vectorized block pipeline (Processors), **PREWHERE**, EXPLAIN PLAN/PIPELINE/ESTIMATE/indexes, **JOIN algorithms** (hash/parallel_hash/grace_hash/partial_merge/direct, right-table-in-RAM rule), **GLOBAL IN/JOIN** distributed, external aggregation/sort, query cache, **anti-patterns** (point query/mutations/FINAL/SELECT */too many parts), system tables chẩn đoán | clickhouse_query_execution.md | ✅ |
 
 ---
 

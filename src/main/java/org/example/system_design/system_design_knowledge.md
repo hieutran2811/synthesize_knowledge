@@ -58,6 +58,13 @@ Không giống coding (viết code đúng), System Design giải quyết **"Xây
 13. **Feature Flags** – Toggles, A/B testing, Canary
 14. **SaaS Observability** – Multi-tenant metrics, cost attribution
 
+### Bổ sung 2026-06 (lấp gap chuyên gia)
+15. **Distributed Systems Theory** – Consistency models, Consensus (Raft/Paxos), Quorum, Clocks, CRDT, distributed lock → `fundamentals/distributed_systems_theory.md`
+16. **Interview Framework & Estimation** – RESHADED, back-of-envelope, latency/percentiles, bottleneck → `fundamentals/interview_framework_estimation.md`
+17. **Networking & Protocols** – TCP/UDP, HTTP/1-2-3, WebSocket/SSE, DNS, CDN, proxy, gRPC → `fundamentals/networking_protocols.md`
+18. **Case Studies (foundational)** – URL shortener, Snowflake ID, rate limiter → `case_studies/foundational_designs.md`
+19. **Case Studies (real-time/scale)** – News feed, chat, proximity/geo → `case_studies/realtime_scale_designs.md`
+
 ---
 
 ## Framework phân tích bài toán System Design

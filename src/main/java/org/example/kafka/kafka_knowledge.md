@@ -28,6 +28,10 @@ Producer → Kafka Cluster (Topics/Partitions) → Consumer
 | 6 | Kafka Streams | `streams/kafka_streams.md` | ✅ |
 | 7 | Kafka Connect & CDC | `streams/connect.md` | ✅ |
 | 8 | Performance, Monitoring & Security | `operations/production.md` | ✅ |
+| 9 | Schema Registry & Schema Evolution | `ecosystem/schema_registry.md` | ✅ |
+| 10 | ksqlDB & Stream Processing SQL | `ecosystem/ksqldb.md` | ✅ |
+| 11 | Event-Driven Architecture & Data Modeling | `patterns/event_driven_architecture.md` | ✅ |
+| 12 | Cluster Operations Advanced (Day-2) | `operations/cluster_operations.md` | ✅ |
 
 ---
 
@@ -35,10 +39,10 @@ Producer → Kafka Cluster (Topics/Partitions) → Consumer
 
 ```
 Cơ bản:   architecture → producers → consumers
-Trung cấp: storage → replication → connect
-Nâng cao:  kafka_streams → production
+Trung cấp: storage → replication → connect → schema_registry
+Nâng cao:  kafka_streams → ksqldb → event_driven_architecture → production → cluster_operations
 ```
 
 ---
 
-*Cập nhật lần cuối: 2026-05-06*
+*Cập nhật lần cuối: 2026-06-04*

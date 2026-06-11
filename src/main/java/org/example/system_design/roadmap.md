@@ -28,6 +28,15 @@
 | `saas/feature_flags.md` | Feature toggles, A/B testing, Canary, LaunchDarkly | ✅ Done |
 | `saas/observability_saas.md` | Multi-tenant metrics, Cost attribution, Alerting | ✅ Done |
 
+### Bổ sung 2026-06 – Lấp gap chuyên gia (4 cụm)
+| File | Topic | Status |
+|------|-------|--------|
+| `fundamentals/distributed_systems_theory.md` | Consistency models, Consensus (Raft/Paxos/ZAB), Quorum (R+W>N), Lamport/Vector clock, CRDT, distributed lock (fencing token), leader election, gossip, 8 fallacies | ✅ Done |
+| `fundamentals/interview_framework_estimation.md` | RESHADED chi tiết, functional vs non-functional, **back-of-envelope** (QPS/storage/bandwidth/server), latency numbers, p99/p999 tail latency, bottleneck analysis, communication | ✅ Done |
+| `fundamentals/networking_protocols.md` | TCP/UDP, HTTP/1.1-2-3 (QUIC), WebSocket vs SSE vs long-polling, DNS/GeoDNS, CDN (pull/push), forward/reverse proxy, API gateway, gRPC | ✅ Done |
+| `case_studies/foundational_designs.md` | **URL shortener**, **distributed ID (Snowflake)**, **rate limiter** (design angle) — áp dụng RESHADED | ✅ Done |
+| `case_studies/realtime_scale_designs.md` | **News feed** (fan-out push/pull/hybrid, celebrity), **chat** (WebSocket/presence/ordering), **proximity/geo** (geohash/quadtree/S2/Redis GEO) | ✅ Done |
+
 ---
 
 ## Dependency Map
@@ -53,4 +62,4 @@ SaaS
 
 ---
 
-## Tổng: 14 file / 14 file ✅
+## Tổng: 19 file / 19 file ✅ (14 gốc + 5 bổ sung 2026-06: distributed theory, interview/estimation, networking, 2 case-study)
