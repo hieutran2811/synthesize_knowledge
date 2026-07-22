@@ -1,12 +1,17 @@
 # Bean Validation / Hibernate Validator (Deep Dive)
 
 > Phương pháp: What – How – Why – Components – When – Compare – Trade-offs – Real-world – Ghi chú
+>
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
 
 ---
 
 ## What – Bean Validation là gì?
 
-**Jakarta Bean Validation** (trước là JSR 303/349/380) là **chuẩn** cho phép khai báo ràng buộc dữ liệu bằng **annotation** ngay trên field/method, thay vì viết `if` kiểm tra thủ công rải rác. **Hibernate Validator** là implementation tham chiếu (mặc định trong Spring Boot qua `spring-boot-starter-validation`).
+**Jakarta Bean Validation** (trước là JSR 303/349/380) là **chuẩn** *(specification — bản đặc tả quy chuẩn)* cho phép khai báo ràng buộc dữ liệu bằng **annotation** *(chú thích gắn trên code, dạng `@...`)* ngay trên field/method, thay vì viết `if` kiểm tra thủ công rải rác. **Hibernate Validator** là **implementation tham chiếu** *(reference implementation — bản cài đặt gốc, chuẩn mực để đối chiếu)* (mặc định trong Spring Boot qua `spring-boot-starter-validation`).
+
+> 💡 **Giải thích dễ hiểu:**
+> Hãy tưởng tượng bạn là **bảo vệ ở cổng một tòa nhà**. Cách cũ (`if` thủ công) là mỗi lần có khách, bạn tự nhớ trong đầu một loạt quy tắc rồi kiểm tra — mỗi cổng một kiểu, dễ quên, dễ làm khác nhau. Bean Validation giống như **dán sẵn bảng nội quy ngay trên cửa** (annotation trên field): "phải đeo thẻ", "tuổi từ 18". Ai đi qua thì hệ thống tự đối chiếu bảng nội quy đó. Quy tắc đi liền với cửa (dữ liệu), dùng lại được ở mọi cổng.
 
 ```java
 public class RegisterRequest {
@@ -31,10 +36,10 @@ public class RegisterRequest {
 |-----------|---------|
 | `jakarta.validation-api` | API chuẩn: annotation, `Validator`, `ConstraintViolation` |
 | **Hibernate Validator** | Implementation (engine thực thi) |
-| `Validator` | Đối tượng chạy validation: `validate(bean)` |
-| `ConstraintValidator<A, T>` | Logic kiểm tra cho mỗi constraint |
-| `ConstraintViolation` | Một lỗi vi phạm (path, message, invalid value) |
-| `ValidationMessages.properties` | Thông điệp lỗi (i18n) |
+| `Validator` | Đối tượng chạy validation *(quá trình kiểm tra hợp lệ)*: `validate(bean)` |
+| `ConstraintValidator<A, T>` | Logic kiểm tra cho mỗi constraint *(ràng buộc — điều kiện dữ liệu phải thỏa)* |
+| `ConstraintViolation` | Một lỗi vi phạm *(violation)* (path, message, invalid value) |
+| `ValidationMessages.properties` | Thông điệp lỗi (i18n — *đa ngôn ngữ*) |
 
 ---
 
@@ -59,7 +64,14 @@ public class RegisterRequest {
 @NotEmpty String b;   // ""     KHÔNG, " " hợp lệ, null KHÔNG
 @NotBlank String c;   // ""     KHÔNG, " " KHÔNG (trim rỗng), null KHÔNG
 ```
-> Với chuỗi đầu vào người dùng → thường dùng `@NotBlank`. Với collection → `@NotEmpty`.
+> Với chuỗi đầu vào người dùng → thường dùng `@NotBlank`. Với collection *(tập hợp phần tử: List, Set...)* → `@NotEmpty`.
+
+> 💡 **Giải thích dễ hiểu — 3 mức "rỗng":**
+> Ba annotation này giống 3 mức kiểm tra một **cái hộp**:
+> - `@NotNull`: chỉ cần **có cái hộp** (không phải chỗ trống). Hộp rỗng hay trong hộp chỉ có khoảng trắng đều được, miễn là hộp tồn tại.
+> - `@NotEmpty`: hộp phải **có ít nhất 1 món** bên trong. Chuỗi `""` là hộp rỗng → trượt; nhưng `" "` (một dấu cách) tính là "có 1 ký tự" → đậu.
+> - `@NotBlank`: khó tính nhất, hộp phải có **món thật sự** — sau khi bỏ hết giấy đệm (khoảng trắng) ra vẫn còn nội dung. Nên `" "` bị coi là rỗng → trượt.
+> Vì người dùng hay gõ toàn dấu cách cho có, ô nhập chữ nên dùng `@NotBlank` để chặn.
 
 ---
 
@@ -82,6 +94,9 @@ if (!violations.isEmpty()) throw new ConstraintViolationException(violations);
 
 ## How – `@Valid` (cascade) vs `@Validated` (Spring + groups)
 
+> 💡 **Giải thích dễ hiểu — "cascade" là gì?**
+> **cascade** *(đổ dây chuyền — kiểm tra lan sâu vào object con)* giống việc **kiểm tra hành lý ở sân bay**. Bạn có một vali lớn (`Order`), bên trong có túi nhỏ (`Customer`), trong túi lại có ví (`OrderLine`). Nếu chỉ soi lớp ngoài, bạn bỏ sót đồ cấm nằm trong túi con. Đánh dấu `@Valid` lên field con nghĩa là "mở túi này ra soi tiếp" — máy soi đi xuyên qua từng lớp. Thiếu `@Valid` thì máy chỉ soi vali ngoài, mọi ràng buộc bên trong `Customer` bị bỏ qua.
+
 | | `@Valid` (Jakarta chuẩn) | `@Validated` (Spring) |
 |--|--------------------------|------------------------|
 | Nguồn | `jakarta.validation` | `org.springframework` |
@@ -101,6 +116,9 @@ public class Order {
 ```
 
 ### Validation Groups – ràng buộc khác nhau theo ngữ cảnh
+
+> 💡 **Giải thích dễ hiểu — "validation groups":**
+> **Validation groups** *(nhóm ràng buộc theo tình huống)* giải quyết chuyện "cùng một tờ khai nhưng quy tắc khác nhau tùy lúc". Ví von như **mẫu đơn ở bệnh viện**: khi *đăng ký khám lần đầu* (OnCreate) thì ô "mã bệnh nhân" phải để trống (chưa có); khi *tái khám* (OnUpdate) thì ô đó bắt buộc điền. Vẫn là một tờ đơn `UserDto`, nhưng bạn bảo hệ thống "lần này áp bộ quy tắc nào" bằng cách chọn group.
 ```java
 public interface OnCreate {}
 public interface OnUpdate {}
@@ -149,6 +167,9 @@ public class Contact { @PhoneVn @NotBlank String phone; }
 ```
 
 ### Cross-field validation (ràng buộc cấp class)
+
+> 💡 **Giải thích dễ hiểu — "cross-field validation":**
+> Constraint thường chỉ soi **một field** (email đúng định dạng chưa?). Nhưng có luật cần nhìn **nhiều field cùng lúc** — gọi là **cross-field validation** *(ràng buộc liên trường)*. Ví dụ "mật khẩu và xác nhận mật khẩu phải giống nhau" — không field nào tự đúng/sai một mình được, phải so đôi. Vì thế ta đặt ràng buộc ở **cấp class** (`@Target(ElementType.TYPE)`) — như một giám khảo đứng lùi ra nhìn toàn bộ tờ khai thay vì soi từng ô.
 ```java
 @Target(ElementType.TYPE)               // áp dụng cho cả class
 @Retention(RetentionPolicy.RUNTIME)

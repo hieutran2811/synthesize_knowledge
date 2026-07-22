@@ -1,12 +1,19 @@
 # Reflection & Annotations
 
 > Phương pháp: What – How – Why – Components – When – Compare – Trade-offs – Real-world – Ghi chú
+>
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
 
 ---
 
 ## What – Reflection là gì?
 
-**Reflection** là khả năng của Java cho phép chương trình **kiểm tra và thao tác cấu trúc của chính nó** tại runtime: đọc class metadata, gọi method, truy cập field — mà không cần biết type tại compile time.
+**Reflection** *(khả năng chương trình tự "soi gương" và thao tác cấu trúc của chính nó lúc chạy)* là khả năng của Java cho phép chương trình **kiểm tra và thao tác cấu trúc của chính nó** tại **runtime** *(lúc chương trình đang chạy)*: đọc **class metadata** *(thông tin mô tả về class — tên, field, method, annotation...)*, gọi **method** *(phương thức)*, truy cập **field** *(thuộc tính/biến thành viên)* — mà không cần biết **type** *(kiểu dữ liệu)* tại **compile time** *(lúc biên dịch, trước khi chạy)*.
+
+> 💡 **Giải thích dễ hiểu:**
+> Bình thường khi viết code, bạn phải biết trước class tên gì, có method nào, gọi kiểu gì — giống như bạn phải học thuộc menu nhà hàng trước khi gọi món. **Reflection** giống như bạn đưa cho chương trình một tấm gương và bảo: "hãy tự nhìn mình đi, xem mình có những gì rồi tự quyết định làm gì". Chương trình có thể tự khám phá: "à, class này tên là UserService, có method findById nhận vào một Long" — rồi tự gọi method đó, dù lúc viết code ta chưa hề biết class ấy tồn tại.
+>
+> Ví von khác: như một **thợ khóa vạn năng**. Thợ mộc bình thường chỉ mở được cửa mình đã lắp (biết trước). Thợ khóa vạn năng (reflection) đứng trước bất kỳ cánh cửa lạ nào cũng dò được cấu tạo ổ khóa rồi mở — không cần biết trước đó là cửa gì.
 
 ```java
 // Compile-time (static): biết type trước
@@ -24,7 +31,12 @@ Object result = method.invoke(service, 1L);
 
 ## How – Class Object
 
-**`java.lang.Class<T>`** là entry point của mọi reflection operation.
+**`java.lang.Class<T>`** là **entry point** *(điểm khởi đầu — cửa vào)* của mọi reflection operation. Với mỗi class bạn nạp vào JVM, JVM giữ đúng **một** object `Class` mô tả toàn bộ thông tin về class đó (tên, field, method, constructor, annotation...).
+
+> 💡 **Giải thích dễ hiểu — Class object là "tấm bản thiết kế":**
+> Đừng nhầm object kiểu `Class` với object bình thường. Nếu `new Person()` là một **ngôi nhà** đã xây, thì object `Class` (`Person.class`) là **bản thiết kế** của ngôi nhà đó — nó không phải nhà, mà là tờ giấy mô tả nhà có mấy phòng, mỗi phòng tên gì, kích thước ra sao. Từ tấm bản thiết kế này, reflection đọc ra mọi chi tiết, thậm chí "xây" ra nhà mới (`newInstance()`). Cả triệu ngôi nhà `Person` cùng dùng chung đúng một bản thiết kế — nên JVM chỉ giữ một object `Class` duy nhất cho mỗi class.
+>
+> Đây cũng là lý do gọi là **metadata** *(dữ liệu mô tả dữ liệu)*: `Class` không chứa dữ liệu thật (tên "Alice", tuổi 25), mà chứa dữ liệu về cấu trúc ("có field tên `name` kiểu String").
 
 ```java
 // 3 cách lấy Class object
@@ -59,6 +71,11 @@ System.out.println(Modifier.isPublic(clazz.getModifiers())); // true
 ---
 
 ## How – Fields
+
+> 💡 **Giải thích dễ hiểu — `setAccessible(true)` là "chìa khóa vạn năng":**
+> Bình thường một field khai báo `private` bị "khóa" — code bên ngoài không đọc/ghi được, đó là nguyên tắc **encapsulation** *(đóng gói — che giấu chi tiết nội bộ)*. Dòng `field.setAccessible(true)` giống như bảo bảo vệ: "cho tôi mượn chìa khóa vạn năng, mở hết mọi cửa phòng riêng". Sau lệnh đó, reflection sờ được cả field `private`, `protected` — bất chấp mọi rào chắn của trình biên dịch.
+>
+> Đây là con dao hai lưỡi: framework (Spring, Jackson, Hibernate) cần nó để tự động gán giá trị vào field private của object bạn; nhưng nó cũng **phá vỡ đóng gói** — nếu lạm dụng trong code nghiệp vụ thì mất hết ý nghĩa của `private`.
 
 ```java
 // getDeclaredFields() vs getFields():
@@ -105,6 +122,14 @@ public static List<Field> getAllFields(Class<?> clazz) {
 ---
 
 ## How – Methods
+
+> 💡 **Giải thích dễ hiểu — `getDeclaredMethod` + `invoke`: gọi tên rồi bấm nút:**
+> Gọi method qua reflection gồm 2 bước. Bước 1, `getMethod("add", int.class, int.class)` — bạn **tra danh bạ** tìm đúng method tên `add` nhận vào 2 số `int`. Phải nêu cả tên lẫn kiểu tham số vì có thể có nhiều method trùng tên khác tham số (**overload** — nạp chồng). Kết quả là một object `Method`, giống như bạn có được **cây điều khiển từ xa** trỏ đúng vào method đó.
+> Bước 2, `method.invoke(calc, 3, 4)` — bạn **bấm nút** để chạy method, truyền vào object đích (`calc`) và các đối số. Java sẽ thực thi `calc.add(3, 4)` giúp bạn.
+>
+> Ví von: `getMethod` như tra số điện thoại của một người trong danh bạ; `invoke` như bấm gọi. Với **static method** *(method của class, không thuộc object nào)*, không cần object đích nên truyền `null` vào chỗ đó — như gọi tổng đài chung, không gọi riêng ai.
+>
+> Lưu ý cái bẫy: nếu method bên trong ném lỗi, `invoke` không ném thẳng lỗi đó mà bọc lại trong `InvocationTargetException` *(ngoại lệ "lỗi phát sinh từ method được gọi")*. Muốn thấy lỗi thật phải bóc lớp vỏ ra bằng `e.getCause()` — giống bưu kiện lỗi được gói trong một lớp giấy báo "hàng bên trong có vấn đề".
 
 ```java
 // getMethods(): public methods (kể cả inherited)
@@ -186,7 +211,10 @@ Product p2 = privateCtor.newInstance(); // default product
 
 ## How – Generic Types (Type Tokens)
 
-**Type erasure** xóa generic info tại runtime, nhưng có thể recover từ bytecode:
+**Type erasure** *(xóa kiểu — trình biên dịch bỏ thông tin generic sau khi biên dịch)* xóa generic info tại runtime, nhưng có thể recover *(khôi phục)* từ **bytecode** *(mã trung gian JVM đọc)*:
+
+> 💡 **Giải thích dễ hiểu — type erasure:**
+> Khi bạn viết `List<String>`, phần `<String>` chỉ tồn tại để trình biên dịch **kiểm tra giúp bạn** lúc viết code. Biên dịch xong, Java "xóa dấu vết" — trong bytecode chỉ còn `List` trơn, không còn biết là list của String hay Integer. Giống như bạn dán nhãn "hộp đựng táo" lên thùng carton lúc đóng gói cho khỏi nhầm, nhưng khi giao hàng người ta bóc nhãn đi, chỉ còn cái thùng. Đó là lý do tại runtime thường không biết generic là gì — trừ vài chỗ đặc biệt (như superclass, field) trình biên dịch có lưu lại "biên lai" trong bytecode để reflection dò ngược.
 
 ```java
 class Repository<T> {
@@ -226,7 +254,12 @@ Type paramType2 = m.getGenericParameterTypes()[0];
 
 ## How – Annotations
 
-**Annotation** là metadata gắn vào class/method/field, được đọc tại compile time hoặc runtime.
+**Annotation** *(chú thích — nhãn metadata gắn kèm vào code)* là metadata gắn vào class/method/field, được đọc tại compile time hoặc runtime.
+
+> 💡 **Giải thích dễ hiểu — annotation là "tờ giấy nhắn dán lên code":**
+> Annotation như những **mảnh giấy nhớ (sticky note)** bạn dán lên code: `@Override`, `@Deprecated`, `@Entity`... Bản thân mảnh giấy không làm gì cả — nó chỉ **ghi chú** để một ai đó (trình biên dịch, framework, hay chính bạn qua reflection) đọc rồi hành xử theo. Ví dụ dán `@Test` lên một method là nhắn với JUnit: "đây là một test, hãy chạy nó". Dán `@Column(name="email")` lên field là nhắn với Hibernate: "field này ánh xạ tới cột `email` trong DB".
+>
+> Điểm mấu chốt: annotation **không tự thực thi**. Phải có "người đọc giấy nhắn" — thường là code dùng reflection quét qua và xử lý. Không có ai đọc thì annotation vô nghĩa như tờ giấy dán mà không ai ngó tới.
 
 ### Định nghĩa Annotation
 
@@ -250,6 +283,14 @@ public @interface Cacheable {
 //   CLASS   → trong .class file nhưng không load vào JVM: Lombok, APT
 //   RUNTIME → load vào JVM, đọc được bằng reflection: Spring, JPA, Jackson
 ```
+
+> 💡 **Giải thích dễ hiểu — `@Retention`: giấy nhắn "sống" được bao lâu?**
+> **Retention policy** *(chính sách lưu giữ — quyết định annotation tồn tại tới giai đoạn nào)* trả lời câu hỏi: mảnh giấy nhắn này tồn tại tới đâu trong vòng đời của code? Có 3 mức, ví như 3 loại mực viết:
+> - **SOURCE** *(chỉ có trong mã nguồn)*: viết bằng **bút chì** — trình biên dịch đọc xong là **tẩy sạch**, không vào file `.class`. Dùng cho những ghi chú chỉ có ý nghĩa lúc biên dịch, như `@Override` (nhắc trình biên dịch kiểm tra), `@SuppressWarnings`.
+> - **CLASS** *(có trong file .class nhưng không nạp vào JVM)*: viết bằng **bút mực thường** — còn lưu trên file `.class` nhưng khi JVM nạp class vào bộ nhớ thì bỏ qua, không đọc được lúc chạy. Dùng cho công cụ xử lý bytecode.
+> - **RUNTIME** *(sống tới lúc chạy)*: viết bằng **bút không phai** — theo class vào tận JVM, và reflection **đọc được lúc chạy**. Đây là mức Spring, JPA, Jackson dùng, vì các framework này quét annotation ngay khi chương trình đang chạy.
+>
+> Ghi nhớ: annotation muốn được reflection đọc lúc chạy thì **bắt buộc** phải khai `@Retention(RetentionPolicy.RUNTIME)`. Quên khai (mặc định là CLASS) là lỗi kinh điển khiến "annotation của tôi không thấy tác dụng gì".
 
 ### Đọc Annotation tại runtime
 
@@ -293,6 +334,10 @@ Scheduled[] schedules = method.getAnnotationsByType(Scheduled.class);
 
 ### Annotation Processing (Compile-time)
 
+> 💡 **Giải thích dễ hiểu — Annotation Processing: "robot sinh code" lúc biên dịch:**
+> **Annotation processing** *(xử lý annotation lúc biên dịch — quét annotation rồi tự sinh ra code mới)* khác hẳn việc đọc annotation bằng reflection. Reflection đọc annotation **lúc chạy**; còn annotation processing chạy **ngay trong lúc biên dịch**, trước khi có chương trình để chạy.
+> Ví von: như một **dây chuyền sản xuất có robot phụ**. Bạn đưa vào bản vẽ (class dán annotation `@Data`), robot (annotation processor) đọc bản vẽ rồi **tự chế thêm linh kiện** (sinh ra file `.java` mới chứa getter/setter/equals...). Tất cả xảy ra trước khi sản phẩm xuất xưởng. Lombok, MapStruct, Dagger hoạt động kiểu này — nên chúng **không tốn chi phí runtime**, vì code đã được sinh sẵn lúc biên dịch, chạy nhanh như code viết tay.
+
 ```java
 // Custom Annotation Processor (chạy tại compile time, không runtime)
 @SupportedAnnotationTypes("com.example.AutoBuilder")
@@ -326,7 +371,10 @@ public class AutoBuilderProcessor extends AbstractProcessor {
 
 ## How – Dynamic Proxy
 
-`java.lang.reflect.Proxy` tạo proxy implementation của interface tại runtime:
+`java.lang.reflect.Proxy` tạo **proxy** *(đối tượng ủy nhiệm — đứng thay mặt object thật, chặn mọi lời gọi để xử lý thêm)* implementation của interface tại runtime:
+
+> 💡 **Giải thích dễ hiểu — Dynamic Proxy là "người trợ lý đứng cửa":**
+> Hình dung bạn muốn gọi giám đốc (object thật), nhưng mọi cuộc gọi đều phải qua **thư ký** trước. Thư ký ghi sổ ("có cuộc gọi lúc 9h"), rồi mới chuyển máy cho giám đốc, xong lại ghi ("đã xong sau 45µs"). **Dynamic proxy** chính là người thư ký sinh ra tự động lúc chạy: nó **implement cùng interface** với object thật nên bên ngoài tưởng đang gọi thẳng, nhưng thực chất mọi lời gọi đều bị `InvocationHandler` *(bộ xử lý — nơi bạn nhét logic chặn giữa)* chặn lại để thêm việc (log, đo thời gian, mở transaction...). Đây là nền tảng của Spring AOP: `@Transactional` hoạt động được là nhờ proxy tự động mở/đóng transaction quanh method của bạn.
 
 ```java
 // 1. Interface
@@ -405,7 +453,13 @@ VarHandle fieldHandle = lookup.findVarHandle(TargetClass.class, "privateField", 
 
 ## How – MethodHandles (Reflection Alternative)
 
-`MethodHandle` là typed reference tới method/field — **nhanh hơn reflection** (JIT có thể inline):
+`MethodHandle` là typed reference tới method/field — **nhanh hơn reflection** (**JIT** *(Just-In-Time compiler — trình biên dịch nóng, dịch bytecode thành mã máy lúc chạy)* có thể **inline** *(nhúng thẳng lời gọi vào nơi gọi, bỏ chi phí gọi hàm)*):
+
+> 💡 **Giải thích dễ hiểu — vì sao reflection chậm, và MethodHandle nhanh hơn:**
+> Gọi method trực tiếp (`calc.add(3,4)`) giống như bạn tự tay bật công tắc đèn — tức thì. Gọi qua reflection giống như mỗi lần muốn bật đèn lại phải: tra danh bạ tìm số công tắc, kiểm tra bạn có quyền chạm vào không, rồi mới nhờ người khác bật hộ. Những bước "tra cứu + kiểm tra quyền + gọi gián tiếp" lặp lại mỗi lần gọi chính là **overhead** *(chi phí phụ trội)* khiến reflection chậm hơn.
+> **MethodHandle** giải quyết bằng cách làm phần tra cứu/kiểm tra **một lần duy nhất** lúc tạo handle, sau đó giữ lại "đường dây nóng" trỏ thẳng method. Sau vài lần chạy (**warmup** — khởi động nóng), JIT nhìn ra đây thực chất là lời gọi cố định và **inline** nó — nhanh gần như gọi trực tiếp. Đó là lý do code hiệu năng cao nên **cache** *(lưu lại tái dùng)* MethodHandle thay vì tra reflection lặp đi lặp lại.
+>
+> Thực tế: đừng lo reflection "chậm" trong đa số trường hợp — nó chỉ đáng bận tâm ở **hot path** *(đoạn code chạy cực nhiều lần, điểm nóng hiệu năng)*. Với vài lần gọi lúc khởi động (như Spring quét bean), chi phí này không đáng kể.
 
 ```java
 import java.lang.invoke.*;

@@ -1,14 +1,20 @@
 # Spring AOP (Aspect-Oriented Programming)
 
 > Phương pháp: What – How – Why – Components – When – Compare – Trade-offs – Real-world – Ghi chú
+>
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
 
 ---
 
 ## What – Spring AOP là gì?
 
-**AOP (Aspect-Oriented Programming)** là paradigm tách **cross-cutting concerns** (logging, security, transaction, caching...) khỏi business logic chính.
+**AOP (Aspect-Oriented Programming)** *(lập trình hướng khía cạnh)* là **paradigm** *(mô hình/tư duy lập trình)* tách **cross-cutting concerns** *(mối quan tâm cắt ngang — thứ xuất hiện ở khắp nơi)* như logging, security, transaction, caching... ra khỏi **business logic** *(logic nghiệp vụ chính)*.
 
 **Cross-cutting concern**: logic không thuộc về một module cụ thể nhưng xuất hiện khắp mọi nơi.
+
+> 💡 **Giải thích dễ hiểu — AOP là "camera an ninh" của hệ thống:**
+> Có những việc như **ghi log, kiểm tra quyền, đo thời gian, mở/đóng transaction** cần làm ở *rất nhiều* method khác nhau. Nếu viết tay vào từng method thì code nghiệp vụ bị lẫn lộn, lặp đi lặp lại và khó bảo trì.
+> Ví von: giống việc lắp **camera an ninh và hệ thống báo cháy** trong tòa nhà. Bạn không bắt mỗi nhân viên (mỗi method) tự canh gác; thay vào đó lắp một hệ thống chạy **cắt ngang** mọi phòng, tự động ghi hình và cảnh báo. AOP cho phép bạn khai báo "ở tất cả các method trong tầng service, hãy tự động ghi log và mở transaction" — mà **không cần chạm vào code nghiệp vụ**. Nhân viên chỉ lo làm việc chính, camera lo phần còn lại.
 
 ```java
 // KHÔNG có AOP – cross-cutting concerns rải khắp
@@ -62,7 +68,11 @@ public class OrderService {
 
 ## How – Proxy-based AOP
 
-Spring AOP dùng **proxy pattern** để intercept method calls:
+> 💡 **Giải thích dễ hiểu — Proxy là "người đóng thế":**
+> Spring không sửa code bên trong class của bạn. Thay vào đó, nó tạo ra một **proxy** *(object đại diện bao bọc bên ngoài)* đứng chắn trước object thật (**target**). Mọi lời gọi method đều đi qua proxy trước; proxy làm phần "cắt ngang" (log, mở transaction...) rồi mới chuyển tiếp cho object thật.
+> Ví von: proxy giống **thư ký riêng của giám đốc**. Khách không gặp thẳng giám đốc mà gặp thư ký trước — thư ký ghi sổ lịch hẹn (logging), kiểm tra giấy tờ (security), rồi mới dẫn vào gặp giám đốc (target method). Chính vì mọi thứ phải "đi qua thư ký" nên nếu giám đốc tự gọi điện cho chính mình trong phòng (self-invocation), thư ký không hề hay biết — đó là nguồn gốc của bug self-invocation nói ở dưới.
+
+Spring AOP dùng **proxy pattern** để **intercept** *(chặn/đón bắt)* method calls:
 
 ```
 Client → Proxy → Target.method()
@@ -73,6 +83,12 @@ Client → Proxy → Target.method()
 ```
 
 ### JDK Dynamic Proxy vs CGLIB
+
+> 💡 **Giải thích dễ hiểu — hai cách tạo "người đóng thế":**
+> Spring có 2 cách chế tạo proxy:
+> - **JDK Dynamic Proxy**: dùng khi bean có **implement interface**. Spring tạo một object mới cũng "cùng khai interface" đó. Ví von: người đóng thế mặc **cùng đồng phục** (cùng interface) với người thật.
+> - **CGLIB**: dùng khi bean **không có interface**. Spring tạo một **class con kế thừa** class gốc và ghi đè các method để chèn logic. Ví von: người đóng thế là **bản sao được đúc khuôn** (subclass) từ người thật. Đây là mặc định của Spring Boot.
+> Điều này giải thích vì sao AOP **không hoạt động với method `private`, `static` hay `final`**: proxy phải ghi đè được method thì mới chặn được, mà những method đó thì không thể ghi đè.
 
 ```java
 // JDK Dynamic Proxy: khi bean implement interface
@@ -114,6 +130,14 @@ public class LoggingAspect {
 ---
 
 ## How – Advice Types
+
+> 💡 **Giải thích dễ hiểu — 5 thời điểm "chen vào":**
+> **Advice** *(hành động được chèn vào)* là việc bạn muốn AOP làm, còn loại advice quyết định **chèn vào lúc nào**. Hình dung một cuộc gọi method như một **chuyến bay**:
+> - `@Before` — làm thủ tục check-in **trước khi** bay (chạy trước method).
+> - `@AfterReturning` — chỉ chào mừng khi máy bay **hạ cánh an toàn** (method trả về không lỗi).
+> - `@AfterThrowing` — kích hoạt khi **có sự cố** trong chuyến bay (method ném exception).
+> - `@After` — dọn dẹp khoang máy bay **dù hạ cánh hay sự cố** (giống khối `finally`).
+> - `@Around` — **mạnh nhất**: bạn bao trọn cả chuyến bay, tự quyết định cho bay hay không (`pjp.proceed()`), đổi hành khách (arguments), đổi kết quả, hoặc cho bay lại (retry). Vì cầm quyền `proceed()` nên **nếu quên gọi `pjp.proceed()` thì method thật sẽ không bao giờ chạy**.
 
 ### @Before – Chạy TRƯỚC method
 ```java
@@ -241,6 +265,10 @@ public void applicationLayer() {}
 
 ## How – Self-invocation Problem
 
+> 💡 **Giải thích dễ hiểu — vì sao gọi "method của chính mình" lại mất tác dụng AOP:**
+> Nhớ lại: AOP chỉ hoạt động khi lời gọi **đi qua proxy** (người thư ký). Khi một method trong class gọi thẳng một method khác **của chính class đó** (`this.validateOrder()`), lời gọi đó **không đi ra ngoài rồi vòng qua proxy** — nó chạy nội bộ, nên proxy không hề biết → mọi annotation như `@Transactional`, `@Cacheable`, `@Async` trên method được gọi đều **bị bỏ qua**.
+> Ví von: giám đốc muốn mọi cuộc gặp đều được thư ký ghi sổ. Nhưng khi ông tự đi bộ sang phòng bên cạnh (cũng là phòng của ông) để lấy tài liệu, ông **không đi qua bàn thư ký** → cuộc "gặp" này không được ghi sổ. Muốn được ghi, ông phải nhấc máy gọi ra tổng đài (proxy) rồi mới được nối máy — tức là gọi qua một bean khác, hoặc self-inject chính proxy của mình.
+
 **Vấn đề quan trọng nhất về Spring AOP:**
 
 ```java
@@ -347,6 +375,9 @@ public void sendNotification(String userId, String message) { ... }
 ---
 
 ## How – Advice Ordering
+
+> 💡 **Giải thích dễ hiểu — nhiều aspect xếp lồng nhau như củ hành:**
+> Khi nhiều aspect cùng áp lên một method, chúng bọc nhau thành **các lớp như củ hành**. `@Order` số nhỏ = lớp **ngoài cùng** (chạy `@Before` đầu tiên, chạy `@After` cuối cùng). Ví von: gói một món quà — lớp giấy ngoài cùng (Security, order 1) bọc trước và mở sau; lớp trong cùng (Metrics, order 3) sát với method nhất. Khi vào: Security → Logging → Metrics → method; khi ra thì ngược lại. Nhờ vậy Security luôn "canh cửa" cả trước lẫn sau mọi aspect khác.
 
 Khi nhiều Aspects áp dụng cùng method:
 

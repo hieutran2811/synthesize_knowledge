@@ -1,12 +1,17 @@
 # JVM Runtime Data Areas & Bytecode
 
 > Phương pháp: What – How – Why – Components – When – Compare – Trade-offs – Real-world – Ghi chú
+>
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
 
 ---
 
 ## What – JVM Runtime Data Areas là gì?
 
-Khi JVM chạy, nó chia memory thành các vùng với mục đích khác nhau. Hiểu cấu trúc này giúp diagnose memory issues, hiểu stack traces, và optimize JVM settings.
+Khi JVM chạy, nó chia memory *(bộ nhớ)* thành các vùng với mục đích khác nhau. Hiểu cấu trúc này giúp chẩn đoán lỗi bộ nhớ, đọc **stack trace** *(dấu vết chuỗi lời gọi hàm)* và tối ưu cấu hình JVM.
+
+> 💡 **Giải thích dễ hiểu — JVM như một xưởng có nhiều khu:**
+> **Heap** là kho hàng chung chứa object; **Metaspace** là phòng hồ sơ mô tả từng loại hàng; mỗi thread có một **Java Stack** riêng như bàn làm việc xếp các nhiệm vụ đang xử lý; **PC Register** là dấu trang cho biết thread đang làm tới lệnh nào; **Code Cache** chứa các đoạn mã máy JIT đã biên dịch. Tách khu giúp JVM quản lý đúng vòng đời và chẩn đoán đúng loại lỗi.
 
 ```
 JVM Memory Layout:
@@ -56,6 +61,9 @@ Problem:
 
 ### Java 8+: Metaspace (Native Memory)
 
+> 💡 **Giải thích dễ hiểu — Metaspace chứa “bản thiết kế”, không chứa sản phẩm:**
+> Object `new User()` nằm trong heap, còn mô tả class `User` có field/method gì nằm trong **Metaspace** *(vùng metadata class ngoài heap)*. Nó giống kho chứa hàng và phòng lưu bản thiết kế. Heap còn trống không có nghĩa Metaspace không thể đầy; ứng dụng sinh quá nhiều proxy/class động hoặc rò rỉ ClassLoader vẫn có thể gặp `OutOfMemoryError: Metaspace`.
+
 ```
 Metaspace (off-heap, native memory):
   - Class metadata
@@ -102,6 +110,9 @@ class Example {
 ---
 
 ## How – Heap
+
+> 💡 **Giải thích dễ hiểu — heap chung, stack riêng:**
+> Nhiều thread cùng nhìn thấy object trên heap nên phải phối hợp bằng `volatile`, lock hoặc cấu trúc concurrent. Ngược lại, biến cục bộ trong stack frame thuộc riêng thread đang chạy nên thread khác không trực tiếp chạm vào. Tuy nhiên biến cục bộ có thể giữ **reference tới object chung trên heap**; cái “địa chỉ” là riêng, còn căn nhà mà nó trỏ tới vẫn có thể dùng chung.
 
 ### Object Allocation
 
@@ -157,6 +168,9 @@ System.out.println(s1 == s4); // true!
 Mỗi thread có **Stack riêng** chứa các **Stack Frames**.
 
 ### Stack Frame
+
+> 💡 **Giải thích dễ hiểu — mỗi lần gọi hàm là đặt thêm một khay:**
+> Khi method A gọi B, JVM đặt frame của B lên trên frame của A. B xong thì nhấc khay B ra và A tiếp tục đúng vị trí cũ. Đệ quy gọi mãi sẽ xếp khay cao tới trần và gây `StackOverflowError`; còn tạo quá nhiều object thường làm đầy heap và gây `OutOfMemoryError`. Hai lỗi đều liên quan bộ nhớ nhưng nằm ở hai khu khác nhau.
 
 ```
 Stack Frame (tạo mỗi khi method được gọi):
@@ -259,6 +273,9 @@ Thread dump có thể thấy: "at com.example.Foo.bar(Foo.java:42)"
 
 ## How – Bytecode (Intermediate Language)
 
+> 💡 **Giải thích dễ hiểu — bytecode là ngôn ngữ trung gian dùng chung:**
+> `javac` không biên dịch thẳng cho một loại CPU mà tạo bytecode trong file `.class`. Bytecode giống một bản nhạc chuẩn: JVM trên Windows, Linux hay macOS đều đọc được, rồi interpreter/JIT của từng máy chuyển nó thành âm thanh phù hợp với “nhạc cụ” CPU hiện tại. Đây là nền tảng của nguyên tắc *write once, run anywhere*.
+
 ### Class File Structure
 
 ```
@@ -324,6 +341,9 @@ public class BytecodeExample {
 ```
 
 ### invokedynamic (Lambda Implementation)
+
+> 💡 **Giải thích dễ hiểu — để dành cách gọi tới lúc chạy:**
+> Các lệnh `invokevirtual` hay `invokestatic` đã quy định tương đối rõ cách tìm method. `invokedynamic` để JVM nối điểm gọi với phần cài đặt phù hợp ngay lúc runtime. Nó giống ổ cắm đa năng chưa gắn thiết bị khi xây nhà; lần dùng đầu, `LambdaMetafactory` chọn và nối đúng bộ chuyển đổi cho lambda, các lần sau tái sử dụng kết nối đó.
 
 ```java
 // Lambda compilation

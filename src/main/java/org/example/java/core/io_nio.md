@@ -1,15 +1,23 @@
 # Java I/O & NIO (Deep Dive)
 
 > Phương pháp: What – How – Why – Components – When – Compare – Trade-offs – Real-world – Ghi chú
+>
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
 
 ---
 
 ## What – Java I/O là gì?
 
-Java có 3 thế hệ I/O API:
-1. **java.io** (Java 1.0): stream-based, blocking
-2. **java.nio** (Java 1.4): buffer + channel, non-blocking
-3. **java.nio.file** / NIO.2 (Java 7): high-level file API (`Path`, `Files`)
+I/O *(Input/Output — nhập/xuất dữ liệu: đọc từ và ghi ra file, mạng, thiết bị...)*. Java có 3 thế hệ I/O API:
+1. **java.io** (Java 1.0): stream-based *(dựa trên dòng dữ liệu chảy tuần tự)*, blocking *(chặn — luồng phải đứng chờ cho tới khi đọc/ghi xong)*
+2. **java.nio** (Java 1.4): buffer *(vùng đệm)* + channel *(kênh dẫn dữ liệu 2 chiều)*, non-blocking *(không chặn — luồng không phải đứng chờ)*
+3. **java.nio.file** / NIO.2 (Java 7): high-level file API *(API thao tác file ở tầng cao, dễ dùng)* (`Path`, `Files`)
+
+> 💡 **Giải thích dễ hiểu — 3 thế hệ I/O:**
+> Hình dung việc chuyển nước từ bể này sang bể khác:
+> - **java.io (stream)**: như dùng **một cái ống nhỏ, hứng từng ca nước một** và bạn phải đứng đó chờ đầy ca mới đổ (blocking). Đơn giản nhưng chậm và tốn người khi phải phục vụ nhiều bể.
+> - **java.nio (buffer + channel)**: như có **thùng chứa trung gian (buffer)** và đường ống lớn 2 chiều (channel); một người có thể trông nhiều đường ống cùng lúc mà không phải đứng chờ từng cái (non-blocking).
+> - **NIO.2 (Path/Files)**: như thuê hẳn **dịch vụ chuyển nhà**: bạn chỉ ra lệnh "copy file này sang kia" một câu, phần vất vả họ lo.
 
 ---
 
@@ -71,6 +79,10 @@ try (PrintWriter writer = new PrintWriter(
 ```
 
 ### Tại sao cần Buffering?
+
+> 💡 **Giải thích dễ hiểu — vì sao cần Buffer (vùng đệm):**
+> Mỗi lần đọc trực tiếp từ ổ đĩa là một **system call** *(lời gọi hệ thống — nhờ hệ điều hành làm giúp, khá tốn kém)*. Đọc từng byte một = gọi hệ thống hàng tỉ lần → cực chậm.
+> Ví von: như **đi chợ mua đồ**. Không buffer = mỗi lần cần 1 quả trứng lại chạy ra chợ một chuyến (tốn công đi lại kinh khủng). Có buffer (8KB) = **mua cả vỉ trứng một lần** về để trong tủ lạnh (RAM), khi cần lấy trứng chỉ việc mở tủ. Số chuyến "ra chợ" (system call) giảm đi hàng nghìn lần.
 
 ```java
 // KHÔNG buffer: mỗi read() = 1 system call → chậm
@@ -139,6 +151,8 @@ try (FileChannel src = FileChannel.open(source, READ);
 
 ### ByteBuffer – State Machine
 
+**ByteBuffer** *(vùng đệm chứa byte)* hoạt động như một **state machine** *(máy trạng thái — chuyển qua lại giữa chế độ ghi và chế độ đọc)* với 3 con trỏ:
+
 ```
 Capacity: tổng sức chứa (bất biến)
 Limit:    vị trí cuối cùng có thể đọc/ghi
@@ -147,6 +161,16 @@ Position: vị trí hiện tại
 Write mode: position tăng khi ghi, limit = capacity
 Read mode:  position tăng khi đọc, limit = số byte đã ghi
 ```
+
+> 💡 **Giải thích dễ hiểu — Buffer và các thao tác flip/clear/compact:**
+> Đây là chỗ **gây nhầm lẫn nhất của NIO**. Hãy hình dung ByteBuffer như một **ly nước có vạch chia**:
+> - **capacity** *(sức chứa)* = chiều cao tối đa của ly (cố định).
+> - **position** *(vị trí hiện tại)* = mực nước bạn đang thao tác.
+> - **limit** *(giới hạn)* = cái vạch "không được vượt quá".
+> Điểm mấu chốt: **cùng một cái ly dùng cho cả rót vào lẫn uống ra**, nên phải có động tác "chuyển chế độ":
+> - **`flip()` (lật)**: sau khi rót nước vào (ghi), muốn uống (đọc) thì phải **lật chế độ** — đặt vạch limit đúng ngay mực nước vừa rót, rồi đưa ống hút về đáy (position=0) để hút từ đầu. Quên `flip()` là lỗi kinh điển: bạn "uống" nhầm phần ly rỗng phía trên.
+> - **`clear()` (dọn)**: "coi như ly đã trống", đưa position về đáy, limit lên đỉnh để rót mới. Lưu ý **nước cũ vẫn còn** trong ly, chỉ là bị "phớt lờ" và sẽ bị ghi đè.
+> - **`compact()` (dồn)**: nếu uống dở còn thừa nước, `compact()` **dồn phần nước chưa uống xuống đáy** rồi cho phép rót thêm lên trên — không phí phần còn lại.
 
 ```java
 ByteBuffer buf = ByteBuffer.allocate(10);
@@ -172,6 +196,12 @@ buf.compact();
 ```
 
 ### Selector – Non-blocking I/O Multiplexing
+
+**Selector** *(bộ chọn — cho phép 1 luồng theo dõi nhiều kênh cùng lúc)* thực hiện **I/O multiplexing** *(ghép kênh — một luồng quản lý nhiều kết nối)*.
+
+> 💡 **Giải thích dễ hiểu — Selector và multiplexing:**
+> Mô hình cũ (thread-per-connection): mỗi kết nối cần **một nhân viên riêng ngồi chờ**. 10.000 kết nối = 10.000 nhân viên, phần lớn chỉ ngồi không chờ dữ liệu → lãng phí khủng khiếp (đây là "vấn đề C10K").
+> Selector giống như **một lễ tân giỏi ở khách sạn** trông nhiều chuông gọi cùng lúc. Thay vì mỗi phòng một người trực, chỉ cần **một lễ tân**: hệ thống báo "phòng nào vừa bấm chuông" (channel nào sẵn sàng đọc/ghi), lễ tân chạy tới phục vụ đúng phòng đó rồi quay lại bàn. Một người phục vụ được rất nhiều phòng vì **không đứng chờ vô ích ở phòng nào cả** (non-blocking). `selector.select()` chính là lúc lễ tân ngồi chờ "có chuông nào reo không".
 
 ```java
 // 1 thread handle nhiều channel non-blocking
@@ -319,6 +349,12 @@ watchThread.start();
 ---
 
 ## How – Memory-Mapped Files
+
+**Memory-Mapped File** *(file ánh xạ bộ nhớ — ánh xạ nội dung file vào vùng nhớ để đọc/ghi như thao tác với mảng byte)*.
+
+> 💡 **Giải thích dễ hiểu — memory-mapped file & "zero-copy":**
+> Đọc file thông thường: dữ liệu phải **copy qua nhiều chặng** — từ ổ đĩa → vùng nhớ của hệ điều hành → vùng nhớ của ứng dụng Java. Mỗi lần copy tốn thời gian và RAM.
+> **Memory-mapped** giống như **đọc sách ngay trên kệ thư viện** thay vì photo cả cuốn mang về bàn: bạn "ánh xạ" trang sách vào tầm mắt và đọc trực tiếp, hệ điều hành tự lo nạp trang nào bạn đang xem. **zero-copy** *(không sao chép — dữ liệu đi thẳng, bỏ qua các chặng copy thừa)*: như `transferTo()` cho phép hệ điều hành **chuyển file thẳng từ đĩa ra mạng** mà không phải "khiêng" dữ liệu vòng qua ứng dụng — nhanh hơn hẳn khi copy/gửi file lớn.
 
 ```java
 // Map một phần file vào memory – cực nhanh cho large files

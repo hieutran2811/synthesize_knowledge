@@ -1,12 +1,18 @@
 # Pattern Matching (Java 16 → 21)
 
 > Phương pháp: What – How – Why – Components – When – Compare – Trade-offs – Real-world – Ghi chú
+>
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
 
 ---
 
 ## What – Pattern Matching là gì?
 
-**Pattern Matching** cho phép kiểm tra cấu trúc của một giá trị và **extract** các thành phần từ nó trong một bước duy nhất — thay thế chuỗi `instanceof + cast + access`.
+**Pattern Matching** *(so khớp mẫu — vừa kiểm tra "giá trị này có đúng hình dạng X không", vừa lấy luôn dữ liệu bên trong ra)* cho phép kiểm tra cấu trúc của một giá trị và **extract** *(bóc tách — lấy ra)* các thành phần từ nó trong một bước duy nhất — thay thế chuỗi `instanceof + cast + access` *(kiểm tra kiểu + ép kiểu + truy cập)*.
+
+> 💡 **Giải thích dễ hiểu — Pattern Matching giống việc gì?**
+> Cách cũ giống khi bạn nhận một bưu kiện: (1) sờ nắn đoán "chắc là cái cốc" (`instanceof`), (2) mở hộp lấy ra và khẳng định "đúng là cốc" (`cast` — ép kiểu), (3) rồi mới cầm quai cốc dùng (`access`). Ba động tác rời rạc, dễ quên bước, dễ nhầm.
+> Pattern Matching gộp cả ba thành **một câu**: "nếu đây là cái cốc thì đưa luôn cái quai cho tôi". Ví von như **máy phân loại bưu kiện tự động**: vừa nhận diện món hàng, vừa mở ra lấy đúng thứ cần, trong một nhịp. Ít thao tác tay hơn → ít lỗi hơn.
 
 Java đã mở rộng dần qua nhiều phiên bản:
 
@@ -53,6 +59,11 @@ if (!(obj instanceof String s)) {
 ```
 
 ### Scope của Pattern Variable
+
+> 💡 **Giải thích dễ hiểu — "scope flow-sensitive" nghĩa là gì?**
+> **Pattern variable** *(biến mẫu — biến `s` được tạo ngay khi khớp `instanceof String s`)* chỉ "sống" ở những chỗ mà compiler **chắc chắn** phép khớp đã đúng. Đó gọi là **flow-sensitive scope** *(phạm vi phụ thuộc luồng chạy)*.
+> Ví von: `s` giống một **thẻ ra vào tạm** chỉ có hiệu lực khi bạn đã qua cửa kiểm tra "đúng là String". Với `&&` (và): nếu vế trái `instanceof String s` sai thì mạch dừng luôn (short-circuit), không ai đọc `s` nữa nên an toàn — `s` dùng được ở vế phải. Nhưng với `||` (hoặc): vế phải chạy **đúng khi vế trái sai**, tức đúng lúc `s` chưa được cấp thẻ → dùng `s` sẽ vô nghĩa, nên compiler báo lỗi ngay. Nói ngắn: bạn chỉ được cầm món đồ sau khi đã xác nhận nó tồn tại.
+
 ```java
 // Scope flow-sensitive
 Object o = ...;
@@ -158,6 +169,11 @@ String classify(Object obj) {
 ```
 
 ### Ordering của Patterns
+
+> 💡 **Giải thích dễ hiểu — vì sao "specific phải đứng trước general"?**
+> switch pattern xét case **từ trên xuống**, gặp case nào khớp trước thì dừng. Nếu bạn đặt case chung chung (`case Circle c` — mọi hình tròn) lên **trước** case cụ thể (`case Circle c when radius > 10`), thì case chung đã "vơ hết" mọi hình tròn, case cụ thể phía dưới **không bao giờ tới lượt** → compiler gọi đây là **dominance** *(sự "che phủ" — case trên nuốt hết case dưới)* và báo lỗi "unreachable".
+> Ví von: như **lưới lọc cá xếp chồng**. Muốn giữ lại cá to riêng thì phải để **lưới mắt to (lọc cá to) ở trên**, lưới mắt nhỏ ở dưới. Nếu đặt lưới mắt nhỏ lên trên, nó hứng hết mọi con cá, lưới to phía dưới thành vô dụng. Quy tắc: điều kiện **hẹp/đặc biệt** luôn xét trước, điều kiện **rộng/mặc định** để sau cùng.
+
 ```java
 // Patterns được match theo thứ tự TỪ TRÊN XUỐNG
 // Specific phải đứng TRƯỚC general

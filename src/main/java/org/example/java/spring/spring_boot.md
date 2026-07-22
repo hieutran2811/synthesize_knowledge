@@ -1,16 +1,22 @@
 # Spring Boot (Auto-configuration, Starters, Actuator)
 
 > Phương pháp: What – How – Why – Components – When – Compare – Trade-offs – Real-world – Ghi chú
+>
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
 
 ---
 
 ## What – Spring Boot là gì?
 
-**Spring Boot** là opinionated framework xây dựng trên Spring, cung cấp:
-1. **Auto-configuration**: tự động cấu hình dựa trên classpath
-2. **Starter dependencies**: bundle dependencies phù hợp
-3. **Embedded server**: Tomcat/Jetty/Undertow built-in (không cần WAR)
-4. **Production-ready**: Actuator, metrics, health checks
+**Spring Boot** là **opinionated framework** *(bộ khung có sẵn quan điểm — tự chọn giúp bạn cấu hình mặc định hợp lý)* xây dựng trên Spring, cung cấp:
+1. **Auto-configuration** *(tự động cấu hình)*: tự động cấu hình dựa trên **classpath** *(danh sách thư viện có trong dự án)*.
+2. **Starter dependencies** *(gói phụ thuộc khởi đầu)*: bundle dependencies phù hợp.
+3. **Embedded server** *(máy chủ nhúng sẵn)*: Tomcat/Jetty/Undertow built-in (không cần đóng gói WAR rồi deploy lên server riêng).
+4. **Production-ready** *(sẵn sàng chạy thật)*: Actuator, metrics, health checks.
+
+> 💡 **Giải thích dễ hiểu — Spring vs Spring Boot:**
+> Spring thuần giống việc **mua nhà thô**: mạnh mẽ, tùy biến vô hạn, nhưng bạn phải tự đi dây điện, lắp ống nước, chọn từng viên gạch (viết hàng trăm dòng XML config). Rất dễ sai và mất thời gian.
+> Spring Boot giống **căn hộ đã hoàn thiện, có nội thất sẵn**: điện nước, bếp, máy lạnh đã lắp theo tiêu chuẩn hợp lý ("convention over configuration" — quy ước thay cho cấu hình). Bạn dọn vào là ở được ngay, và vẫn có thể thay rèm, đổi sofa (override cấu hình) khi cần. Bạn chỉ tập trung vào việc sống (viết nghiệp vụ), không phải xây nhà.
 
 ```
 Spring (Framework) + Convention over Configuration = Spring Boot

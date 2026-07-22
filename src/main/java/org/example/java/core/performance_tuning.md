@@ -1,5 +1,7 @@
 # Java Performance Tuning & Profiling
 
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
+
 ## Mục lục
 1. [JVM Tuning – Key Flags](#1-jvm-tuning--key-flags)
 2. [GC Tuning – Garbage Collector Selection](#2-gc-tuning--garbage-collector-selection)
@@ -69,6 +71,10 @@
 -XX:+TraceClassLoading
 ```
 
+> 💡 **Giải thích dễ hiểu — JIT compilation và "warmup":**
+> **JIT compilation** *(biên dịch tức thời — Just-In-Time)*: JVM khi khởi động chạy bytecode theo kiểu **thông dịch** (chậm), rồi vừa chạy vừa quan sát đoạn code nào được gọi nhiều (**hot** — "nóng"). Đoạn nóng đó mới được **compile** *(dịch)* thẳng ra mã máy tối ưu (tầng C1 rồi C2 trong **tiered compilation**).
+> Ví von: như một **đầu bếp mới vào nghề**. Ngày đầu anh nấu từng món chậm rãi, dò lại công thức (thông dịch). Món nào khách gọi liên tục thì anh thuộc lòng, nấu nhanh vèo vèo (đã JIT compile). Vì thế đo hiệu năng ngay lúc "đầu bếp còn lóng ngóng" là sai bét — phải để chương trình chạy một lúc cho **warmup** *(khởi động nóng máy — chạy trước cho JIT kịp tối ưu)* rồi mới đo. Đây chính là lý do JMH (mục 5) luôn có giai đoạn `@Warmup`.
+
 ### 1.3 Production-Recommended JVM Flags
 
 ```bash
@@ -128,6 +134,14 @@ Parallel GC (Java 8 default):
   -XX:+UseParallelGC
   -XX:ParallelGCThreads=4
 ```
+
+> 💡 **Giải thích dễ hiểu — latency vs throughput và percentile p99/p999:**
+> Hai chỉ số cực dễ nhầm khi đọc bảng GC ở trên:
+> - **latency** *(độ trễ — thời gian xử lý xong MỘT yêu cầu)*: đo cho từng khách. Cột "Latency: <1ms pauses" của ZGC nghĩa là mỗi lần GC làm ứng dụng khựng dưới 1ms.
+> - **throughput** *(thông lượng — số yêu cầu/công việc xong trong một đơn vị thời gian)*: đo cho cả hệ thống.
+> Ví von **quầy thu ngân siêu thị**: latency = một khách phải đứng chờ bao lâu; throughput = mỗi phút quầy tiễn được bao nhiêu khách. Mở thêm quầy làm throughput tăng, nhưng nếu mỗi thu ngân quẹt hàng chậm thì latency mỗi khách vẫn cao. Hai thứ thường phải đánh đổi — GC "throughput" (Parallel) chấp nhận khựng lâu nhưng dọn được nhiều, GC "low-latency" (ZGC) khựng cực ngắn nhưng tốn CPU nền hơn.
+>
+> Còn **percentile** *(phân vị)* như **p95 / p99 / p999**: đừng nhìn số trung bình! p99 = "99% yêu cầu nhanh hơn con số này, chỉ 1% chậm hơn". Ví von: trung bình cả lớp cao 1m60 nghe rất ổn, nhưng vẫn có bạn thấp 1m40 (cái đuôi phân bố). Với hệ thống lớn, 1% chậm đó là hàng nghìn khách bực mình mỗi ngày — nên cam kết chất lượng (SLO) luôn viết theo p99/p999 chứ không theo trung bình, vì trung bình che giấu mất cái đuôi tệ hại.
 
 ### 2.2 GC Tuning Workflow
 
@@ -254,6 +268,11 @@ java -agentpath:/path/to/libasyncProfiler.so=start,event=cpu,file=profile.html -
 # Look for: wide plateaus at top = hot methods
 ```
 
+> 💡 **Giải thích dễ hiểu — profiling và flamegraph:**
+> **profiling** *(dò tìm điểm nóng — đo xem chương trình tốn thời gian/bộ nhớ ở đâu)* trả lời câu hỏi "vì sao chậm, vì sao tốn RAM?". Hai loại hay dùng nhất: **CPU profiling** (đo hàm nào ngốn CPU) và **allocation profiling** *(đo nơi cấp phát object nhiều nhất — nguồn gây áp lực GC)*.
+> Ví von **hóa đơn tiền điện chi tiết từng thiết bị**: thay vì chỉ biết "tháng này tốn nhiều điện", profiler chỉ đích danh "cái điều hòa phòng khách ngốn 60%". Nhờ vậy bạn tối ưu đúng chỗ, không đoán mò.
+> **flamegraph** *(biểu đồ ngọn lửa)* là cách vẽ kết quả: trục ngang = tỉ lệ thời gian (thanh càng rộng càng tốn), trục dọc = độ sâu chuỗi gọi hàm (dưới cùng là `main`, trên cùng là hàm lá). Cứ tìm **mảng phẳng rộng ở phía trên** — đó là hàm "nóng" đáng tối ưu, như tìm cột khói to nhất trong một đám cháy. (Màu sắc chỉ để dễ nhìn, không mang ý nghĩa.)
+
 ### 4.2 jcmd – JVM Diagnostics
 
 ```bash
@@ -364,6 +383,10 @@ public static void main(String[] args) throws RunnerException {
 }
 ```
 
+> 💡 **Giải thích dễ hiểu — vì sao đo benchmark lại rắc rối đến thế?**
+> Đo hiệu năng một mẩu code Java (**microbenchmark** — *đo đoạn code rất nhỏ*) khó hơn tưởng tượng vì JVM "khôn quá mức": nó tối ưu ngầm, cache lại kết quả, thậm chí **xóa luôn** code mà nó thấy vô dụng. Tự viết `long t = now(); doWork(); print(now()-t)` gần như luôn cho con số sai.
+> Ví von **đo tốc độ vận động viên nhưng đường chạy tự lắp băng chuyền**: bạn tưởng anh ta chạy nhanh như bay, thực ra băng chuyền đẩy giúp. **JMH** *(Java Microbenchmark Harness — bộ khung đo chuẩn của OpenJDK)* dựng lại "đường chạy sạch": chạy nhiều **fork** *(mỗi lần một tiến trình JVM riêng, để một lần JIT "ăn may" không làm lệch cả kết quả)*, có warmup trước khi tính giờ, và ép bạn tiêu thụ kết quả để JVM không dám xóa mất công việc.
+
 ### 5.2 Benchmark Modes
 
 ```java
@@ -441,6 +464,11 @@ public class GoodState {
     long field2;
 }
 ```
+
+> 💡 **Giải thích dễ hiểu — false sharing, cache line và cache locality:**
+> CPU không đọc RAM từng byte lẻ, mà bốc nguyên một **cache line** *(dòng đệm — thường 64 byte nằm liền nhau)* vào bộ nhớ đệm siêu nhanh trong nhân. **cache locality** *(tính cục bộ — dữ liệu dùng cùng nhau nên nằm gần nhau)* tốt thì mọi thứ đã sẵn trong đệm, CPU chạy như bay; tệ thì phải lặn xuống RAM (chậm gấp trăm lần).
+> **false sharing** *(chia sẻ giả)* là cái bẫy tinh vi: hai thread sửa hai biến KHÁC nhau, nhưng hai biến vô tình rơi vào chung một cache line. Mỗi lần một thread ghi, phần cứng buộc phải "làm mất hiệu lực" cache line đó ở tất cả nhân khác → hai thread giẫm chân nhau dù chẳng hề dùng chung dữ liệu.
+> Ví von: hai người ngồi hai đầu **một tấm ván bập bênh**, mỗi người viết chữ ở chỗ của mình. Vấn đề: cứ ai đặt bút xuống là cả tấm ván rung, người kia phải chờ ván yên mới viết tiếp. Giải pháp `@Contended`: phát cho mỗi người **một tấm ván riêng** (chèn đệm để hai biến rơi vào hai cache line tách biệt), hết rung chung.
 
 ---
 

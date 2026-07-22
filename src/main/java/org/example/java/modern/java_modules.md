@@ -1,5 +1,7 @@
 # Java Module System (JPMS) – Java 9+
 
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
+
 ## Mục lục
 1. [What & Why – Module System](#1-what--why--module-system)
 2. [module-info.java – Cú pháp](#2-module-infojava--cú-pháp)
@@ -14,6 +16,10 @@
 ## 1. What & Why – Module System
 
 ### 1.1 Vấn đề trước Java 9
+
+> 💡 **Giải thích dễ hiểu — "Module" là gì và vì sao cần nó?**
+> **Module** *(mô-đun — một khối code có tên, đóng gói kèm khai báo rõ nó cần gì và cho ai dùng gì)* nâng cấp cách Java tổ chức code. Trước đây mọi thư viện bị ném chung vào **classpath** *(đường dẫn chứa tất cả class — như một cái sọt to)*, ai cũng với tay vào lấy được mọi thứ, kể cả đồ nội bộ không nên đụng.
+> Ví von: hãy hình dung một **tòa chung cư**. Trước Java 9, tòa nhà không có tường ngăn phòng — ai cũng đi lại khắp nơi, lấy đồ của bất kỳ ai (kể cả phòng kỹ thuật, phòng điện). Module system dựng lại **tường và cửa có khóa**: mỗi căn hộ (module) tự quyết định **cửa nào mở ra ngoài** (`exports`) và **mình cần dùng dịch vụ của căn hộ nào** (`requires`). Đồ đạc bên trong không mở cửa thì người ngoài không đụng được → an toàn, rõ ràng hơn.
 
 ```
 Classpath Hell (trước Java 9):
@@ -106,6 +112,14 @@ module com.example.orderservice {
 }
 ```
 
+> 💡 **Giải thích dễ hiểu — `exports` khác `opens` ở chỗ nào? (điểm hay nhầm nhất)**
+> Hai từ khóa này đều "mở cửa", nhưng mở ở hai mức khác nhau:
+> - **`exports`** *(xuất khẩu — cho phép dùng API công khai lúc biên dịch và lúc chạy)*: cho người khác **gọi các method/class public** của package. Như cho khách vào **phòng khách** đã dọn dẹp sẵn: họ dùng được những gì bạn bày ra, đúng phép lịch sự.
+> - **`opens`** *(mở toang — cho phép reflection soi cả ruột)*: cho phép **reflection** *(soi sâu — đọc cả field private, gọi `setAccessible`)* thọc vào cả những chỗ private. Như đưa khách **chìa khóa vào tận phòng ngủ, mở cả ngăn kéo**. Framework như Jackson (đọc field để serialize) hay Spring (tiêm dependency vào field private) cần mức này.
+> Vì sao tách ra? Vì bạn thường muốn cho dùng API (exports) nhưng **không** muốn ai cũng lục ruột object của mình (opens). Reflection mạnh nhưng nguy hiểm, nên Java bắt khai báo riêng và thường giới hạn `opens ... to <framework cụ thể>`.
+>
+> **`requires transitive`** *(phụ-thuộc lan-truyền)* cũng đáng nhớ: khi module A `requires transitive` module B, thì bất kỳ ai dùng A sẽ **tự động thấy** B luôn mà không cần khai báo lại. Ví von: bạn mượn cái máy in (A), và A đi kèm sẵn giấy + mực (B) — người mượn máy in của bạn dùng luôn được giấy mực, khỏi phải đi xin riêng.
+
 ### 2.2 Module Directives Summary
 
 ```
@@ -123,6 +137,13 @@ provides <interface> with <class>  declare our implementation of service
 ---
 
 ## 3. Module Types
+
+> 💡 **Giải thích dễ hiểu — 3 "hạng công dân" của module:**
+> Khi chuyển code cũ sang thế giới module, không phải mọi JAR đều có "giấy tờ" (`module-info.java`). Java phân 3 loại như 3 tình trạng cư trú:
+> - **Named Module** *(module có tên chính thức)*: có đầy đủ `module-info.java` — công dân chính thức, khai báo rõ cần gì/cho gì, được đóng gói kín (encapsulated).
+> - **Automatic Module** *(module tự-động)*: một JAR cũ chưa có giấy tờ nhưng được đặt lên `--module-path` → Java **tạm cấp cho một cái tên** (suy từ tên file hoặc manifest). Như **thẻ tạm trú**: được coi là module, nhưng "mở toang mọi cửa" (export hết) vì chưa ai khai báo giới hạn.
+> - **Unnamed Module** *(module vô danh)*: JAR cũ nằm trên **classpath** truyền thống — như **người chưa đăng ký hộ khẩu**, gom chung một rọ, thấy được mọi module có tên nhưng module có tên thì (cố ý) không được phép `requires` nó.
+> Đây chính là 3 chặng của **con đường di cư dần dần** (migration path) ghi ở cuối đoạn: bắt đầu ở classpath → dời lên module-path → cuối cùng cấp "giấy tờ" đầy đủ.
 
 ```java
 // ── 1. Named Module: has module-info.java ─────────────────────────────────
@@ -151,6 +172,10 @@ provides <interface> with <class>  declare our implementation of service
 ---
 
 ## 4. Services – Loose Coupling
+
+> 💡 **Giải thích dễ hiểu — Service/`ServiceLoader` (SPI) là gì?**
+> **SPI (Service Provider Interface)** *(giao diện nhà-cung-cấp-dịch-vụ)* + **`ServiceLoader`** *(bộ nạp dịch vụ lúc chạy)* cho phép module tiêu dùng chỉ cần biết **một interface** (ví dụ `PaymentProvider`), còn ai cài đặt cụ thể thì tính sau — thậm chí thêm bớt mà **không đụng vào code người tiêu dùng**.
+> Ví von: như **ổ cắm điện tiêu chuẩn** trên tường. Bức tường (consumer) chỉ định nghĩa "hình dạng ổ cắm" (interface). Bạn muốn cắm quạt, sạc điện thoại hay đèn (Stripe, VNPay...) đều được, miễn phích cắm đúng chuẩn. Muốn đổi thiết bị chỉ việc rút cái này cắm cái kia (`provides ... with`), tường không cần sửa gì. `ServiceLoader` chính là người đi **rà xem hiện có những thiết bị nào đang cắm vào** để đưa ra danh sách dùng.
 
 ```java
 // Provider interface (in com.example.payment module):
@@ -307,6 +332,10 @@ tasks.withType<JavaCompile> {
 ---
 
 ## 6. jlink – Custom JRE
+
+> 💡 **Giải thích dễ hiểu — `jlink` đóng gói JRE "may đo":**
+> **`jlink`** *(công cụ ghép link tạo JRE riêng)* tạo ra một **custom JRE** *(bộ chạy Java thu gọn, chỉ chứa đúng module app cần)*. JDK đầy đủ ~300MB vì mang theo mọi thư viện phòng khi cần; nhưng app của bạn thường chỉ dùng vài module.
+> Ví von: như **may một bộ vest vừa in người** thay vì mua bộ đồ đại trà rộng thùng thình. `jlink` đo xem app dùng đúng những module nào (nhờ `jdeps`) rồi cắt may một JRE chỉ gồm bấy nhiêu → còn ~50-80MB, khởi động nhanh hơn, image Docker nhẹ hơn. Điều kiện: mọi dependency phải "đã module hóa" thì thợ mới đo được.
 
 ```bash
 # Create minimal JRE containing only modules your app needs:

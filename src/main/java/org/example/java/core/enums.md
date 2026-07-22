@@ -1,14 +1,19 @@
 # Enums Deep Dive
 
 > Phương pháp: What – How – Why – Components – When – Compare – Trade-offs – Real-world – Ghi chú
+>
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
 
 ---
 
 ## What – Enum là gì?
 
-**Enum** (enumeration) là một kiểu dữ liệu đặc biệt biểu diễn một **tập hợp hằng số cố định, hữu hạn** (vd: ngày trong tuần, trạng thái đơn hàng). Java 5 (2004) đưa enum thành **first-class type** thay cho `public static final int` constants.
+**Enum** *(enumeration — kiểu liệt kê)* là một kiểu dữ liệu đặc biệt biểu diễn một **tập hợp hằng số cố định, hữu hạn** (vd: ngày trong tuần, trạng thái đơn hàng). Java 5 (2004) đưa enum thành **first-class type** *(kiểu hạng nhất — được ngôn ngữ hỗ trợ đầy đủ như một class thực thụ)* thay cho `public static final int` constants.
 
-Bản chất: mỗi enum là một **class** kế thừa ngầm `java.lang.Enum<E>`, và mỗi hằng số là một **instance singleton** `public static final` của class đó.
+Bản chất: mỗi enum là một **class** kế thừa ngầm `java.lang.Enum<E>`, và mỗi hằng số là một **instance singleton** *(thể hiện duy nhất — chỉ tồn tại đúng một bản trong JVM)* `public static final` của class đó.
+
+> 💡 **Giải thích dễ hiểu:**
+> Enum giống như một **bộ tem có sẵn, đóng khung**. Thay vì để lập trình viên tùy tiện viết `0, 1, 2` hay chuỗi `"NEW", "new", "New"` (dễ gõ sai, dễ truyền nhầm), enum in sẵn một bộ tem cố định `NEW / PAID / SHIPPED`. Bạn chỉ được chọn trong bộ đó, không tự chế thêm. Mỗi con tem là **duy nhất** (singleton) — cả chương trình chỉ có đúng một `Status.PAID`, nên so sánh chúng nhanh và chắc chắn như đối chiếu chính con tem đó với bản thân nó.
 
 ```java
 public enum Day { MON, TUE, WED, THU, FRI, SAT, SUN }
@@ -38,10 +43,13 @@ public final class Color extends Enum<Color> {
 ```
 
 **Hệ quả quan trọng:**
-- Constructor enum **luôn private** → không thể `new` từ ngoài → số instance cố định.
-- Mỗi constant là **singleton** do JVM khởi tạo khi class load (thread-safe by JVM).
+- Constructor *(hàm khởi tạo)* enum **luôn private** → không thể `new` từ ngoài → số instance cố định.
+- Mỗi constant là **singleton** do JVM khởi tạo khi class load *(nạp class)* (thread-safe by JVM).
 - `final` → không kế thừa được enum.
-- `values()` trả về **bản clone** mỗi lần gọi → đừng gọi trong vòng lặp nóng.
+- `values()` trả về **bản clone** *(bản sao)* mỗi lần gọi → đừng gọi trong vòng lặp nóng.
+
+> 💡 **Giải thích dễ hiểu — vì sao "không new được"?**
+> Khi bạn viết `enum Color { RED, GREEN, BLUE }`, compiler âm thầm dịch nó thành một class với 3 biến `public static final` đã `new` sẵn, và **khóa constructor lại (private)**. Ví von: enum như một **quán chỉ bán đúng 3 món set menu đã nấu sẵn** — khách không được vào bếp tự chế món mới. Chính vì "bếp bị khóa" nên bạn chắc chắn cả hệ thống chỉ có đúng 3 màu, không ai lén tạo `RED` thứ hai. Đó cũng là lý do `RED == Color.RED` luôn đúng.
 
 ---
 
@@ -98,7 +106,10 @@ double g = Planet.EARTH.surfaceGravity();
 
 ## How – Constant-Specific Body (mỗi constant là anonymous subclass)
 
-Mỗi hằng số có thể **override method** riêng → tạo ra **anonymous subclass** của enum (liên hệ [[core/nested_classes.md]]). Đây là nền tảng của **Strategy Enum**.
+Mỗi hằng số có thể **override method** *(ghi đè — định nghĩa lại cách chạy của một method)* riêng → tạo ra **anonymous subclass** *(lớp con vô danh — class con không tên do compiler sinh ngầm)* của enum (liên hệ [[core/nested_classes.md]]). Đây là nền tảng của **Strategy Enum** *(enum kiểu chiến lược — mỗi hằng mang một cách hành xử riêng)*.
+
+> 💡 **Giải thích dễ hiểu — mỗi constant "tự làm việc của mình":**
+> Bình thường các hằng chỉ khác nhau ở **tên/giá trị**. Nhưng ở đây mỗi hằng còn khác nhau ở **hành vi**. Ví von: `Operation` như một **hộp dụng cụ**, mỗi món (`PLUS`, `MINUS`, `TIMES`) biết tự làm phép tính của nó. Khi gọi `PLUS.apply(2,3)`, chính con tem `PLUS` chạy đoạn code cộng riêng của nó — không cần một cái `switch` khổng lồ ở chỗ khác. Lợi thế lớn: **thêm phép toán mới mà quên viết `apply()` sẽ báo lỗi ngay lúc compile**, không thể sót — trong khi `switch` thì bạn dễ quên thêm `case`.
 
 ```java
 public enum Operation {
@@ -152,7 +163,10 @@ EnumSet<Day> all = EnumSet.allOf(Day.class);
 EnumSet<Day> none = EnumSet.noneOf(Day.class);
 ```
 
-**Internals:** EnumSet không dùng hash. Mỗi enum ánh xạ tới 1 **bit** theo `ordinal`:
+> 💡 **Giải thích dễ hiểu — `EnumSet` nhanh nhờ "bảng đèn":**
+> `EnumSet` *(tập hợp các enum)* không dùng cách băm nặng nề như `HashSet`. Nó dùng **bit vector** *(dãy bit — chuỗi các ô 0/1)*. Ví von: hình dung một **bảng công tắc đèn**, mỗi enum là một công tắc. "Có phần tử này trong tập" = bật đèn tương ứng. Với ≤ 64 enum, cả bảng gói gọn trong **một số `long` 64 bit**. Kiểm tra "có chứa SAT không?" chỉ là xem **một bóng đèn sáng hay tắt** — nhanh tức thì (một phép toán bit), thay vì phải băm rồi dò. Hợp nhất, gộp tập cũng chỉ là phép AND/OR trên các bit.
+
+**Internals:** EnumSet không dùng hash *(băm — biến key thành con số để tra nhanh)*. Mỗi enum ánh xạ tới 1 **bit** theo `ordinal` *(số thứ tự khai báo, bắt đầu từ 0)*:
 - `RegularEnumSet`: ≤ 64 constant → 1 biến `long` (bit vector). Mọi thao tác là phép bit → **O(1) cực nhanh**.
 - `JumboEnumSet`: > 64 constant → mảng `long[]`.
 
@@ -178,7 +192,10 @@ tasks.put(Day.FRI, "Review");
 
 ## How – Singleton bằng Enum (Effective Java – Item 3)
 
-Cách **an toàn nhất** để tạo singleton: chống reflection, chống serialization phá vỡ, thread-safe sẵn.
+Cách **an toàn nhất** để tạo singleton: chống **reflection** *(cơ chế soi/gọi ngược vào code lúc chạy)*, chống **serialization** *(chuyển object thành chuỗi byte để lưu/gửi)* phá vỡ, thread-safe sẵn.
+
+> 💡 **Giải thích dễ hiểu — vì sao enum là singleton "bất khả xâm phạm"?**
+> Một singleton tự viết bằng `private static` vẫn có hai "cửa hậu" phá được tính duy nhất: (1) reflection lách vào gọi constructor để tạo bản thứ hai; (2) deserialization đọc lại từ file tạo ra một object mới. Enum bịt cả hai: JVM **cấm** reflection tạo instance enum, và khi lưu/đọc enum nó chỉ ghi lại **cái tên** rồi ánh xạ về đúng con tem có sẵn. Ví von: các singleton thường như **chìa khóa nhà bạn tự làm** — thợ khéo vẫn đánh trộm được bản sao; còn singleton enum như **con dấu quốc huy** — luật (JVM) cấm sao chép, mọi bản đối chiếu đều quy về đúng một bản gốc.
 
 ```java
 public enum DatabaseConnection {
@@ -221,6 +238,9 @@ void process(Status status) { ... } // chỉ nhận Status hợp lệ
 
 ### ⚠️ KHÔNG bao giờ persist `ordinal()`
 `ordinal` thay đổi khi bạn **thêm/sắp xếp lại** constant → dữ liệu cũ hỏng.
+
+> 💡 **Giải thích dễ hiểu — vì sao đừng lưu số thứ tự?**
+> `ordinal()` là **vị trí chỗ ngồi** của enum trong danh sách khai báo, không phải danh tính của nó. Nếu bạn lưu số 1 vào DB cho `PAID`, rồi mai chèn thêm `DRAFT` lên đầu, mọi enum bị **dịch ghế**: `PAID` giờ là số 2, còn số 1 trong DB cũ bỗng bị đọc thành `DRAFT`. Ví von: như đánh số ghế trong rạp rồi kê thêm một hàng ghế đầu — vé cũ ghi "ghế số 5" giờ dẫn bạn tới nhầm chỗ. Hãy lưu `name()` (`"PAID"`) — cái tên đi theo nó dù xáo trộn thế nào.
 
 ```java
 // ❌ Lưu ordinal vào DB

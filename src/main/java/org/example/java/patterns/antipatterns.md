@@ -1,8 +1,15 @@
 # Anti-patterns trong Java
 
+> Phương pháp: What – How – Why – Components – When – Compare – Trade-offs – Real-world – Ghi chú
+>
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
+
 ## Tại sao học anti-patterns?
 
 Anti-patterns là những giải pháp thoạt nhìn có vẻ hợp lý nhưng thực tế gây ra vấn đề: khó maintain, performance kém, bugs tiềm ẩn, hoặc security vulnerabilities. Nhận biết chúng giúp code review và refactoring hiệu quả hơn.
+
+> 💡 **Giải thích dễ hiểu — anti-pattern là thói quen có hóa đơn trả chậm:**
+> Một lựa chọn chỉ là anti-pattern khi bối cảnh khiến hậu quả lặp lại và lớn hơn lợi ích, không phải vì hình dạng code trông “xấu”. Global singleton immutable có thể ổn; cache không giới hạn và mutable mới nguy hiểm. Hãy tìm coupling, state khó kiểm soát, lỗi bị che và chi phí thay đổi trước khi gắn nhãn rồi refactor.
 
 ---
 
@@ -10,6 +17,9 @@ Anti-patterns là những giải pháp thoạt nhìn có vẻ hợp lý nhưng t
 
 ### What
 Một class biết quá nhiều, làm quá nhiều — vi phạm SRP nghiêm trọng.
+
+> 💡 **Giải thích dễ hiểu — God Object là tổng đài nhận mọi cuộc gọi:**
+> Dấu hiệu chính không phải đúng 500 dòng mà là nhiều actor và nhiều lý do thay đổi hội tụ vào một class. Sửa báo cáo có thể làm payment test hỏng, deploy inventory phải kéo theo user logic. Tách theo capability/cohesion và giữ một application service điều phối use case thường tốt hơn chia cơ học mỗi method thành một class.
 
 ### Dấu hiệu
 ```java
@@ -65,6 +75,9 @@ class OrderManager {
 
 ### What
 Domain objects chỉ có getters/setters — không có behavior. Business logic nằm hết ở Service layer.
+
+> 💡 **Giải thích dễ hiểu — dữ liệu là hồ sơ, behavior là người giữ quy tắc:**
+> Nếu mọi service đều tự kiểm tra trạng thái rồi gọi setter, invariant dễ bị lặp và bỏ sót. Rich domain đặt `pay()`/`cancel()` cạnh state mà chúng bảo vệ. Tuy nhiên với CRUD/reporting đơn giản, DTO hoặc entity ít behavior không mặc định là sai; đừng nhồi orchestration, I/O hay logic tích hợp vào entity chỉ để tránh nhãn “anemic”.
 
 ### Dấu hiệu
 ```java
@@ -162,6 +175,9 @@ class OrderService {
 ### What
 Dùng primitives (String, int, long) cho các domain concepts có ý nghĩa riêng.
 
+> 💡 **Giải thích dễ hiểu — cùng là String nhưng không cùng đơn vị:**
+> Email, AccountId và Currency đều có thể lưu bằng chuỗi, nhưng quy tắc và ý nghĩa khác nhau. Value Object đóng gói validation/normalization và để compiler chặn việc đảo `fromAccountId` với `toAccountId` nếu chúng là type khác nhau. Không cần bọc mọi `String`; chỉ tạo type khi khái niệm có invariant, hành vi hoặc nguy cơ nhầm đáng kể.
+
 ### Dấu hiệu
 ```java
 // ❌ Primitive Obsession
@@ -233,6 +249,9 @@ void transfer(AccountId from, AccountId to, Money amount) {
 ### What
 Dùng global registry để "pull" dependencies thay vì nhận qua constructor (DI).
 
+> 💡 **Giải thích dễ hiểu — Service Locator giấu danh sách nguyên liệu trong lúc nấu:**
+> Nhìn constructor không biết class cần repository hay gateway nào; thiếu đăng ký chỉ nổ ở runtime và test phải dựng global registry đúng thứ tự. Constructor injection đưa danh sách dependency lên “nhãn hộp”, giúp object luôn được tạo ở trạng thái hợp lệ. Locator vẫn có chỗ ở composition root/framework internals, nhưng không nên rò vào business code.
+
 ### Dấu hiệu
 ```java
 // ❌ Service Locator — hidden dependencies
@@ -288,6 +307,9 @@ void placeOrder_deductsInventory() {
 ### What
 Mọi service/util đều là Singleton → global mutable state, hidden coupling, thread-safety issues.
 
+> 💡 **Giải thích dễ hiểu — một instance không đồng nghĩa an toàn cho nhiều người:**
+> Spring singleton được inject giải quyết khả năng nhìn thấy dependency và hỗ trợ test tốt hơn `getInstance()`, nhưng mọi request vẫn dùng chung đúng object đó. Nếu bean giữ mutable request state trong field, race condition vẫn xảy ra. Singleton service nên stateless hoặc bảo vệ state bằng cấu trúc concurrent/lock và có lifecycle dọn tài nguyên rõ ràng.
+
 ### Dấu hiệu
 ```java
 // ❌ Singleton với mutable state
@@ -313,7 +335,7 @@ class OrderService {
 ```
 
 ### Problems
-- **Thread safety**: HashMap không thread-safe → `ConcurrentModificationException`
+- **Thread safety**: `HashMap` không thread-safe → data race, mất update hoặc trạng thái không nhất quán
 - **Test isolation**: Global state leaks between tests
 - **Hidden coupling**: Class doesn't declare its dependency
 - **Memory leaks**: Never cleared if cached objects hold resources
@@ -432,9 +454,15 @@ try {
 }
 ```
 
+> 💡 **Giải thích dễ hiểu — catch phải đưa ra một quyết định:**
+> Sau khi bắt exception, code cần phục hồi, chuyển thành lỗi có nghĩa hơn, retry/compensate hoặc ghi nhận rồi kết thúc có chủ đích. Catch rỗng hay `return null` xóa tín hiệu thất bại; “log rồi throw” ở nhiều tầng lại tạo log trùng. Thường nên log một lần tại boundary có đủ context và luôn giữ exception gốc làm `cause`.
+
 ---
 
 ## 8. Null Overuse (Null as Sentinel)
+
+> 💡 **Giải thích dễ hiểu — một giá trị `null` đang phải đóng quá nhiều vai:**
+> `null` có thể nghĩa không tìm thấy, chưa tải, không áp dụng hoặc lỗi — caller phải đoán. `Optional` phù hợp cho kết quả có thể vắng mặt; sealed result phù hợp khi có nhiều outcome mang dữ liệu khác nhau. Không nên dùng `Optional` cho mọi field/parameter hoặc che lỗi lập trình đáng lẽ phải fail fast.
 
 ### Dấu hiệu
 ```java
@@ -489,6 +517,9 @@ switch (result) {
 
 ## 9. Premature Optimization Anti-patterns
 
+> 💡 **Giải thích dễ hiểu — tối ưu trước khi đo giống mở thêm quầy ở nơi chưa có hàng chờ:**
+> Cache, thread và distributed read model đều thêm invalidation, đồng bộ và vận hành. Hãy đo profile/latency/load trước, xác định bottleneck rồi tối ưu với tiêu chí kiểm chứng. Với Java 21+, virtual thread per task hợp cho I/O-bound concurrency, nhưng vẫn phải giới hạn database connection, API rate và queue; tạo platform thread không giới hạn như ví dụ dưới vẫn nguy hiểm.
+
 ### Over-caching
 ```java
 // ❌ Cache everything — cache invalidation is the hard problem
@@ -521,6 +552,9 @@ ExecutorService pool = new ThreadPoolExecutor(
 ---
 
 ## 10. Leaky Abstractions
+
+> 💡 **Giải thích dễ hiểu — abstraction bị rò khi caller phải biết hoặc sửa ruột máy:**
+> Trả collection nội bộ khiến caller phá invariant; ném thẳng exception SQL từ domain API cũng làm chi tiết storage rò lên trên. Không abstraction nào che được mọi thứ, nhưng contract nên bảo vệ phần state và quyết định mà nó hứa quản lý. Unmodifiable view chỉ chặn sửa qua view, còn defensive copy tạo snapshot cấu trúc độc lập.
 
 ### Returning Internal Collections (defensive copy missing)
 ```java
@@ -583,6 +617,9 @@ String result = largeList.stream().collect(Collectors.joining(", "));
 
 ## 12. Concurrent Anti-patterns
 
+> 💡 **Giải thích dễ hiểu — thread-safe từng lệnh chưa chắc thread-safe cả câu:**
+> `containsKey` và `put` có thể đều an toàn riêng lẻ nhưng khoảng giữa chúng vẫn cho thread khác chen vào. Cần operation nguyên tử như `computeIfAbsent` hoặc cùng một lock bao toàn bộ invariant. Lock cũng chỉ phối hợp khi mọi participant dùng **cùng object khóa**; hai lock khác nhau không bảo vệ cùng state.
+
 ### Non-atomic Check-then-Act
 ```java
 // ❌ Race condition — check and act are NOT atomic
@@ -633,6 +670,9 @@ class BetterCounter {
 ---
 
 ## 13. JPA Anti-patterns
+
+> 💡 **Giải thích dễ hiểu — ORM không xóa ranh giới transaction hay số câu SQL:**
+> Lazy proxy cần persistence context còn mở; đưa entity ra ngoài transaction rồi chạm collection có thể lỗi. N+1 lại âm thầm chạy được nhưng phát một query cha cộng N query con. Hãy thiết kế query/fetch plan theo dữ liệu use case cần, map DTO trong boundary và đo SQL thay vì chữa mọi nơi bằng `EAGER`.
 
 ### LazyInitializationException in wrong context
 ```java
@@ -697,6 +737,9 @@ List<Order> orders = em.createQuery(
 - `null` return → dùng `Optional`
 - `instanceof` chain → dùng polymorphism hoặc sealed + switch
 - `static` mutable field → global state smell
+
+> 💡 **Giải thích dễ hiểu — các con số là đèn cảnh báo, không phải luật phạt:**
+> Method 25 dòng có một flow mạch lạc có thể tốt hơn năm method vụn; ba primitive rõ nghĩa có thể tốt hơn Builder. Dùng ngưỡng để dừng lại hỏi về cohesion, tên gọi, testability và tần suất thay đổi, rồi refactor dựa trên bằng chứng. Mục tiêu là giảm rủi ro thay đổi, không tối ưu điểm số “clean code”.
 
 **Refactoring approach:**
 1. Viết test coverage trước khi refactor

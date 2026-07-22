@@ -1,6 +1,8 @@
 # Collections Framework (Deep Dive)
 
 > Phương pháp: What – How – Why – Components – When – Compare – Trade-offs – Real-world – Ghi chú
+>
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
 
 ---
 
@@ -13,11 +15,15 @@
 
 Mục tiêu: tái sử dụng, interoperability, hiệu suất đã được tối ưu sẵn.
 
+> 💡 **Giải thích dễ hiểu — interface là luật chơi, implementation là sân cụ thể:**
+> Code nên khai báo `List`, `Set` hoặc `Map` theo nhu cầu hành vi; chỉ chọn `ArrayList`, `HashSet` hay `TreeMap` ở nơi cần quyết định hiệu năng/đặc tính. Giống hợp đồng “có thể xếp hàng”, implementation cụ thể quyết định hàng nằm trong mảng, cây hay bảng băm. Nhờ vậy có thể thay implementation mà ít ảnh hưởng caller, nhưng vẫn phải hiểu trade-off của cấu trúc thật.
+
 ---
 
 ## How – Tổng quan Hierarchy
 
 ```
+
 Iterable<T>
   └── Collection<T>
         ├── List<T>              (thứ tự, cho phép trùng)
@@ -44,6 +50,9 @@ Map<K,V>  (không extends Collection)
   └── ConcurrentHashMap (java.util.concurrent)
 ```
 
+> 💡 **Giải thích dễ hiểu — chọn collection theo câu hỏi cần trả lời:**
+> `List` trả lời “phần tử ở vị trí nào và có thứ tự gì?”, `Set` trả lời “đã có phần tử này chưa?”, `Map` trả lời “key này ánh xạ tới giá trị nào?”, còn `Queue/Deque` trả lời “ai được lấy ra tiếp theo?”. Chọn interface theo câu hỏi trước, rồi mới tối ưu implementation và ordering.
+
 ---
 
 ## How – ArrayList Internals
@@ -65,10 +74,14 @@ public class ArrayList<E> {
 
 ### Growth Strategy
 ```
+
 Khi add() vượt capacity → grow:
 newCapacity = oldCapacity + (oldCapacity >> 1)
            = oldCapacity * 1.5
 ```
+
+> 💡 **Giải thích dễ hiểu — ArrayList là dãy ghế có thể kéo dài:**
+> Mảng backing có capacity hữu hạn. Khi hết chỗ, ArrayList cấp mảng lớn hơn rồi copy toàn bộ phần tử; vì vậy một lần grow có thể O(n), nhưng trung bình nhiều lần `add` cuối là O(1) amortized. Nếu biết trước kích thước gần đúng, truyền initial capacity giúp tránh nhiều lần chuyển kho và giảm garbage tạm.
 
 ```java
 // Ví dụ growth:
@@ -130,6 +143,9 @@ transient int size;
 
 > **Lưu ý quan trọng**: LinkedList cache memory hơn ArrayList vì mỗi node có 2 pointer (prev, next) + overhead object header. Trong thực tế, ArrayList thường nhanh hơn cả khi insert/delete giữa vì **cache locality** (dữ liệu liên tiếp trong RAM).
 
+> 💡 **Giải thích dễ hiểu — “xóa O(1)” chỉ đúng sau khi đã đứng đúng node:**
+> LinkedList không nhảy thẳng tới index; nó phải đi từ đầu hoặc cuối để tìm node. Vì CPU phải dereference nhiều object rời rạc, cache miss và allocation node thường làm LinkedList chậm hơn ArrayList dù phép nối pointer sau khi tìm được là O(1). Chỉ ưu tiên LinkedList khi thực sự thao tác đầu/cuối hoặc đã có iterator/node phù hợp.
+
 ---
 
 ## How – HashMap Internals (Java 8+)
@@ -162,8 +178,9 @@ public class HashMap<K,V> {
    - Nếu key.equals() match → update value
    - Nếu không: thêm vào chain
 
-5. Nếu chain.size() >= 8 → chuyển từ LinkedList sang TreeNode (Red-Black Tree)
-   → O(n) → O(log n) khi nhiều collision
+5. Nếu chain.size() >= 8 và table đủ lớn (thường capacity >= 64)
+   → chuyển từ linked nodes sang TreeNode (Red-Black Tree)
+   → nếu table còn nhỏ, HashMap ưu tiên resize trước
 
 6. Nếu size > threshold (= capacity * 0.75) → resize (double capacity)
    → rehash tất cả entry
@@ -171,6 +188,7 @@ public class HashMap<K,V> {
 
 ### Ví dụ trực quan
 ```
+
 table[0]: null
 table[1]: Node("Alice", 25) → Node("Charlie", 30)  [collision, linked]
 table[2]: null
@@ -179,10 +197,16 @@ table[3]: TreeNode("Dave", ...)                     [treeified, nhiều collisio
 table[15]: Node("Bob", 22)
 ```
 
+> 💡 **Giải thích dễ hiểu — hash chọn ngăn, equals xác nhận hồ sơ:**
+> `hashCode()` giúp HashMap chọn bucket nhanh; khi nhiều key rơi cùng bucket, `equals()` mới xác nhận có đúng key cần tìm hay không. Hai object `equals()` với nhau phải có cùng hash, nếu không chúng bị cất ở hai ngăn khác nhau và lookup không gặp được. Mutable key còn nguy hiểm hơn: đổi field dùng trong hash sau `put` có thể làm entry “mất” trong chính map.
+
 ### Tại sao loadFactor = 0.75?
 - `loadFactor = 1.0`: ít resize hơn nhưng nhiều collision hơn → chậm
 - `loadFactor = 0.5`: ít collision nhưng tốn memory gấp đôi
 - `0.75`: balance tốt giữa time và space
+
+> 💡 **Giải thích dễ hiểu — load factor là ngưỡng đầy của kho:**
+> Ngưỡng thấp nghĩa nhiều ngăn trống, collision ít nhưng tốn bộ nhớ; ngưỡng cao tiết kiệm mảng hơn nhưng bucket dài và lookup dễ chậm. `0.75` là thỏa hiệp mặc định, không phải con số tối ưu cho mọi workload. Nếu biết số entry lớn, đặt initial capacity hợp lý để tránh nhiều lần resize.
 
 ### equals() và hashCode() Contract
 ```java
@@ -214,6 +238,9 @@ map.get(new BadKey(1)); // null! không tìm thấy dù equals() trả true
 
 → Đảm bảo tree luôn cân bằng: height ≤ 2 log(n+1) → O(log n) cho mọi operation.
 
+> 💡 **Giải thích dễ hiểu — TreeMap trả giá để giữ thứ tự:**
+> HashMap tối ưu tìm theo key không thứ tự; TreeMap duy trì một cây cân bằng để trả lời thêm `floorKey`, `ceilingKey` và range query. Mỗi thao tác O(log n), đổi lại key phải có natural ordering hoặc Comparator nhất quán. Nếu comparator coi hai key khác nhau là “bằng nhau”, map có thể ghi đè giá trị dù `equals()` của key không bằng.
+
 ```java
 TreeMap<String, Integer> scores = new TreeMap<>();
 scores.put("Charlie", 90);
@@ -240,6 +267,9 @@ scores.ceilingKey("Bravo");          // "Charlie" (key nhỏ nhất ≥ "Bravo")
 // Thread A và B cùng resize → infinite loop (Java 7!) hoặc data loss (Java 8)
 ```
 
+> 💡 **Giải thích dễ hiểu — thread-safe là tính chất của cả thao tác, không chỉ method:**
+> ConcurrentHashMap bảo vệ cấu trúc map và cung cấp các operation nguyên tử như `putIfAbsent`, `computeIfAbsent`, `merge`. Nó không biến một chuỗi nhiều lệnh tùy ý thành transaction toàn cục; nếu invariant trải qua nhiều key, vẫn cần thiết kế atomicity/lock ở cấp nghiệp vụ.
+
 ### ConcurrentHashMap: CAS + synchronized per-bucket (Java 8)
 ```java
 // Java 7: Segment locking (16 segments mặc định)
@@ -260,11 +290,11 @@ map.merge("key", 1, Integer::sum);                   // atomic increment!
 | Thread-safe | Không | Có (method-level lock) | Có (object-level lock) | Có (bucket-level) |
 | Performance | Nhất | Tệ nhất | Tệ | Tốt nhất |
 | Null key/value | Có | Không | Có | Không |
-| Iteration | Fail-fast | Fail-safe | Fail-fast | Weakly consistent |
+| Iteration | Fail-fast | Weakly consistent | Fail-fast | Weakly consistent |
 
 ---
 
-## How – Fail-fast vs Fail-safe Iterator
+## How – Fail-fast vs Concurrent Iterators
 
 ### Fail-fast (ArrayList, HashMap...)
 ```java
@@ -285,7 +315,7 @@ list.removeIf(s -> s.equals("b"));
 
 **Cơ chế**: `modCount` — mỗi structural modification tăng `modCount`. Iterator snapshot `modCount` lúc tạo, mỗi lần `next()` check → không khớp thì throw `ConcurrentModificationException`.
 
-### Fail-safe (ConcurrentHashMap, CopyOnWriteArrayList...)
+### Weakly consistent / snapshot iterator (ConcurrentHashMap, CopyOnWriteArrayList...)
 ```java
 // CopyOnWriteArrayList: mỗi write tạo bản copy mới
 CopyOnWriteArrayList<String> list = new CopyOnWriteArrayList<>(List.of("a", "b", "c"));
@@ -294,6 +324,9 @@ for (String s : list) {
 }
 // Phù hợp: đọc nhiều, ghi ít
 ```
+
+> 💡 **Giải thích dễ hiểu — hai kiểu iterator đều không phải “đảm bảo thấy mọi thay đổi”:**
+> Fail-fast của ArrayList/HashMap chỉ là cảnh báo best-effort khi phát hiện sửa cấu trúc ngoài iterator; không được dùng nó để đồng bộ. CopyOnWriteArrayList đọc snapshot cũ, còn ConcurrentHashMap iterator weakly consistent: không ném lỗi và có thể thấy một phần thay đổi. Nếu cần snapshot nhất quán, hãy tạo bản sao hoặc đồng bộ theo transaction riêng.
 
 ---
 
@@ -315,6 +348,9 @@ List<Student> students = new ArrayList<>(students);
 Collections.sort(students); // dùng Comparable
 students.sort(null);        // tương đương
 ```
+
+> 💡 **Giải thích dễ hiểu — Comparable là “thứ tự hộ chiếu” của class:**
+> Một class chỉ nên có natural ordering rõ ràng, ổn định và thường tương thích với `equals` nếu được dùng trong sorted set/map. Nếu cùng object cần nhiều cách sắp xếp hoặc không có thứ tự tự nhiên, đừng nhồi tất cả vào `compareTo`; dùng Comparator bên ngoài.
 
 ### Comparator – Custom Ordering (tách rời khỏi class)
 ```java
@@ -364,6 +400,9 @@ Cần Queue?
   ├── Priority-based → PriorityQueue
   └── Thread-safe → ArrayBlockingQueue, LinkedBlockingQueue
 ```
+
+> 💡 **Giải thích dễ hiểu — đừng chọn LinkedList chỉ vì nó vừa là List vừa là Queue:**
+> Nếu cần queue/deque thuần, ArrayDeque thường có locality tốt và ít overhead node. Nếu cần ưu tiên theo score, dùng PriorityQueue; nếu producer/consumer chạy khác thread, dùng BlockingQueue để có cơ chế chờ và backpressure thay vì tự spin hoặc tự lock.
 
 ---
 
@@ -415,6 +454,9 @@ cache.put(1, "one"); cache.put(2, "two"); cache.put(3, "three");
 cache.get(1);         // access 1 → 1 becomes most recent
 cache.put(4, "four"); // evict 2 (least recently used)
 ```
+
+> 💡 **Giải thích dễ hiểu — LRU này là cấu trúc local, chưa phải cache phân tán:**
+> `accessOrder=true` đưa entry vừa đọc về cuối danh sách liên kết; entry đầu là nạn nhân ít dùng nhất. Ví dụ phù hợp một thread hoặc cần bọc lock/đưa vào cache library khi nhiều thread. Production cache còn phải quyết định TTL, giới hạn memory, serialize và chiến lược invalidation.
 
 ### 2. Producer-Consumer với BlockingQueue
 ```java

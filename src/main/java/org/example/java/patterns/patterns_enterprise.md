@@ -1,8 +1,15 @@
 # Enterprise & Architectural Patterns
 
+> Phương pháp: What – How – Why – Components – When – Compare – Trade-offs – Real-world – Ghi chú
+>
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
+
 ## Tổng quan
 
 Enterprise patterns giải quyết vấn đề ở tầng kiến trúc — không chỉ object design. Chúng xử lý: persistence abstraction, domain complexity, distributed consistency, fault tolerance.
+
+> 💡 **Giải thích dễ hiểu — pattern enterprise là cách phối hợp nhiều sổ sách và dịch vụ:**
+> Khi hệ thống vượt khỏi một process và một transaction, vấn đề không còn chỉ là class nào gọi class nào. Ta phải quản lý state ở đâu, thay đổi nào commit cùng nhau, event có bị mất không và lỗi của một dịch vụ có kéo sập dịch vụ khác không. Mỗi pattern dưới đây giải một lực cản cụ thể và đồng thời thêm chi phí vận hành riêng.
 
 ---
 
@@ -10,6 +17,9 @@ Enterprise patterns giải quyết vấn đề ở tầng kiến trúc — khôn
 
 ### What
 Repository tạo ra một abstraction layer giữa domain layer và data access layer. Domain code làm việc với `Collection<Entity>` interface — không biết gì về SQL, JPA, hay HTTP.
+
+> 💡 **Giải thích dễ hiểu — Repository là “kho domain”, không phải tên mới của mọi DAO:**
+> Domain hỏi `findActiveUsers()` hoặc `save(order)` bằng ngôn ngữ nghiệp vụ, giống làm việc với một collection các aggregate. Repository giấu cách lấy/lưu aggregate và thường đặt ranh giới quanh aggregate root. DAO gần database hơn, có thể thao tác table, row hoặc câu CRUD. Một dự án CRUD đơn giản có thể dùng Spring Data repository như data-access abstraction mà không cần dựng thêm domain repository riêng.
 
 ### How
 ```java
@@ -128,6 +138,9 @@ interface UserRepository {
 ### What
 Tracks tất cả changes trong một business transaction, batches chúng lại và commit một lần — tránh multiple round trips và đảm bảo consistency.
 
+> 💡 **Giải thích dễ hiểu — Unit of Work là phiếu theo dõi thay đổi trong một ca làm:**
+> Trong transaction, nó ghi entity nào mới, bẩn hoặc bị xóa rồi flush theo một đơn vị commit/rollback. Điều quan trọng là **ranh giới nhất quán**, không phải lời hứa mọi SQL chỉ cần một round trip; ORM vẫn có thể phát nhiều statement, dù batching có thể giảm số chuyến mạng. Giữ Unit of Work quá lâu cũng làm persistence context phình và dữ liệu stale.
+
 ### How — JPA EntityManager là Unit of Work
 ```java
 // JPA persistence context = Unit of Work implementation
@@ -198,6 +211,9 @@ class UnitOfWork {
 
 ### What
 Tách model đọc (Query) và model ghi (Command) thành hai path riêng biệt. Không phải event sourcing — CQRS có thể dùng với traditional DB.
+
+> 💡 **Giải thích dễ hiểu — quầy nhập liệu và quầy tra cứu dùng mẫu khác nhau:**
+> Phía ghi cần domain model bảo vệ invariant; phía đọc thường cần DTO phẳng, join và index tối ưu cho màn hình. CQRS chỉ yêu cầu tách trách nhiệm/model, không bắt buộc hai service, hai database hay event sourcing. Nếu cả hai path vẫn dùng chung database và transaction, hệ thống vẫn có thể nhất quán tức thời; eventual consistency xuất hiện khi read model được đồng bộ bất đồng bộ.
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -333,6 +349,9 @@ class CommandBus {
 
 ### What
 Thay vì lưu current state, lưu **sequence of events** dẫn đến state đó. State = fold over events.
+
+> 💡 **Giải thích dễ hiểu — lưu sổ giao dịch thay vì chỉ lưu số dư:**
+> Số dư 750 không kể được nó hình thành thế nào; chuỗi Opened, Deposited, Withdrawn thì có thể replay để dựng lại state và audit lịch sử. Đổi lại, event đã lưu trở thành dữ liệu lâu dài: schema event cần versioning/upcasting, handler replay phải deterministic và side effect không được chạy lại tùy tiện.
 
 ```
 Traditional:     DB stores: { balance: 750 }
@@ -477,6 +496,9 @@ class JdbcEventStore implements EventStore {
 ```
 
 ### Snapshot Pattern (performance)
+
+> 💡 **Giải thích dễ hiểu — snapshot là điểm lưu nhanh, event log vẫn là sự thật:**
+> Thay vì phát lại 100.000 event từ đầu, aggregate bắt đầu từ ảnh chụp ở version 99.000 rồi replay phần còn lại. Snapshot có thể xóa và tạo lại vì source of truth vẫn là event log. Cần gắn version để không ghép snapshot với sai đoạn lịch sử.
 ```java
 // Rebuild state từ 1000 events = slow → snapshot every N events
 class SnapshotStore {
@@ -502,6 +524,9 @@ BankAccount load(String id) {
 
 ### What
 Quản lý distributed transactions qua chuỗi local transactions, mỗi step có compensating transaction khi fail.
+
+> 💡 **Giải thích dễ hiểu — Saga là chuỗi hành động có cách bù, không phải rollback xuyên dịch vụ:**
+> Sau khi Payment đã commit, database của Order không thể quay ngược transaction đó. Saga chạy một hành động nghiệp vụ khác như refund hoặc release stock để **bù** hậu quả. Compensation cũng có thể thất bại, đến muộn hoặc chạy lặp, nên từng step cần idempotency, retry, trạng thái bền vững và khả năng can thiệp thủ công.
 
 ```
 ┌──────────┐  ✅ Order    ┌──────────┐  ✅ Payment  ┌──────────┐  ✅ Stock    ┌──────────┐
@@ -639,6 +664,9 @@ void placeOrder(PlaceOrderCmd cmd) {
 ```
 
 ### Solution: Write event to DB in same transaction (Outbox table)
+
+> 💡 **Giải thích dễ hiểu — ghi đơn hàng và “phiếu gửi thư” vào cùng két:**
+> Transaction bảo đảm hoặc cả order lẫn outbox row cùng tồn tại, hoặc cả hai cùng rollback; crash không còn làm mất ý định phát event. Relay có thể publish thành công rồi crash trước `markPublished`, nên cùng event có thể được gửi lại. Outbox cung cấp **at-least-once**, không phải exactly-once end-to-end: event cần ID ổn định và consumer phải idempotent/deduplicate.
 ```java
 @Transactional
 void placeOrder(PlaceOrderCmd cmd) {
@@ -698,6 +726,9 @@ Debezium reads DB transaction log → no polling needed, minimal latency.
 
 ### What
 Prevent cascading failures: nếu downstream service fail liên tục → stop calling it → fail fast → allow recovery.
+
+> 💡 **Giải thích dễ hiểu — cầu dao ngắt thử tải để hệ thống có thời gian hồi phục:**
+> CLOSED cho request đi qua và đo lỗi; OPEN từ chối nhanh để không dồn thêm tải; HALF_OPEN cho một số request thăm dò. Circuit breaker không thay timeout, retry hay bulkhead: retry sai cách còn có thể nhân tải. Implementation thủ công bên dưới chỉ minh họa state machine; production cần xử lý đồng thời, sliding window và metrics cẩn thận như thư viện Resilience4j.
 
 ```
 CLOSED ──[failures > threshold]──▶ OPEN ──[timeout elapsed]──▶ HALF-OPEN
@@ -813,6 +844,9 @@ class PaymentService {
 ### What
 Isolate failures — như bulkhead trong tàu: một khoang bị nước không ảnh hưởng khoang khác.
 
+> 💡 **Giải thích dễ hiểu — chia ngân sách tài nguyên theo khoang:**
+> Nếu mọi downstream dùng chung một thread pool/connection pool, Payment treo có thể chiếm sạch tài nguyên khiến Inventory khỏe mạnh cũng đứng. Bulkhead cấp quota riêng bằng pool, semaphore hoặc giới hạn connection. Cách ly tăng khả năng sống sót nhưng quota quá nhỏ làm lãng phí, quá lớn lại mất tác dụng; cần đo saturation và rejection để chỉnh.
+
 ```java
 // Separate thread pools per downstream service
 ExecutorService paymentPool   = Executors.newFixedThreadPool(10);  // max 10 concurrent
@@ -849,7 +883,7 @@ class SemaphoreBulkhead {
 |---------|---------|----------|-------------|
 | Repository | Domain coupled to DB | Abstraction layer | N/A |
 | Unit of Work | Multiple round trips | Batch commits | Local ACID |
-| CQRS | Read/Write coupling | Separate models | Eventual |
+| CQRS | Read/Write coupling | Separate models | Strong hoặc eventual, tùy cách đồng bộ read model |
 | Event Sourcing | State mutation tracking | Event log | Strong (per aggregate) |
 | Saga | Distributed transactions | Compensations | Eventual |
 | Outbox | Dual write problem | Atomic outbox | At-least-once |

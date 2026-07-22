@@ -1,19 +1,24 @@
 # Generics (Deep Dive)
 
 > Phương pháp: What – How – Why – Components – When – Compare – Trade-offs – Real-world – Ghi chú
+>
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
 
 ---
 
 ## What – Generics là gì?
 
-**Generics** (Java 5+) cho phép định nghĩa class, interface, method với **type parameters** — placeholder cho kiểu dữ liệu cụ thể được cung cấp khi sử dụng.
+**Generics** *(kiểu tổng quát — cho phép viết code làm việc với "một kiểu bất kỳ" mà chưa cần chỉ định kiểu cụ thể)* (Java 5+) cho phép định nghĩa class, interface, method với **type parameters** *(tham số kiểu — biến đại diện cho một kiểu dữ liệu, sẽ được điền cụ thể lúc dùng)* — placeholder *(chỗ giữ chỗ)* cho kiểu dữ liệu cụ thể được cung cấp khi sử dụng.
+
+> 💡 **Giải thích dễ hiểu:**
+> Hãy tưởng tượng Generics như một **khuôn làm bánh có dán nhãn để trống**. Cái khuôn (`List<T>`) thì chung cho mọi loại, nhưng khi dùng bạn dán nhãn "chỉ đựng bánh sô-cô-la" (`List<String>`). Từ đó, ai cố bỏ bánh dâu (một `Integer`) vào khuôn dán nhãn sô-cô-la sẽ bị **chặn ngay tại khâu kiểm tra** (compile-time — lúc biên dịch), thay vì để lọt tới khi khách ăn mới phát hiện nhầm (runtime — lúc chạy). Nhờ vậy lỗi kiểu dữ liệu bị bắt sớm, và khi lấy bánh ra bạn không cần "đoán xem đây là loại gì" (không cần cast).
 
 **Trước Generics (Java < 5):**
 ```java
 List list = new ArrayList();
 list.add("hello");
 list.add(42);           // OK lúc compile, WRONG về semantic
-String s = (String) list.get(1); // ClassCastException tại RUNTIME!
+String s = (String) list.get(1); // ClassCastException (lỗi ép kiểu sai) tại RUNTIME!
 ```
 
 **Với Generics:**
@@ -112,6 +117,9 @@ String maxStr = Utils.max("a", "z"); // compiler infer T = String
 
 ## How – Bounded Type Parameters
 
+> 💡 **Giải thích dễ hiểu — "giới hạn kiểu" (bounded):**
+> **Bounded Type Parameter** *(tham số kiểu có ràng buộc)* nghĩa là ta không cho `T` là "bất kỳ kiểu gì", mà đặt điều kiện: "chỉ nhận kiểu nào là con cháu của Number". Ví von như tuyển dụng có yêu cầu: thay vì "tuyển bất kỳ ai", ta ghi "chỉ tuyển người **biết lái xe** (`extends Number`)". Nhờ đó bên trong method ta yên tâm gọi các khả năng của Number (như `doubleValue()`), giống như yên tâm giao xe cho người đã có bằng lái.
+
 ### Upper Bound: `<T extends SomeType>`
 ```java
 // T phải là SomeType hoặc subtype của nó
@@ -141,6 +149,8 @@ public <T extends Comparable<T> & Serializable> T findMax(List<T> list) {
 ---
 
 ## How – Wildcards
+
+**Wildcard** *(ký tự đại diện — dấu `?`)* dùng khi ta muốn nói "một List của kiểu nào đó, nhưng tôi không cần biết chính xác kiểu gì".
 
 ### 1. Unbounded Wildcard `<?>`
 ```java
@@ -188,6 +198,14 @@ addNumbers(new ArrayList<Object>());   // OK
 ```
 
 ### PECS – Producer Extends, Consumer Super
+
+> 💡 **Giải thích dễ hiểu — quy tắc PECS (khó nhất trong Generics):**
+> **PECS** = "**P**roducer **E**xtends, **C**onsumer **S**uper" *(nguồn cấp thì dùng extends, nơi nhận thì dùng super)*. Đây là cách nhớ khi nào dùng `? extends T` và khi nào dùng `? super T`.
+> Ví von bằng **đường ống nước**:
+> - **Producer** *(bên sản xuất — nơi bạn LẤY nước RA)*: giếng/bồn chứa nước. Bạn chỉ **múc ra**. Dùng `? extends T` — "cái bồn này chứa T hoặc thứ gì đó là con cháu của T; tôi múc ra và chắc chắn nó **là một** T". Vì không rõ chính xác loại con cháu nào nên **không được đổ thêm** vào (compiler cấm `add`).
+> - **Consumer** *(bên tiêu thụ — nơi bạn ĐỔ nước VÀO)*: cái bể chứa. Bạn chỉ **đổ vào**. Dùng `? super T` — "cái bể này nhận được T hoặc cha ông của T; nên tôi đổ một T vào là chắc chắn vừa". Ngược lại khi múc ra thì không biết chính xác kiểu (chỉ chắc là `Object`).
+> Tóm lại: **chỗ chảy RA thì `extends`, chỗ chảy VÀO thì `super`**.
+
 ```java
 // copy từ src vào dest
 public static <T> void copy(List<? super T> dest, List<? extends T> src) {
@@ -212,7 +230,11 @@ Mnemonic       Producer       Consumer    Both
 
 ## How – Type Erasure
 
-**Type Erasure** = compiler xóa tất cả type parameter tại compile-time, thay bằng bound hoặc `Object`:
+**Type Erasure** *(xóa kiểu — cơ chế compiler xóa sạch thông tin type parameter sau khi biên dịch)* = compiler xóa tất cả type parameter tại compile-time *(lúc biên dịch)*, thay bằng bound *(kiểu ràng buộc)* hoặc `Object`:
+
+> 💡 **Giải thích dễ hiểu — vì sao "kiểu bị bốc hơi" lúc chạy:**
+> Generics chỉ là "trò chơi của compiler". Compiler dùng nhãn `<String>`, `<Integer>` để **kiểm tra bạn dùng đúng lúc viết code**, nhưng sau khi kiểm tra xong nó **xé bỏ hết nhãn** rồi mới sinh ra bytecode — bên trong `List<String>` và `List<Integer>` biến thành `List` giống hệt nhau.
+> Ví von: như **nhân viên soát vé ở cổng rạp phim**. Họ kiểm tra vé (kiểu) rất gắt lúc bạn vào cửa (compile-time), nhưng khi bạn đã ngồi trong rạp (runtime) thì **không ai còn giữ thông tin bạn mua vé phòng nào** — mọi khán giả trông như nhau. Chính vì "mất nhãn" này mà lúc chạy bạn không thể hỏi `list instanceof List<String>`, không thể `new T()`, không tạo được mảng generic... (các hệ quả bên dưới). Lý do Java làm vậy: để tương thích ngược với code cũ từ trước Java 5 (không có generics).
 
 ```java
 // Source code
@@ -238,7 +260,7 @@ public class Box {
 List<String> strings = new ArrayList<>();
 // if (strings instanceof List<String>) // COMPILE ERROR
 if (strings instanceof List<?>) { }     // OK – unbounded wildcard
-if (strings instanceof List) { }        // OK – raw type
+if (strings instanceof List) { }        // OK – raw type (kiểu thô, không có <>)
 ```
 
 **2. Không thể tạo instance của type parameter:**
@@ -284,6 +306,9 @@ public class Singleton<T> {
 
 ## How – Reifiable vs Non-Reifiable Types
 
+> 💡 **Giải thích dễ hiểu — "reifiable" là gì?**
+> **Reifiable** *(kiểu "cụ thể hóa được" — giữ đủ thông tin lúc chạy)* và **Non-Reifiable** *(kiểu "không cụ thể hóa được" — bị Type Erasure làm mất thông tin)*. Nói đơn giản: sau khi soát vé xé nhãn (Type Erasure), kiểu nào lúc chạy JVM **vẫn biết đầy đủ** thì gọi là reifiable (`String`, `int`, `List` trần, `List<?>`); kiểu nào lúc chạy **JVM không còn phân biệt được** thì gọi là non-reifiable (`List<String>`, `T`). Chỉ kiểu reifiable mới dùng được với `instanceof`, `new`, và mảng.
+
 **Reifiable**: type đầy đủ thông tin tại runtime
 - Primitive types, raw types, unbounded wildcards, non-generic classes
 - `int`, `String`, `List`, `List<?>`
@@ -303,6 +328,10 @@ new ArrayList<String>();        // OK
 ---
 
 ## How – Heap Pollution & @SafeVarargs
+
+> 💡 **Giải thích dễ hiểu — "ô nhiễm heap":**
+> **Heap Pollution** *(ô nhiễm vùng nhớ heap — một biến khai báo kiểu này nhưng thực chất lại trỏ tới object kiểu khác)* xảy ra khi ta lách qua kiểm tra kiểu (dùng raw type), khiến một `List<String>` bị lẻn vào một `Integer`. Vì lúc chạy nhãn kiểu đã bị xé (Type Erasure), JVM không phát hiện — cho tới khi ta lấy phần tử ra và **nổ `ClassCastException`** ở một chỗ trông chẳng liên quan gì.
+> Ví von: như **kho hàng dán nhãn "chỉ chứa sách"** nhưng ai đó lén nhét một viên gạch vào. Bên ngoài nhìn nhãn vẫn thấy "sách", nên nhân viên vô tư thò tay lấy "sách" — rồi bị viên gạch làm đau tay. `@SafeVarargs` là lời **cam kết của lập trình viên** với compiler rằng "method này tôi đảm bảo không gây ô nhiễm kho, đừng cảnh báo nữa".
 
 ```java
 // Heap pollution: variable của parameterized type refer đến object không phải type đó
@@ -455,7 +484,8 @@ Result<UserDto> dto = result.map(UserDto::from);
 
 ### 3. Builder với Generics và Self-referential type
 ```java
-// Fluent builder với generic self-type (Curiously Recurring Template Pattern)
+// Fluent builder với generic self-type (Curiously Recurring Template Pattern
+// — mẫu "lớp con tự tham chiếu chính nó qua tham số kiểu", giúp method trả về đúng kiểu con)
 public abstract class Builder<T, SELF extends Builder<T, SELF>> {
     @SuppressWarnings("unchecked")
     protected SELF self() { return (SELF) this; }

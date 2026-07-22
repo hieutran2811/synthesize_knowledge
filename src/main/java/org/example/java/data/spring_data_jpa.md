@@ -1,22 +1,28 @@
 # Spring Data JPA
 
 > Phương pháp: What – How – Why – Components – When – Compare – Trade-offs – Real-world – Ghi chú
+>
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
 
 ---
 
 ## What – Spring Data JPA là gì?
 
-**Spring Data JPA** là abstraction layer trên JPA, cung cấp:
-1. **Repository interfaces**: CRUD operations không cần implement
-2. **Query derivation**: tự tạo query từ method name
-3. **@Query**: custom JPQL/native queries
-4. **Specification**: type-safe dynamic queries
-5. **Pagination & Sorting**: built-in Pageable support
-6. **Auditing**: tự động set created/modified timestamps
+**Spring Data JPA** là abstraction layer *(lớp trừu tượng — che bớt chi tiết phức tạp bên dưới)* trên JPA, cung cấp:
+1. **Repository interfaces** *(interface kho dữ liệu)*: CRUD *(Create-Read-Update-Delete — thêm/đọc/sửa/xóa)* operations không cần implement
+2. **Query derivation** *(suy ra truy vấn từ tên hàm)*: tự tạo query từ method name
+3. **@Query**: custom JPQL/native queries *(truy vấn tự viết)*
+4. **Specification** *(mẫu đặc tả điều kiện)*: type-safe dynamic queries *(truy vấn động, an toàn kiểu)*
+5. **Pagination & Sorting** *(phân trang & sắp xếp)*: built-in Pageable support
+6. **Auditing** *(tự động ghi vết tạo/sửa)*: tự động set created/modified timestamps
 
 ```
 Developer viết Interface → Spring Data JPA generate Implementation → JPA → DB
 ```
+
+> 💡 **Giải thích dễ hiểu:**
+> Với JPA thuần, mỗi kho dữ liệu bạn phải tự viết đủ code thêm/đọc/sửa/xóa — lặp lại nhàm chán cho từng entity. Spring Data JPA lật ngược: bạn chỉ **khai báo một interface** mô tả "tôi muốn có các hàm này", còn phần code chạy thật thì Spring **tự sinh ra lúc khởi động**.
+> Ví von: như đặt hàng ở một **xưởng may theo yêu cầu**. Bạn chỉ đưa bản mô tả ("áo tay dài, cổ tròn, size M" = tên các hàm), xưởng tự cắt may thành sản phẩm hoàn chỉnh. Bạn không cầm kéo, không may mũi nào. Thậm chí chỉ cần **đặt tên hàm đúng quy tắc** như `findByEmail` là Spring hiểu và tự viết câu SQL tương ứng.
 
 ---
 
@@ -51,7 +57,12 @@ public interface OrderRepository
 
 ## How – Query Derivation (Method Name Queries)
 
-Spring Data parse method name → tạo JPQL tự động:
+Spring Data parse *(phân tích cú pháp)* method name → tạo JPQL tự động:
+
+> 💡 **Giải thích dễ hiểu — tên hàm biến thành câu query:**
+> Spring đọc tên hàm như đọc một câu tiếng Anh có ngữ pháp cố định: `findBy` (tìm theo) + `FirstName` (trường) + `And` (và) + `LastName` (trường) → tự dịch thành `WHERE first_name = ? AND last_name = ?`.
+> Ví von: giống **gọi món bằng cách ghép từ trong thực đơn combo**: "gà + rán + cay + không hành" — nhà bếp cứ theo từng từ khóa mà làm, không cần bạn viết công thức nấu. Bạn chỉ cần thuộc bộ "từ khóa" (`And`, `Or`, `Between`, `LessThan`, `Containing`...) ở bảng bên dưới là ghép được vô số truy vấn mà không viết một dòng SQL nào.
+> Lưu ý mặt trái: tên hàm ghép nhiều điều kiện sẽ dài kinh khủng (`findByStatusAndCreatedAtAfterAndNameContaining...`) — lúc đó nên chuyển sang `@Query` hoặc Specification cho dễ đọc.
 
 ```java
 public interface UserRepository extends JpaRepository<User, Long> {
@@ -254,7 +265,11 @@ public Page<OrderDto> getOrders(
 
 ## How – Specification (Dynamic Queries)
 
-**Specification pattern**: type-safe predicate builder cho dynamic queries.
+**Specification pattern** *(mẫu thiết kế Đặc tả)*: type-safe predicate builder *(bộ dựng điều kiện lọc, kiểm tra kiểu lúc biên dịch)* cho dynamic queries *(truy vấn động — điều kiện chỉ biết lúc chạy)*.
+
+> 💡 **Giải thích dễ hiểu — vì sao cần Specification:**
+> Màn hình tìm kiếm thường có nhiều ô lọc mà người dùng điền tùy hứng: có khi chỉ nhập tên, có khi thêm trạng thái, có khi thêm khoảng ngày. Nếu viết trước từng hàm cho mọi tổ hợp thì bùng nổ số lượng. Nối chuỗi SQL bằng tay thì rối và dễ dính SQL injection.
+> Ví von: Specification giống các **mảnh ghép Lego, mỗi mảnh là một điều kiện lọc** (`hasStatus`, `nameLike`, `createdAfter`). Lúc chạy, tùy người dùng điền gì bạn **ghép các mảnh cần thiết lại bằng `.and()`** thành bộ lọc hoàn chỉnh; ô nào bỏ trống thì bỏ mảnh đó ra. Nhờ vậy một hàm `search()` phục vụ được mọi tổ hợp lọc mà vẫn an toàn kiểu và không nối chuỗi thủ công.
 
 ```java
 // Repository phải extend JpaSpecificationExecutor

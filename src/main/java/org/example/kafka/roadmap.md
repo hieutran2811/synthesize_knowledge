@@ -1,5 +1,7 @@
 # Kafka Knowledge Roadmap
 
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](glossary.md)
+
 | # | Topic | File | Status |
 |---|-------|------|--------|
 | 1 | Architecture & Core Concepts | `fundamentals/architecture.md` | ✅ |

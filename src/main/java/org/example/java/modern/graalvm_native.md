@@ -1,13 +1,19 @@
 # GraalVM Native Image – Java
 
 > Phương pháp: What – How (đặc điểm) – How (hoạt động) – Why – Components – When – Compare – Trade-offs – Real-world – Ghi chú
+>
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
 
 ---
 
 ## 1. GraalVM & Native Image Overview
 
 ### What – GraalVM Native Image là gì?
-**GraalVM Native Image** là công nghệ AOT (Ahead-of-Time) compilation: biên dịch Java bytecode thành **native executable** tại build time, không cần JVM lúc runtime. Kết quả là binary chạy ngay lập tức, tiêu tốn ít RAM hơn nhiều so với JVM.
+**GraalVM Native Image** là công nghệ **AOT (Ahead-of-Time) compilation** *(biên dịch trước — dịch sẵn ra mã máy tại thời điểm build, thay vì để tới lúc chạy mới dịch)*: biên dịch Java **bytecode** *(mã trung gian mà JVM hiểu)* thành **native executable** *(file chạy trực tiếp trên hệ điều hành, như .exe)* tại **build time** *(lúc đóng gói chương trình)*, không cần JVM lúc **runtime** *(lúc chạy)*. Kết quả là binary chạy ngay lập tức, tiêu tốn ít RAM hơn nhiều so với JVM.
+
+> 💡 **Giải thích dễ hiểu — AOT khác gì với JVM/JIT thông thường?**
+> Java truyền thống hoạt động như một **nhà hàng nấu theo yêu cầu**: khách gọi món (code chạy) thì đầu bếp (JIT — *Just-In-Time compiler, bộ biên dịch tại-thời-điểm-chạy*) mới bắt đầu nấu, và món nào gọi nhiều lần thì đầu bếp mới "thuộc bài" nấu nhanh dần (warmup). Ưu điểm: nấu tối ưu theo khẩu vị thực tế; nhược điểm: vài phút đầu chậm, lại cần cả gian bếp to (JVM) đi kèm.
+> **AOT (Native Image)** giống **suất ăn đóng hộp làm sẵn**: toàn bộ được nấu và đóng gói từ trước (build time). Khách chỉ việc mở hộp ăn ngay (startup ~10ms), không cần mang theo gian bếp. Đổi lại: món đã cố định, không tự tối ưu theo khẩu vị lúc ăn, và khâu đóng gói (build) lâu hơn.
 
 ### How – Kiến trúc
 
@@ -30,11 +36,18 @@ native-image analysis phases:
   4. Image linking        – produce self-contained executable
 ```
 
+> 💡 **Giải thích dễ hiểu — native-image "phân tích" cái gì?**
+> Trước khi đóng gói, native-image làm bước **points-to analysis** *(phân tích khả-năng-tới-được — dò xem những đoạn code nào thực sự có thể được gọi tới)*. Ví von như **soạn hành lý cho chuyến bay giá rẻ**: bạn không mang cả tủ quần áo, mà chỉ nhét đúng những món chắc chắn dùng. native-image cũng chỉ đóng gói code "chắc chắn chạy tới", vứt phần còn lại → file nhỏ, khởi động nhanh.
+> Chính vì "chỉ đóng gói cái nhìn thấy trước" mà nó gọi là **closed-world assumption** *(giả định thế-giới-đóng — mọi thứ phải biết trước tại build time)*. Đây là gốc rễ mọi rắc rối với reflection sẽ nói ở phần sau: nếu tới lúc chạy code mới bất ngờ gọi một class mà lúc soạn hành lý không thấy → class đó không có trong vali → lỗi.
+
 ### Why – Khi nào cần Native Image?
-- **Serverless/FaaS**: cold start < 100ms thay vì 2-5s với JVM
-- **CLI tools**: graalvm native-image tạo single binary (như `go build`)
+- **Serverless/FaaS** *(chạy hàm không cần quản lý server, như AWS Lambda)*: **cold start** *(lần khởi động nguội — server vừa được dựng lên phải chạy từ đầu)* < 100ms thay vì 2-5s với JVM
+- **CLI tools** *(công cụ dòng lệnh)*: graalvm native-image tạo single binary (như `go build`)
 - **Containers**: image size giảm từ 400MB → 50MB (no JDK)
 - **Memory-constrained**: Kubernetes pods với 128MB limit
+
+> 💡 **Giải thích dễ hiểu — vì sao "cold start" là chuyện sống còn với serverless?**
+> Serverless tính tiền theo từng lần chạy và tự tắt khi rảnh. Mỗi khi có request tới mà chưa có instance nào sẵn, hệ thống phải "dựng nhà từ móng" — đó là cold start. Với JVM, dựng nhà mất 2-5 giây (bật JVM, load class, JIT warmup) → khách chờ lâu, tốn tiền. Native Image đã là "nhà lắp ghép sẵn", cắm điện là ở được ngay (~100ms). Ví von: JVM như phải **nổ máy xe diesel chờ nóng máy** mỗi lần đi; native image như **xe điện đạp ga là chạy**.
 
 ---
 
@@ -103,7 +116,11 @@ docker run --rm -v "$(pwd)":/app -w /app \
 
 ### What – Vấn đề với AOT
 
-Native Image dùng **closed-world assumption**: chỉ include code reachable tại build time. Reflection, dynamic proxies, serialization, và resource loading phá vỡ assumption này.
+Native Image dùng **closed-world assumption** *(giả định thế-giới-đóng)*: chỉ include code **reachable** *(có thể tới được — có đường gọi tới từ điểm khởi đầu)* tại build time. **Reflection** *(cơ chế cho phép code tự soi và gọi class/method qua tên chuỗi lúc chạy)*, **dynamic proxies** *(đối tượng đại diện được tạo động lúc chạy)*, **serialization** *(chuyển object thành chuỗi byte để lưu/truyền)*, và **resource loading** *(nạp file tài nguyên như .yml, .sql)* phá vỡ assumption này.
+
+> 💡 **Giải thích dễ hiểu — vì sao reflection "phá" native image?**
+> Nhớ lại ví von "soạn hành lý": native-image chỉ nhét vào vali những gì nó **nhìn thấy được gọi trực tiếp trong code**. Nhưng reflection gọi class bằng **chuỗi tên** như `Class.forName("com.example.Order")`. Với công cụ soạn hành lý, `"com.example.Order"` chỉ là một chuỗi ký tự vô nghĩa — nó không đoán được đây là tên một class cần mang theo. Kết quả: tới lúc chạy code đòi class đó nhưng vali không có → lỗi.
+> Ví von: như dặn người khác "lấy giúp tôi *cái hộp màu đỏ ở tầng 3*" (chuỗi mô tả) thay vì đưa thẳng cái hộp. Nếu người soạn đồ không được xem trước danh sách mô tả này, họ sẽ bỏ sót. Giải pháp (các file config bên dưới) chính là **đưa trước bản danh sách** những "hộp gọi bằng tên" để native-image biết đường mà mang theo.
 
 ```java
 // Các feature cần config thêm:
@@ -220,6 +237,10 @@ public class OrderApplication {
 ## 4. Tracing Agent – Auto-generate Config
 
 ### How – Java Agent tự động detect reflection calls
+
+> 💡 **Giải thích dễ hiểu — Tracing Agent làm gì?**
+> Viết tay các file config reflection rất mệt và dễ sót. **Tracing agent** *(bộ theo dõi khi chạy)* giải quyết bằng cách: bạn chạy app ở chế độ JVM bình thường, nó **đứng bên cạnh ghi lại** mọi lần code dùng reflection/proxy/resource, rồi tự xuất ra các file config.
+> Ví von: như **quay video một đầu bếp làm việc cả ngày** để ghi lại chính xác những nguyên liệu và dụng cụ họ thực sự lấy ra dùng — kể cả những thứ lấy bất chợt (reflection). Sau đó bạn dùng cuốn "nhật ký" này làm danh sách đóng gói cho native image. Lưu ý: video chỉ ghi được những gì **thực sự xảy ra khi chạy** — nên phải chạy qua đủ mọi tình huống (test suite) thì danh sách mới đầy đủ; đường code nào không được chạy tới trong lúc quay sẽ bị bỏ sót.
 
 ```bash
 # Chạy app với tracing agent để generate config tự động
@@ -396,6 +417,10 @@ Build time:          45s                 4m30s
 → Native wins: startup, memory, image size
 → JVM wins: peak throughput, latency after warmup, build iteration speed
 ```
+
+> 💡 **Giải thích dễ hiểu — vì sao JVM lại thắng về "throughput sau warmup"?**
+> **Throughput** *(thông lượng — số request xử lý được mỗi giây khi đã chạy ổn định)* của JVM cao hơn native vì JIT là "đầu bếp học việc": chạy càng lâu nó càng quan sát dữ liệu thật và **tối ưu lại code nóng** (những đoạn gọi nhiều) một cách cực kỳ khôn ngoan — inline hàm, bỏ nhánh không dùng, dựa trên hành vi runtime. Native image nấu sẵn từ build time nên không có "kinh nghiệm runtime" đó.
+> Vậy nên chọn công cụ theo tính chất chương trình: dịch vụ **chạy ngắn / bật-tắt liên tục** (serverless, CLI) → native thắng nhờ khởi động nhanh; dịch vụ **chạy dài, tải cao liên tục** (server backend chính) → JVM thắng nhờ càng chạy càng nhanh. Ví von: native là **vận động viên chạy 100m** (bung sức ngay), JVM là **vận động viên marathon** (khởi động chậm nhưng về sau đều và mạnh).
 
 ### How – Memory Footprint Breakdown
 

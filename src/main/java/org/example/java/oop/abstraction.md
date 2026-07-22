@@ -1,18 +1,23 @@
 # Abstraction (Trừu Tượng)
 
 > Phương pháp: What – How – Why – Components – When – Compare – Trade-offs – Real-world – Ghi chú
+>
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
 
 ---
 
 ## What – Abstraction là gì?
 
-**Abstraction** là quá trình ẩn đi **chi tiết cài đặt (implementation details)**, chỉ để lộ ra **hành vi cần thiết (what to do)** — không phải cách làm (how to do).
+**Abstraction** *(trừu tượng hóa — chỉ phơi bày "làm gì", giấu đi "làm thế nào")* là quá trình ẩn đi **chi tiết cài đặt (implementation details)** *(chi tiết cách viết code bên trong)*, chỉ để lộ ra **hành vi cần thiết (what to do)** — không phải cách làm (how to do).
 
-Mục tiêu: tạo ra **ngưỡng giữa "điều client cần biết"** và **"chi tiết bên trong"**.
+Mục tiêu: tạo ra **ngưỡng giữa "điều client cần biết"** *(client — bên gọi/sử dụng, không nhất thiết là trình duyệt)* và **"chi tiết bên trong"**.
 
 **2 cơ chế abstraction trong Java:**
-1. **Abstract Class** – lớp trừu tượng
-2. **Interface** – hợp đồng/giao thức
+1. **Abstract Class** *(lớp trừu tượng)* – lớp trừu tượng
+2. **Interface** *(giao diện — bản hợp đồng khai báo "phải làm được gì")* – hợp đồng/giao thức
+
+> 💡 **Giải thích dễ hiểu:**
+> Abstraction giống việc bạn **lái ô tô mà không cần biết động cơ hoạt động thế nào**. Nhà sản xuất chỉ "phơi ra" cho bạn vô-lăng, chân ga, chân phanh (hành vi cần thiết) và giấu đi toàn bộ chuyện xăng nổ, pít-tông chạy ra sao (chi tiết cài đặt). Bạn — "client" — chỉ cần biết *đạp ga thì xe đi*, không cần biết *bằng cách nào*. Nhờ vậy hãng xe có thể thay động cơ xăng bằng động cơ điện mà bạn vẫn lái y như cũ. Abstraction trong code cũng vậy: che phần phức tạp, chỉ chừa ra "các nút bấm" cần thiết.
 
 ---
 
@@ -40,9 +45,12 @@ public abstract class Animal {
 }
 ```
 
+> 💡 **Giải thích dễ hiểu — Abstract Class:**
+> Lớp trừu tượng giống một **bản thiết kế nhà chưa hoàn chỉnh**: đã vẽ sẵn phần khung, móng, hệ thống chung (concrete method — phương thức đã có sẵn thân hàm), nhưng chừa trống vài chỗ ghi "chủ nhà tự quyết" như màu sơn, kiểu cửa (abstract method — phương thức chỉ khai tên, chưa có thân). Vì bản vẽ còn chỗ trống nên **không thể xây trực tiếp** từ nó (`new Animal()` báo lỗi) — bạn phải tạo một bản vẽ con hoàn thiện nốt các chỗ trống (lớp `Dog` điền `makeSound()`) rồi mới xây được.
+
 **Quy tắc:**
-- Không thể instantiate: `new Animal()` → **compile error**
-- Có thể có constructor (gọi qua `super()` trong subclass)
+- Không thể **instantiate** *(tạo thể hiện — tạo object bằng `new`)*: `new Animal()` → **compile error** *(lỗi lúc biên dịch)*
+- Có thể có **constructor** *(hàm khởi tạo)* (gọi qua `super()` trong **subclass** *(lớp con)*)
 - Có thể có cả abstract và concrete method
 - Có thể có fields (instance + static)
 - Nếu subclass không implement tất cả abstract method → subclass cũng phải `abstract`
@@ -65,6 +73,11 @@ public class Dog extends Animal {
 ```
 
 ### Template Method Pattern – Dùng tự nhiên với Abstract Class
+
+**Template Method** *(mẫu phương thức khuôn mẫu)* là mẫu thiết kế trong đó lớp cha định nghĩa sẵn **bộ khung các bước** (thứ tự cố định), còn để lớp con điền chi tiết từng bước.
+
+> 💡 **Giải thích dễ hiểu — Template Method:**
+> Giống **công thức làm bánh in sẵn trên bao bì**: các bước và thứ tự đã cố định (trộn bột → thêm nhân → nướng → để nguội), lớp cha "khóa" trình tự này lại bằng `final` để không ai đảo lộn. Nhưng vài bước để trống cho bạn tùy biến: "chọn loại nhân tùy khẩu vị" (`fetchData`, `process`, `write` — abstract, lớp con bắt buộc điền). Ngoài ra có bước tùy chọn như "trang trí nếu thích" (`cleanup` — hook method, lớp con muốn thì override, không thì thôi). Nhờ đó khung xử lý dùng chung một lần, mỗi biến thể (CSV, JSON...) chỉ khác ở vài chỗ được chừa trống.
 
 ```java
 public abstract class DataExporter {
@@ -118,8 +131,11 @@ public class CsvExporter extends DataExporter {
 | Java version | Interface features |
 |-------------|-------------------|
 | Java ≤ 7 | `public abstract` methods, `public static final` constants |
-| Java 8 | + `default` methods, + `static` methods |
+| Java 8 | + `default` methods *(phương thức mặc định — có sẵn thân, lớp con không bắt buộc viết lại)*, + `static` methods |
 | Java 9 | + `private` methods, + `private static` methods |
+
+> 💡 **Giải thích dễ hiểu — vì sao interface tiến hóa qua các đời Java:**
+> Ban đầu interface giống một **bản hợp đồng thuần túy**: chỉ liệt kê "bên ký phải làm được A, B, C" chứ không cho sẵn cách làm. Nhưng vấn đề nảy sinh: khi một interface đã có hàng nghìn lớp implement mà nay muốn thêm một phương thức mới, thì cả nghìn lớp đó đồng loạt vỡ (vì chưa lớp nào viết phương thức mới). Java 8 thêm **`default` method** để cứu: interface được kèm luôn "cách làm mặc định", ai không thích thì override, ai kệ thì dùng bản mặc định — nhờ vậy thêm phương thức mới mà không phá vỡ code cũ. Giống hợp đồng bổ sung điều khoản mới nhưng ghi kèm "nếu không thỏa thuận khác thì áp dụng mức mặc định này".
 
 ```java
 public interface PaymentGateway {
@@ -185,16 +201,20 @@ class D implements B, C {
 }
 ```
 
+> 💡 **Giải thích dễ hiểu — Diamond Problem:**
+> **Diamond Problem** *(vấn đề kim cương)* xảy ra khi lớp `D` thừa hưởng cùng một phương thức `hello()` qua hai đường khác nhau (B và C, cả hai lại cùng từ A) — vẽ ra thành hình thoi/kim cương. Câu hỏi: `D.hello()` nên chạy bản của B hay của C? Máy không tự đoán được.
+> Ví von: bạn hỏi đường tới cùng một đích nhưng **hai người chỉ hai lối khác nhau** — bạn buộc phải tự chọn nghe ai. Java bắt lớp `D` phải nói rõ chọn ai bằng cú pháp `B.super.hello()`, nếu im lặng thì báo lỗi ngay lúc biên dịch (an toàn hơn C++ vốn để tình trạng nhập nhằng âm thầm).
+
 **Quy tắc ưu tiên khi conflict:**
-1. **Class/superclass wins** – concrete method trong class luôn thắng
-2. **More specific interface wins** – B extends A → B.hello() thắng A.hello()
-3. **Nếu vẫn ambiguous** – phải override tường minh
+1. **Class/superclass wins** *(lớp cụ thể thắng)* – concrete method trong class luôn thắng
+2. **More specific interface wins** *(interface cụ thể hơn thắng)* – B extends A → B.hello() thắng A.hello()
+3. **Nếu vẫn ambiguous** *(vẫn nhập nhằng)* – phải override tường minh
 
 ---
 
 ### Marker Interface vs Annotation
 
-**Marker Interface**: interface không có method, chỉ đánh dấu:
+**Marker Interface** *(interface đánh dấu — không có method, chỉ để "dán nhãn" cho class)*: interface không có method, chỉ đánh dấu:
 ```java
 // JDK built-in markers
 public interface Serializable {}   // đánh dấu có thể serialize
@@ -226,7 +246,10 @@ class SensitiveOperation { }
 
 ### Functional Interface
 
-Interface có **đúng 1 abstract method** — có thể dùng với lambda:
+**Functional Interface** *(interface hàm — chỉ có đúng 1 phương thức trừu tượng)* có **đúng 1 abstract method** — có thể dùng với **lambda** *(biểu thức hàm ngắn gọn viết thay cho cả một class)*:
+
+> 💡 **Giải thích dễ hiểu — Functional Interface & lambda:**
+> Vì interface chỉ có đúng một việc chưa làm, nên khi bạn đưa cho nó một đoạn code, không có gì phải nhập nhằng "đoạn này ứng với method nào" — chắc chắn là method duy nhất đó. Nhờ vậy Java cho phép viết cực gọn bằng lambda thay vì tạo cả một class. Ví von: một cái **remote chỉ có đúng một nút** — bạn không cần dán nhãn nút nào làm gì, bấm là biết ngay nó làm việc gì. `@FunctionalInterface` là dòng nhắc compiler kiểm tra hộ "interface này đúng là chỉ có một nút".
 
 ```java
 @FunctionalInterface  // annotation tùy chọn, nhưng nên dùng để compiler kiểm tra
@@ -282,11 +305,11 @@ System.out.println(upperLength.transform("hello")); // 5
 
 ## Why – Tại sao cần Abstraction?
 
-1. **Giảm complexity**: client chỉ cần biết "gọi `pay(amount)`", không cần biết gateway dùng HTTP hay gRPC
-2. **Loose coupling**: thay `StripeGateway` bằng `PayPalGateway` mà không sửa caller
-3. **Testability**: inject mock/stub thay vì real implementation
-4. **Separation of concerns**: "what" tách khỏi "how"
-5. **Extensibility**: thêm implementation mới không ảnh hưởng code cũ
+1. **Giảm complexity** *(giảm độ phức tạp)*: client chỉ cần biết "gọi `pay(amount)`", không cần biết gateway dùng HTTP hay gRPC
+2. **Loose coupling** *(kết nối lỏng — các thành phần ít phụ thuộc nhau)*: thay `StripeGateway` bằng `PayPalGateway` mà không sửa **caller** *(bên gọi)*
+3. **Testability** *(dễ kiểm thử)*: inject **mock/stub** *(đối tượng giả dùng để test)* thay vì real implementation
+4. **Separation of concerns** *(tách bạch mối quan tâm)*: "what" tách khỏi "how"
+5. **Extensibility** *(khả năng mở rộng)*: thêm implementation mới không ảnh hưởng code cũ
 
 ---
 

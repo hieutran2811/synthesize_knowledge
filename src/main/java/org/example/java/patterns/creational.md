@@ -1,12 +1,14 @@
 # Design Patterns – Creational (Khởi tạo)
 
 > Phương pháp: What – How – Why – Components – When – Compare – Trade-offs – Real-world – Ghi chú
+>
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
 
 ---
 
 ## What – Creational Patterns là gì?
 
-**Creational Patterns** giải quyết bài toán **tạo object** một cách linh hoạt và phù hợp:
+**Creational Patterns** *(nhóm mẫu khởi tạo)* giải quyết bài toán **tạo object** *(đối tượng)* một cách linh hoạt và phù hợp:
 - Ẩn logic khởi tạo khỏi client code
 - Tăng flexibility: quyết định object nào được tạo tại runtime
 - Tái sử dụng object đã có thay vì luôn tạo mới
@@ -23,7 +25,12 @@
 ## 1. Singleton
 
 ### What
-Đảm bảo class chỉ có **1 instance duy nhất** trong suốt vòng đời application và cung cấp global access point.
+Đảm bảo class chỉ có **1 instance duy nhất** *(một thể hiện/bản thể duy nhất)* trong suốt vòng đời application *(ứng dụng)* và cung cấp global access point *(điểm truy cập chung toàn cục)*.
+
+> 💡 **Giải thích dễ hiểu:**
+> Singleton giống **vị giám đốc duy nhất** của một công ty: cả công ty chỉ có một người ở vị trí đó, và ai cần cũng tìm đến đúng người ấy — không thể tự dựng ra "giám đốc thứ hai". Trong code, ta khóa constructor lại (không cho ai `new` tùy tiện) và chỉ mở một cửa duy nhất `getInstance()` để lấy đúng bản thể đã có. Hữu ích cho những thứ vốn chỉ nên tồn tại một bản: cấu hình toàn app, connection pool, logger.
+>
+> Lưu ý cái giá phải trả: giống việc mọi thứ phụ thuộc vào một sếp duy nhất, Singleton tạo ra "trạng thái chung toàn cục" khiến việc test và thay thế trở nên khó — nên Java hiện đại thường để framework như Spring quản lý "sếp" này thay vì tự code.
 
 ### How – Các cách implement
 
@@ -60,6 +67,10 @@ public class Singleton {
 // new Singleton() = 3 bước: allocate memory, init fields, assign reference
 // Không có volatile: JIT có thể reorder → assign trước init → other thread thấy instance != null nhưng chưa init
 ```
+
+> 💡 **Giải thích dễ hiểu — vì sao BẮT BUỘC `volatile`:**
+> Lệnh `new Singleton()` thực ra gồm 3 bước: (1) xin bộ nhớ, (2) chạy khởi tạo các field, (3) gán địa chỉ cho biến `instance`. Trình biên dịch/CPU được phép **đảo thứ tự** (reordering) để chạy nhanh hơn, ví dụ làm bước (3) trước bước (2). Khi đó một luồng khác nhìn vào thấy `instance != null` (đã gán) nên tưởng "xong rồi", lấy về dùng — nhưng thực chất object còn **chưa khởi tạo xong** → lỗi khó lường.
+> Ví von: như treo biển "Cửa hàng đã mở" (gán reference) trước khi bày hàng lên kệ (init fields) — khách vào thấy biển mở liền lao vào nhưng kệ trống trơn. Từ khóa `volatile` chính là quy định "chỉ được treo biển mở SAU khi bày hàng xong", chặn việc đảo thứ tự này.
 
 #### Cách 3: Initialization-on-Demand Holder (Best Practice)
 ```java
@@ -127,9 +138,12 @@ public class UserService {
 ## 2. Builder
 
 ### What
-Tách việc **xây dựng** object phức tạp ra khỏi **representation** của nó, cho phép cùng 1 quá trình xây dựng tạo ra các representation khác nhau.
+Tách việc **xây dựng** object phức tạp ra khỏi **representation** *(cách biểu diễn/hình hài cuối cùng)* của nó, cho phép cùng 1 quá trình xây dựng tạo ra các representation khác nhau.
 
-**Bài toán**: Telescoping Constructor — constructor với nhiều optional parameter:
+> 💡 **Giải thích dễ hiểu:**
+> Builder giống lúc bạn **đặt một chiếc pizza theo yêu cầu**: "cỡ lớn, thêm phô mai, thêm nấm, sốt BBQ". Bạn không đưa cho đầu bếp một dãy true/false khó hiểu, mà gọi từng lựa chọn một cách rõ ràng, thứ tự tùy ý, món nào không nói thì lấy mặc định. Đến khi nói "xong, làm đi" (`build()`) thì chiếc pizza mới thực sự được tạo ra — và một khi ra lò thì không đổi được nữa (immutable). Nhờ vậy code vừa **dễ đọc** (mỗi tùy chọn có tên), vừa tránh được kiểu constructor dài dằng dặc đầy tham số mà không rõ cái nào là cái nào.
+
+**Bài toán**: Telescoping Constructor *(hàm khởi tạo "kính viễn vọng" — nối dài dần tham số)* — constructor với nhiều optional parameter *(tham số tùy chọn)*:
 ```java
 // Anti-pattern: Telescoping Constructor
 public Pizza(String size, boolean cheese, boolean pepperoni, boolean mushrooms,
@@ -251,7 +265,10 @@ HttpRequest request = HttpRequest.newBuilder()
 ## 3. Factory Method
 
 ### What
-Định nghĩa interface để tạo object, nhưng để **subclass** quyết định class nào được instantiate.
+Định nghĩa interface để tạo object, nhưng để **subclass** *(lớp con)* quyết định class nào được instantiate *(tạo ra thể hiện)*.
+
+> 💡 **Giải thích dễ hiểu:**
+> Factory Method giống một **xưởng sản xuất tổng có nhiều phân xưởng**. Xưởng tổng (lớp cha) định ra quy trình chung: "chạy máy → tạo sản phẩm → đóng gói", nhưng **để mỗi phân xưởng con tự quyết định sản xuất ra món gì cụ thể** (phân xưởng A ra ghế, B ra bàn). Người đặt hàng chỉ làm việc với "xưởng" và nhận về "sản phẩm", không cần biết trong đó đang lắp ráp loại cụ thể nào. Trong ví dụ dưới, `Application` biết mình cần một `Logger` nhưng để `ConsoleApp` hay `ServerApp` quyết định đó là loại logger nào.
 
 ```
 Creator (abstract)          Product (interface)
@@ -359,9 +376,12 @@ Collections.unmodifiableList(list)
 ## 4. Abstract Factory
 
 ### What
-Cung cấp interface để tạo **họ (family) các object liên quan** mà không cần specify concrete class.
+Cung cấp interface để tạo **họ (family) các object liên quan** mà không cần specify concrete class *(chỉ đích danh lớp cụ thể)*.
 
 **Khác Factory Method**: Factory Method tạo 1 product, Abstract Factory tạo họ products liên quan.
+
+> 💡 **Giải thích dễ hiểu:**
+> Nếu Factory Method là "xưởng làm ra một món", thì Abstract Factory là **cửa hàng bán nguyên bộ nội thất đồng bộ theo tông màu**. Bạn chọn "bộ tông sáng" hay "bộ tông tối", rồi mọi món lấy ra — ghế, bàn, tủ (Button, Checkbox, TextField) — đều **cùng một phong cách**, không lo món sáng lẫn món tối. Điểm cốt lõi là đảm bảo **tính nhất quán của cả một họ sản phẩm**: đổi từ giao diện Light sang Dark chỉ cần đổi "cửa hàng" (factory), tất cả thành phần tự động đồng bộ theme.
 
 ### How
 

@@ -1,14 +1,19 @@
 # JPA & Hibernate
 
 > Phương pháp: What – How – Why – Components – When – Compare – Trade-offs – Real-world – Ghi chú
+>
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
 
 ---
 
 ## What – JPA & Hibernate là gì?
 
-**JPA (Jakarta Persistence API)** = specification (interface) định nghĩa cách ORM hoạt động trong Java EE/Jakarta EE.
+**JPA (Jakarta Persistence API)** = specification *(bản đặc tả — quy định "phải làm được gì", không nói "làm thế nào")* (interface) định nghĩa cách ORM hoạt động trong Java EE/Jakarta EE.
 
-**Hibernate** = implementation phổ biến nhất của JPA (cùng với EclipseLink, OpenJPA).
+**Hibernate** = implementation *(bản hiện thực cụ thể — viết code thật để làm đúng những gì đặc tả yêu cầu)* phổ biến nhất của JPA (cùng với EclipseLink, OpenJPA).
+
+> 💡 **Giải thích dễ hiểu — JPA vs Hibernate:**
+> Nhiều người mới hay lẫn hai khái niệm này. Ví von: **JPA là bản thiết kế/tiêu chuẩn của một ổ điện** (quy định lỗ cắm, điện áp), còn **Hibernate là một hãng cụ thể sản xuất ổ điện đúng chuẩn đó**. Bạn lập trình theo "chuẩn" JPA (các interface như `EntityManager`), nên sau này có thể thay Hibernate bằng hãng khác (EclipseLink) mà code ít phải sửa. Hibernate là hãng phổ biến nhất nên thực tế đa số dự án dùng nó.
 
 ```
 JPA (Specification/Interface)
@@ -17,7 +22,11 @@ JPA (Specification/Interface)
               └── Database
 ```
 
-**ORM (Object-Relational Mapping)**: map Java objects ↔ DB rows tự động.
+**ORM (Object-Relational Mapping)** *(ánh xạ đối tượng – quan hệ: tự động chuyển đổi giữa object trong code và dòng dữ liệu trong bảng)*: map Java objects ↔ DB rows tự động.
+
+> 💡 **Giải thích dễ hiểu — ORM:**
+> Object trong Java (một `User` có tên, email...) và một dòng trong bảng `users` là hai thế giới khác nhau: một bên là object có kiểu, có phương thức; một bên là hàng cột phẳng. Bình thường bạn phải tự tay chép từng cột vào từng field.
+> Ví von: ORM như một **phiên dịch viên song ngữ** đứng giữa "tiếng Java" và "tiếng SQL". Bạn nói bằng object, nó tự dịch sang câu SQL và ngược lại — chép kết quả từ bảng trở lại thành object — mà bạn không cần viết tay đoạn dịch đó nữa.
 
 ```java
 // Không ORM: thủ công map
@@ -45,7 +54,15 @@ public class User {
 
 ## How – Entity Lifecycle
 
-**4 trạng thái của một entity:**
+**4 trạng thái của một entity** *(entity — đối tượng được map với một bảng; "vòng đời entity" là các giai đoạn nó đi qua khi làm việc với database)*:
+
+> 💡 **Giải thích dễ hiểu — 4 trạng thái entity:**
+> Hãy coi một entity như **một món hàng và mối quan hệ của nó với kho (persistence context)**:
+> - **TRANSIENT** *(thoáng qua)*: món hàng bạn vừa `new` ra, kho chưa hề biết tới nó — chưa được ai theo dõi.
+> - **MANAGED** *(đang được quản lý)*: bạn `persist()` món hàng vào kho. Từ giờ kho **giám sát mọi thay đổi** của nó; bạn sửa thuộc tính gì, đến lúc chốt sổ kho tự cập nhật xuống database — không cần bạn gọi lệnh "update".
+> - **DETACHED** *(đã tách khỏi kho)*: đóng phiên làm việc, món hàng vẫn nằm trong tay bạn (còn trong bộ nhớ Java) nhưng kho **không theo dõi nữa** — sửa gì cũng không xuống database, trừ khi `merge()` lại.
+> - **REMOVED** *(đánh dấu xóa)*: bạn bảo kho "bỏ món này đi", đến lúc chốt sổ nó sinh câu DELETE.
+> Cụm từ khóa cần nhớ: chỉ khi entity ở trạng thái **MANAGED** thì thay đổi mới tự động đồng bộ xuống DB.
 
 ```
   new User()          persist()          commit/flush
@@ -103,7 +120,12 @@ em2.getTransaction().commit(); // DELETE statement
 
 ## How – Persistence Context (First-Level Cache)
 
-Persistence context = cache trong một EntityManager (transaction scope):
+Persistence context *(ngữ cảnh lưu trữ — vùng nhớ tạm theo dõi các entity trong một phiên/giao dịch)* = cache trong một EntityManager *(người quản lý entity, đại diện cho một phiên làm việc với DB)* (transaction scope):
+
+> 💡 **Giải thích dễ hiểu — Persistence Context và First-Level Cache:**
+> Trong một phiên làm việc (một `EntityManager`), JPA giữ một cuốn **sổ ghi nhớ tạm**. Lần đầu bạn `find(User, 1L)` nó chạy SQL lấy về rồi ghi vào sổ; những lần sau hỏi lại cùng id, nó **trả ngay từ sổ, không hỏi DB nữa** — đó là **first-level cache** *(bộ đệm cấp 1)*.
+> Ví von: như bạn **hỏi thư ký về hồ sơ khách hàng số 1**. Lần đầu cô ấy xuống kho lấy (query DB); các lần sau trong cùng buổi làm việc, cô ấy nhớ và đưa ngay bản trên bàn — cùng một tờ giấy đó (nên `u1 == u2` là `true`, cùng một object). Sang buổi làm việc khác (EntityManager khác), sổ ghi nhớ mới toanh nên phải xuống kho lấy lại.
+> Đây cũng là nền tảng của **dirty checking** *(tự dò thay đổi)*: vì giữ bản gốc trong sổ, đến lúc chốt sổ JPA so bản hiện tại với bản gốc, thấy khác ở đâu thì tự sinh UPDATE ở đó — nên bạn sửa field mà không cần gọi lệnh update.
 
 ```java
 EntityManager em = emFactory.createEntityManager();
@@ -212,6 +234,10 @@ public class Address {
 
 ### Relationships
 
+> 💡 **Giải thích dễ hiểu — "owning side" và mappedBy:**
+> Quan hệ hai chiều (đơn hàng biết các item, item biết đơn hàng của mình) trong database chỉ thể hiện bằng **một cột khóa ngoại** (foreign key, ví dụ `order_id` nằm trong bảng `order_items`). Bên nào chứa cột khóa ngoại đó gọi là **owning side** *(phía sở hữu — phía "cầm" khóa ngoại, quyết định lưu quan hệ)*; phía còn lại chỉ là "phản chiếu" và khai báo `mappedBy` để trỏ về phía sở hữu.
+> Ví von: hai vợ chồng đều biết mình đã kết hôn, nhưng **tờ giấy đăng ký kết hôn chỉ có một bản** do một bên giữ. Hibernate nhìn vào "bản giấy" (owning side) để biết cập nhật quan hệ; nếu bạn chỉ sửa phía `mappedBy` mà quên set phía owning, database sẽ không lưu gì cả. Vì thế mới cần helper `addItem()` set **cả hai chiều**.
+
 ```java
 // @ManyToOne: owning side (có FK trong table)
 @Entity
@@ -282,7 +308,12 @@ public class Course {
 
 ## How – N+1 Problem (Quan trọng nhất!)
 
-**N+1 problem**: load 1 list (1 query) → với mỗi item load related data (N queries) → N+1 total.
+**N+1 problem** *(lỗi N+1 truy vấn — một trong những lỗi hiệu năng phổ biến nhất của ORM)*: load 1 list (1 query) → với mỗi item load related data *(dữ liệu liên quan)* (N queries) → N+1 total.
+
+> 💡 **Giải thích dễ hiểu — N+1 query:**
+> Bạn lấy về 100 đơn hàng bằng 1 câu query. Sau đó, mỗi lần đụng vào danh sách sản phẩm của một đơn, JPA lại âm thầm chạy thêm 1 query để lấy — 100 đơn thành 100 query phụ. Tổng cộng 1 + 100 = 101 query, thay vì đáng lẽ chỉ cần vài query.
+> Ví von: bạn ra chợ mua đồ cho 100 món ăn. Cách N+1 giống như **mỗi nguyên liệu lại chạy về chợ một chuyến riêng**: 1 chuyến xem thực đơn + 100 chuyến mua lẻ. Cách đúng (JOIN FETCH / batch) là **cầm một danh sách rồi mua gộp trong 1–2 chuyến**. Số chuyến đi chợ chính là số lần "đi mạng" tới database — thứ đắt đỏ nhất, nên gộp lại là thắng lớn.
+> Thủ phạm gốc là **lazy loading** *(nạp lười — chỉ nạp dữ liệu liên quan khi thực sự đụng tới)*: tiện vì không nạp thừa, nhưng nếu vô tình đụng trong vòng lặp thì mỗi lần đụng là một query mới.
 
 ```java
 // N+1 Example – ANTI-PATTERN
@@ -493,6 +524,14 @@ List<UserOrderCount> result = em.createNativeQuery(sql, "UserOrderCountMapping")
 ---
 
 ## How – Optimistic vs Pessimistic Locking
+
+> 💡 **Giải thích dễ hiểu — Optimistic vs Pessimistic:**
+> Cả hai đều nhằm tránh hai người cùng sửa một dữ liệu rồi đè lên nhau.
+> - **Optimistic Locking** *(khóa lạc quan)*: "cứ tin là hiếm khi đụng nhau". Không khóa gì cả, chỉ gắn cho bản ghi một số phiên bản (`@Version`). Lúc lưu mới kiểm tra: nếu số phiên bản đã bị người khác đổi nghĩa là có xung đột → báo lỗi, bảo thử lại.
+>   Ví von: **sửa chung một tài liệu Google Docs offline**. Ai cũng chép về sửa; lúc nộp lên, nếu phát hiện bản gốc đã bị người khác đổi thì phải làm lại — hợp khi ít khi trùng giờ.
+> - **Pessimistic Locking** *(khóa bi quan)*: "chắc chắn sẽ có người tranh nên khóa trước cho yên tâm". Vừa đọc đã khóa luôn dòng đó (`SELECT ... FOR UPDATE`), người khác phải chờ tới lượt.
+>   Ví von: **mượn chìa khóa phòng họp**. Ai vào trước cầm chìa khóa, người sau đứng ngoài đợi — chắc chắn không đụng nhau nhưng phải xếp hàng.
+> Chọn optimistic khi đọc nhiều/ghi ít/ít đụng độ (CRUD người dùng); chọn pessimistic khi ghi nhiều, đụng độ cao, cần chắc chắn (ngân hàng, trừ tồn kho).
 
 ### Optimistic Locking (@Version)
 

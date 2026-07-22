@@ -1,6 +1,8 @@
 # Composition over Inheritance
 
 > Phương pháp: What – How – Why – Components – When – Compare – Trade-offs – Real-world – Ghi chú
+>
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
 
 ---
 
@@ -13,11 +15,17 @@
 
 Nguyên lý khuyến khích dùng **composition** (kết hợp object) thay vì **inheritance** (kế thừa class) để tái sử dụng hành vi — trừ khi IS-A thực sự rõ ràng và LSP được thỏa mãn.
 
+> 💡 **Giải thích dễ hiểu — thuê dịch vụ thay vì biến mình thành nhà cung cấp:**
+> `Car` cần `Engine` để chạy nhưng Car không phải là một loại Engine. Car giữ một Engine và giao việc cho nó; đó là composition. Quan hệ này cho phép thay động cơ mà không đổi danh tính chiếc xe. Inheritance phù hợp khi class con thật sự là subtype và phải giữ toàn bộ contract của class cha, không chỉ vì muốn mượn vài method.
+
 ---
 
 ## Why – Tại sao nên prefer Composition?
 
 ### 1. Fragile Base Class Problem
+
+> 💡 **Giải thích dễ hiểu — dùng chung ruột máy khiến thay đổi nội bộ lan sang con:**
+> Subclass override một method có thể vô tình bị superclass gọi từ method khác. Khi tác giả superclass refactor thứ tự gọi nội bộ, subclass đổi hành vi dù public API không đổi. Giống độ thêm linh kiện trực tiếp vào bộ máy của nhà sản xuất: bản nâng cấp tưởng vô hại có thể làm phần độ hoạt động hai lần hoặc không hoạt động.
 
 ```java
 class Base {
@@ -60,44 +68,48 @@ Mock/stub superclass phức tạp hơn mock interface.
 
 **Delegation**: thay vì kế thừa hành vi, **chuyển giao (delegate)** công việc cho object khác:
 
+> 💡 **Giải thích dễ hiểu — composition tạo đội, delegation giao nhiệm vụ:**
+> Việc `OrderService` có một `PaymentGateway` là composition; khi `placeOrder` gọi `gateway.pay()`, đó là delegation. Object bao ngoài kiểm soát contract, có thể thêm kiểm tra hoặc metrics rồi chuyển việc cho dependency. Nó chỉ phụ thuộc vào API công khai, không phụ thuộc chuỗi lời gọi nội bộ như subclass.
+
 ```java
-// INHERITANCE – Vấn đề
-class InstrumentedList<E> extends ArrayList<E> {
+// INHERITANCE – Vấn đề kinh điển từ Effective Java
+class InstrumentedSet<E> extends HashSet<E> {
     int addCount = 0;
 
     @Override public boolean add(E e)                { addCount++; return super.add(e); }
     @Override public boolean addAll(Collection<? extends E> c) {
         addCount += c.size(); return super.addAll(c);
-        // BUG! ArrayList.addAll() gọi add() nội bộ → addCount bị tăng gấp đôi
+        // BUG! AbstractCollection.addAll() gọi add() cho từng phần tử
+        // → dispatch vào overridden add() → addCount bị tăng gấp đôi
     }
 }
 
 // COMPOSITION – Đúng (Forwarding/Delegation)
-class InstrumentedList<E> implements List<E> {
-    private final List<E> list;   // HAS-A, không IS-A
+class InstrumentedSet<E> implements Set<E> {
+    private final Set<E> set;   // HAS-A, không IS-A
     int addCount = 0;
 
-    InstrumentedList(List<E> list) { this.list = list; }
+    InstrumentedSet(Set<E> set) { this.set = set; }
 
     @Override public boolean add(E e) {
         addCount++;
-        return list.add(e);    // delegate → không quan tâm ArrayList làm gì nội bộ
+        return set.add(e);    // delegate → không phụ thuộc lời gọi nội bộ
     }
 
     @Override public boolean addAll(Collection<? extends E> c) {
         addCount += c.size();
-        return list.addAll(c); // delegate, không gọi add() của mình → đúng!
+        return set.addAll(c); // gọi thẳng object được bọc, không gọi add() của wrapper
     }
 
     // Forwarding tất cả methods khác
-    @Override public int size() { return list.size(); }
-    @Override public boolean isEmpty() { return list.isEmpty(); }
+    @Override public int size() { return set.size(); }
+    @Override public boolean isEmpty() { return set.isEmpty(); }
     // ... (Lombok @Delegate có thể tự sinh)
 }
 
 // Dùng:
-List<String> instrumented = new InstrumentedList<>(new ArrayList<>());
-// Có thể swap sang LinkedList, CopyOnWriteArrayList... tại runtime!
+Set<String> instrumented = new InstrumentedSet<>(new HashSet<>());
+// Có thể swap sang TreeSet, LinkedHashSet, ConcurrentHashMap.newKeySet()...!
 ```
 
 ---
@@ -105,6 +117,9 @@ List<String> instrumented = new InstrumentedList<>(new ArrayList<>());
 ## How – Mixin qua Interface Default Method (Java 8+)
 
 Mixin = "trộn" nhiều behavior vào một class mà không cần đa kế thừa:
+
+> 💡 **Giải thích dễ hiểu — mixin là bộ kỹ năng dùng kèm, không phải state dùng chung:**
+> Default method cho class nhận thêm hành vi nhỏ như `validate()` hoặc `logCreated()` từ nhiều interface. Nó phù hợp với behavior độc lập và ít state; nếu mixin cần nhiều dependency, thứ tự thực thi hoặc state mutable dùng chung, composition bằng object riêng thường rõ ràng và dễ test hơn.
 
 ```java
 // Mixin interfaces
@@ -148,6 +163,9 @@ public class Order implements Auditable, Validatable, Exportable {
 
 DI (Dependency Injection) bản chất là **composition tại runtime** — inject behavior/dependency từ ngoài:
 
+> 💡 **Giải thích dễ hiểu — constructor là ổ cắm lắp ráp object graph:**
+> `OrderService` không tự xây repository hay gateway; nó công bố các “ổ cắm” qua constructor. Composition root hoặc Spring chọn implementation và cắm chúng vào lúc khởi động. DI không tự tạo abstraction tốt, nhưng nó làm quan hệ composition tường minh và cho phép test truyền fake/mock dễ dàng.
+
 ```java
 // Thay vì kế thừa Logger, inject nó vào
 public class OrderService {
@@ -170,6 +188,9 @@ public class OrderService {
 ---
 
 ## How – Strategy Pattern = Composition of Behavior
+
+> 💡 **Giải thích dễ hiểu — biến thuật toán thành một linh kiện thay được:**
+> Thay vì tạo `AscendingSorter`, `DescendingSorter` bằng inheritance, `Sorter` giữ một `Comparator` mô tả phần hành vi thay đổi. Chuyển strategy giống thay đầu mũi khoan trên cùng một máy: workflow chung giữ nguyên, thuật toán cụ thể có thể chọn ở runtime.
 
 ```java
 // Behavior (strategy) là object → có thể swap tại runtime
@@ -205,6 +226,9 @@ Inheritance đúng chỗ khi thỏa mãn **cả 3 điều kiện**:
 1. **IS-A thực sự**: `Dog` IS-A `Animal` (không phải giả)
 2. **LSP thỏa mãn**: subclass thay thế được superclass không phá vỡ program
 3. **Subclass KHÔNG cần ẩn method của superclass**: không throw `UnsupportedOperationException`
+
+> 💡 **Giải thích dễ hiểu — “favor” không có nghĩa “cấm”:**
+> Inheritance vẫn tốt cho hierarchy có contract ổn định như exception, framework template hoặc sealed domain type. Dấu hiệu xấu là subclass chỉ muốn vài method, phải vô hiệu hóa method cha, hoặc cần thay superclass theo cấu hình. Khi đó HAS-A và delegation thường mô tả quan hệ trung thực hơn.
 
 ```java
 // ĐÚNG – inheritance hợp lý
@@ -250,6 +274,9 @@ class StringHttpMessageConverter extends HttpMessageConverter<String> { ... }
 ## Real-world Usage (Production)
 
 ### 1. Java I/O – Composition (Decorator Pattern)
+
+> 💡 **Giải thích dễ hiểu — bọc thêm năng lực từng lớp:**
+> `FileInputStream` cung cấp byte từ file, `InputStreamReader` giải mã byte thành ký tự, `BufferedReader` thêm buffer. Mỗi wrapper giữ cùng contract cần thiết và bọc object bên trong, nên các năng lực được xếp như nhiều lớp áo. Đây là composition kết hợp Decorator: mở rộng hành vi mà không sửa hoặc tạo cây subclass cho mọi tổ hợp.
 ```java
 // BufferedReader WRAPS FileReader, không EXTENDS
 BufferedReader reader = new BufferedReader(

@@ -1,5 +1,7 @@
 # Java Testing – JUnit 5, Mockito, Integration Testing
 
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
+
 ## Mục lục
 1. [JUnit 5 – Testing Framework](#1-junit-5--testing-framework)
 2. [Mockito – Mocking Framework](#2-mockito--mocking-framework)
@@ -12,6 +14,8 @@
 ---
 
 ## 1. JUnit 5 – Testing Framework
+
+**JUnit 5** *(bộ khung viết và chạy test đơn vị phổ biến nhất của Java)* là một **testing framework** *(khung kiểm thử — cung cấp cách khai báo test, chạy chúng và báo kết quả pass/fail)*. Ta viết các phương thức đánh dấu `@Test`, framework tự tìm và chạy chúng, rồi báo test nào đúng, test nào sai.
 
 ### 1.1 Architecture
 
@@ -32,6 +36,8 @@ JUnit Vintage:   backward compatibility runner for JUnit 3/4
 ```
 
 ### 1.2 Core Annotations
+
+Các annotation ở đây điều khiển **lifecycle** *(vòng đời — thứ tự chạy: chuẩn bị trước, chạy test, dọn dẹp sau)* của test: `@BeforeAll/@AfterAll` chạy một lần cho cả lớp, `@BeforeEach/@AfterEach` chạy quanh mỗi test. Mỗi test thường theo khuôn mẫu **Arrange-Act-Assert** *(Sắp đặt – Hành động – Khẳng định)*.
 
 ```java
 import org.junit.jupiter.api.*;
@@ -100,7 +106,17 @@ class OrderServiceTest {
 }
 ```
 
+> 💡 **Giải thích dễ hiểu — Arrange-Act-Assert và các mốc lifecycle:**
+> Một bài test tốt giống một **thí nghiệm khoa học được dàn dựng gọn gàng**, gồm 3 nhịp:
+> - **Arrange** *(sắp đặt)*: bày sẵn "hiện trường" — tạo dữ liệu đầu vào, dựng đối tượng cần test. Giống đầu bếp chuẩn bị nguyên liệu ra khay trước khi nấu.
+> - **Act** *(hành động)*: gọi đúng **một** hành vi cần kiểm tra — như bấm nút bắt đầu nấu.
+> - **Assert** *(khẳng định)*: kiểm tra kết quả có đúng như kỳ vọng không — như nếm món ăn xem đã đạt chưa.
+>
+> Còn các mốc lifecycle như thao tác dọn bếp: `@BeforeEach` là "lau bàn sạch trước mỗi lần nấu" (mỗi test khởi đầu từ trạng thái mới tinh), `@AfterEach` là "rửa chén sau khi nấu". `@BeforeAll/@AfterAll` là việc làm một lần đầu ca và cuối ca (bật/tắt lò) — vì tốn kém nên chỉ làm một lần cho cả lớp test.
+
 ### 1.3 Parameterized Tests
+
+**Parameterized test** *(test tham số hóa — cùng một logic test nhưng chạy lặp lại với nhiều bộ dữ liệu khác nhau)* giúp tránh phải copy-paste một test nhiều lần chỉ để đổi giá trị đầu vào.
 
 ```java
 import org.junit.jupiter.params.ParameterizedTest;
@@ -168,6 +184,8 @@ class PriceCalculatorTest {
 ```
 
 ### 1.4 Extensions & Custom Annotations
+
+**Extension** *(cơ chế cắm thêm — móc vào các mốc lifecycle của test để thêm hành vi dùng chung, ví dụ đo thời gian, mở/đóng tài nguyên)* là cách JUnit 5 cho phép mở rộng framework mà không sửa chính test.
 
 ```java
 // ── Extension API ─────────────────────────────────────────────────────────
@@ -243,6 +261,12 @@ class OrderServiceTest {
 
 ## 2. Mockito – Mocking Framework
 
+**Mockito** *(thư viện tạo đối tượng giả lập cho Java)* là **mocking framework** *(khung tạo mock — sinh ra các đối tượng giả thay cho phụ thuộc thật khi test)*. Khi test một lớp, ta không muốn nó gọi thật xuống database, mạng, hay dịch vụ ngoài — nên thay các phụ thuộc đó bằng **mock** *(đối tượng giả lập được lập trình sẵn cách phản hồi)*. `@Mock` tạo mock, còn `@InjectMocks` sẽ **tiêm** *(inject — đưa)* các mock đó vào lớp cần test qua constructor/setter/field.
+
+> 💡 **Giải thích dễ hiểu — dependency injection cho test (mock + @InjectMocks):**
+> Hãy tưởng tượng bạn cần thử nghiệm một **đầu bếp mới** (lớp `OrderService`) mà không muốn dùng nguyên liệu thật đắt tiền hay bếp lò thật. Bạn đưa cho anh ta **đồ đạo cụ đóng thế**: một "quả trứng cao su" (mock repository), một "lò giả bằng bìa" (mock payment). Bạn đã dặn trước từng đạo cụ phải "phản ứng" thế nào khi bị chạm vào.
+> `@InjectMocks` chính là người trợ lý **đặt sẵn mấy đạo cụ giả này vào tay đầu bếp** trước buổi thử, thay cho đồ thật. Nhờ vậy bạn quan sát được đầu bếp thao tác đúng quy trình không, mà không tốn nguyên liệu thật và không phụ thuộc vào bếp lò có đang hoạt động hay không. Đây là ý tưởng cốt lõi của **dependency injection** *(tiêm phụ thuộc)* áp dụng cho việc test: dễ dàng tráo phụ thuộc thật bằng phụ thuộc giả.
+
 ### 2.1 Setup & Basic Mocking
 
 ```java
@@ -271,6 +295,8 @@ class OrderServiceTest {
 ```
 
 ### 2.2 Stubbing – When / Then
+
+**Stubbing** *(lập trình sẵn phản hồi — dạy mock rằng "khi bị gọi thế này thì trả về thế kia")* dùng cú pháp `when(...).thenReturn(...)`. Đây là cách ta điều khiển **đầu vào gián tiếp** cho lớp đang test.
 
 ```java
 @Test
@@ -332,6 +358,8 @@ when(repo.searchByQuery(
 
 ### 2.3 Verification
 
+**Verification** *(kiểm chứng — sau khi chạy, xác nhận mock ĐÃ được gọi đúng cách: đúng phương thức, đúng số lần, đúng tham số)* dùng `verify(...)`. Trong khi `when` lo phần "dựng cảnh", `verify` lo phần "soi lại xem đã diễn ra đúng kịch bản chưa".
+
 ```java
 @Test
 void createOrder_validRequest_savesAndPublishesEvent() {
@@ -360,7 +388,15 @@ void createOrder_validRequest_savesAndPublishesEvent() {
 }
 ```
 
+> 💡 **Giải thích dễ hiểu — `when()` và `verify()` là hai nửa của một vở kịch:**
+> Hãy hình dung mock như một **diễn viên đóng thế** trong buổi diễn tập, và bạn là đạo diễn.
+> - `when(mock.findById(42)).thenReturn(order)` là lúc bạn **đưa kịch bản trước giờ diễn**: "Khi có người hỏi mày đơn hàng số 42, mày phải đáp lại đúng đơn hàng này". Đây là chuẩn bị đầu vào — mock chỉ diễn đúng lời thoại được giao.
+> - `verify(mock).save(...)` là lúc **xem lại băng ghi hình sau buổi diễn**: "Để tao kiểm tra xem diễn viên có thực sự thực hiện đúng cảnh 'lưu đơn hàng' không, có làm đúng một lần không, có đúng nội dung không". Đây là kiểm tra đầu ra — hành vi lớp chính có gọi phụ thuộc đúng như mong đợi.
+> Mẹo nhớ: `when` = *dặn trước*, `verify` = *soi lại sau*. Không phải test nào cũng cần cả hai; test kiểm tra "kết quả trả về" thường chỉ cần `when`, còn test kiểm tra "có gọi đúng dịch vụ phụ không" (ví dụ có gửi email không) thì cần `verify`.
+
 ### 2.4 ArgumentCaptor – Capture & Inspect
+
+**ArgumentCaptor** *(bộ bắt tham số — "chụp lại" đúng giá trị đã được truyền vào mock để soi kỹ sau đó)* hữu ích khi tham số truyền vào được tạo bên trong lớp test (ta không cầm sẵn để so sánh trực tiếp).
 
 ```java
 @Test
@@ -384,6 +420,8 @@ assertEquals(3, emails.size());
 ```
 
 ### 2.5 Spy – Partial Mocking
+
+**Spy** *(gián điệp — bọc quanh một đối tượng THẬT, chỉ can thiệp/ghi đè một vài phương thức, phần còn lại vẫn chạy code thật)* nằm giữa "mock hoàn toàn giả" và "đối tượng thật hoàn toàn". Lưu ý với spy phải dùng `doReturn().when()` chứ không dùng `when(spy.method())` (vì cách sau sẽ gọi vào code thật).
 
 ```java
 // Spy: wraps REAL object, intercept only specific methods
@@ -441,6 +479,8 @@ try (MockedConstruction<PaymentGateway> mocked = mockConstruction(PaymentGateway
 ---
 
 ## 3. AssertJ – Fluent Assertions
+
+**AssertJ** cung cấp **fluent assertions** *(khẳng định "trôi chảy" — nối nhiều điều kiện kiểm tra thành một chuỗi đọc gần như tiếng Anh: `assertThat(x).isNotNull().isEqualTo(y)`)*. So với **assertion** *(câu khẳng định — điều kiện bắt buộc phải đúng, sai thì test fail)* kiểu `assertEquals(...)` cũ, cách viết chuỗi này dễ đọc và báo lỗi rõ ràng hơn.
 
 ```java
 import static org.assertj.core.api.Assertions.*;
@@ -517,6 +557,18 @@ SoftAssertions.assertSoftly(softly -> {
 
 ## 4. Test Doubles – Mock vs Stub vs Spy vs Fake
 
+**Test double** *(đối tượng đóng thế — thuật ngữ chung cho mọi thứ được dùng thay cho phụ thuộc thật khi test)* là tên gọi bao trùm. Dưới nó có 5 "vai diễn" con: dummy, stub, mock, spy, fake — mỗi loại đóng thế theo một mức độ và mục đích khác nhau.
+
+> 💡 **Giải thích dễ hiểu — "test double" và 5 vai đóng thế (ví von đoàn làm phim):**
+> "Double" trong điện ảnh nghĩa là **diễn viên đóng thế** — thay cho diễn viên chính ở những cảnh không tiện dùng người thật. Trong test cũng vậy: ta thay phụ thuộc thật (database, dịch vụ mạng...) bằng "người đóng thế" cho nhanh, rẻ, ổn định. 5 loại đóng thế:
+> - **Dummy** *(vai quần chúng đứng làm nền)*: có mặt cho đủ chỗ nhưng không làm gì — chỉ để lấp một tham số bắt buộc mà test không dùng tới. Như diễn viên quần chúng đứng phía sau.
+> - **Stub** *(diễn viên chỉ thuộc vài câu thoại cố định)*: hỏi gì cũng đáp đúng câu đã được dặn, không hơn. Dùng để **cấp dữ liệu đầu vào** cho lớp đang test (ví dụ "khi hỏi đơn hàng 42 thì trả về đơn hàng này").
+> - **Mock** *(diễn viên đóng thế có người giám sát chấm điểm)*: cũng đáp lời thoại như stub, NHƯNG có người ghi lại "diễn viên đã được gọi mấy lần, làm đúng cảnh chưa" — dùng để **kiểm chứng hành vi** (`verify`). Điểm khác cốt lõi: stub trả lời để phục vụ test, mock còn bị soi lại xem có được gọi đúng không.
+> - **Spy** *(diễn viên thật nhưng gài camera theo dõi)*: dùng chính đối tượng thật, chỉ ghi đè vài chỗ và/hoặc ghi lại nó bị gọi ra sao. Hợp với code cũ khó tách phụ thuộc.
+> - **Fake** *(mô hình thu nhỏ dùng được thật)*: một bản cài đặt đơn giản nhưng CHẠY THẬT, chỉ đi đường tắt — ví dụ một repository lưu trong bộ nhớ (`HashMap`) thay cho database thật. Nhanh mà vẫn có logic thật, hợp cho integration test.
+>
+> Cách nhớ nhanh sự khác nhau **stub vs mock**: cùng là "trả lời sẵn", nhưng nếu test của bạn kết thúc bằng câu hỏi *"nó có TRẢ VỀ đúng không?"* → đó là stub; nếu kết thúc bằng *"nó có ĐƯỢC GỌI đúng không?"* → đó là mock.
+
 ```
 Test Double taxonomy (Martin Fowler):
 
@@ -574,6 +626,14 @@ var service = new OrderService(repo, eventPublisher);
 ---
 
 ## 5. Spring Test Slices
+
+**Test slice** *(lát cắt test — chỉ nạp MỘT tầng của ứng dụng Spring thay vì toàn bộ, để test nhanh và tập trung)*. Ví dụ `@WebMvcTest` chỉ dựng tầng web (controller), `@DataJpaTest` chỉ dựng tầng truy cập dữ liệu. Trong đó **MockMvc** *(công cụ giả lập gửi HTTP request tới controller mà không cần khởi động server thật)* và `@MockBean` *(thay một bean thật trong context Spring bằng một mock Mockito)* giúp cô lập tầng cần test.
+
+> 💡 **Giải thích dễ hiểu — test slice và unit test vs integration test:**
+> Hãy tưởng tượng ứng dụng như một **nhà hàng nhiều bộ phận**: quầy lễ tân (controller/web), bếp (service), kho nguyên liệu (repository/database).
+> - **Unit test** *(kiểm thử đơn vị)* là kiểm tra **một nhân viên đơn lẻ** trong phòng cách âm, mọi người xung quanh đều là diễn viên đóng thế (mock). Rất nhanh, chỉ ra chính xác ai sai — nhưng không đảm bảo cả nhóm phối hợp trơn tru.
+> - **Integration test** *(kiểm thử tích hợp)* là cho **nhiều bộ phận làm việc thật với nhau** (bếp gọi xuống kho thật), để bắt những lỗi chỉ lộ ra khi ráp lại — nhưng chậm hơn và khó khoanh vùng lỗi hơn.
+> - **Test slice** là giải pháp trung dung: thay vì mở cả nhà hàng (`@SpringBootTest` nạp toàn bộ, chậm), ta chỉ **bật đèn đúng một khu** — muốn thử quầy lễ tân thì chỉ dựng khu lễ tân (`@WebMvcTest`), bếp và kho thay bằng đóng thế. Nhờ đó test vừa gần thật vừa vẫn nhanh.
 
 ### 5.1 @WebMvcTest – Controller Layer Only
 

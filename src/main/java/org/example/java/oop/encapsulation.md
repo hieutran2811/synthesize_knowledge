@@ -1,18 +1,23 @@
 # Encapsulation (Đóng Gói)
 
 > Phương pháp: What – How – Why – Components – When – Compare – Trade-offs – Real-world – Ghi chú
+>
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
 
 ---
 
 ## What – Encapsulation là gì?
 
-**Encapsulation** là tính chất gói gọn **dữ liệu (state)** và **hành vi (behavior)** vào trong một đơn vị duy nhất (class), đồng thời **kiểm soát quyền truy cập** từ bên ngoài.
+**Encapsulation** *(đóng gói)* là tính chất gói **dữ liệu (state — trạng thái)** và **hành vi (behavior)** vào cùng một đơn vị (class), đồng thời **kiểm soát quyền truy cập** từ bên ngoài.
 
 Hai khái niệm thường bị nhầm lẫn nhưng không đồng nhất:
 - **Information Hiding**: ẩn chi tiết nội bộ — cái *mục tiêu*
 - **Encapsulation**: cơ chế gói state + behavior — cái *phương tiện*
 
 > Encapsulation là phương tiện để đạt Information Hiding, nhưng setter/getter nếu dùng bừa bãi không phải encapsulation thực sự.
+
+> 💡 **Giải thích dễ hiểu — đưa nút điều khiển ra ngoài, giấu dây điện bên trong:**
+> Một chiếc máy giặt cho bạn các nút “bắt đầu”, “chọn chế độ”, nhưng không bắt bạn tự cấp điện cho motor hay điều khiển van nước. Class tốt cũng vậy: public method thể hiện việc caller được phép yêu cầu, còn field và quy trình nội bộ được giấu đi. Chỉ đổi field thành `private` rồi tạo setter cho mọi thứ giống khóa tủ nhưng để chìa ngay trên cửa — hình thức có đóng gói, nhưng invariant vẫn dễ bị phá.
 
 ---
 
@@ -28,6 +33,9 @@ Java có 4 mức kiểm soát truy cập:
 | `public` | ✅ | ✅ | ✅ | ✅ |
 
 > Không có keyword `package-private` — bỏ modifier = package-private.
+
+> 💡 **Giải thích dễ hiểu — access modifier là các vòng cửa:**
+> `private` là phòng riêng chỉ chính class vào được; package-private là khu nội bộ cho cùng package; `protected` mở thêm cửa cho subclass; `public` là quầy giao dịch ai cũng thấy. Nên bắt đầu từ cửa hẹp nhất rồi chỉ mở rộng khi có nhu cầu thật, vì API đã public thường khó thu hẹp mà không làm hỏng code đang sử dụng.
 
 ### Quy tắc thực tế
 - **Field**: luôn `private`
@@ -66,6 +74,9 @@ public class BankAccount {
 ```
 → Logic kiểm tra tập trung tại 1 chỗ, không bị bypass.
 
+> 💡 **Giải thích dễ hiểu — bảo vệ quy tắc, không chỉ bảo vệ dữ liệu:**
+> Mục tiêu của `private balance` không phải giấu con số vì bí mật, mà là bảo đảm mọi thay đổi đều đi qua `deposit` hoặc `withdraw`. Hai method này là nhân viên giao dịch kiểm tra số tiền hợp lệ; cho caller sửa thẳng `balance` giống cho khách tự vào két và bỏ qua mọi quy tắc nghiệp vụ.
+
 ---
 
 ### Cấp 2: Tránh trả về reference của mutable object
@@ -89,11 +100,17 @@ public List<Item> getItems() {
 }
 ```
 
+> 💡 **Giải thích dễ hiểu — cửa sổ quan sát khác ảnh chụp:**
+> `unmodifiableList(items)` là **cửa sổ chỉ đọc**: caller không sửa qua cửa sổ được, nhưng nếu class sửa list gốc thì caller vẫn thấy thay đổi. `new ArrayList<>(items)` hoặc `List.copyOf(items)` là **ảnh chụp tại thời điểm trả về**, tách cấu trúc collection khỏi bản gốc. Tuy nhiên nếu từng `Item` vẫn mutable thì đây mới là copy nông; caller vẫn có thể sửa nội dung của chính item.
+
 ---
 
 ### Cấp 3: Immutable Object (Bất biến hoàn toàn)
 
 Immutable object là đỉnh cao của encapsulation — state không thể thay đổi sau khi tạo.
+
+> 💡 **Giải thích dễ hiểu — thay vì sửa hóa đơn, hãy phát hành hóa đơn mới:**
+> Với immutable object, thao tác `money.add(other)` không sửa tờ `Money` cũ mà trả về một tờ mới. Vì không ai có thể thay đổi object sau lưng người khác, việc chia sẻ giữa nhiều thread, cache hoặc dùng làm key trong `HashMap` trở nên an toàn và dễ suy luận hơn. Đổi lại, chương trình tạo thêm object mới và phải phòng thủ với các component mutable.
 
 **Cách tạo immutable class:**
 1. Declare class `final` (tránh subclass phá vỡ tính bất biến)
@@ -215,6 +232,9 @@ if (balance >= amount) {
 // Object tự biết cách làm
 account.withdraw(amount); // object tự kiểm tra và xử lý
 ```
+
+> 💡 **Giải thích dễ hiểu — giao việc, đừng lấy ruột máy ra tự sửa:**
+> “Ask” là lấy state ra ngoài, tự quyết định rồi ghi ngược vào; business rule vì thế bị rải ở nhiều caller. “Tell” là yêu cầu object thực hiện một hành vi có ý nghĩa như `withdraw`, để object tự bảo vệ invariant. Getter vẫn hợp lý cho dữ liệu cần đọc; điều cần tránh là dùng getter/setter để caller điều khiển toàn bộ vòng đời nội bộ.
 
 ---
 

@@ -1,12 +1,17 @@
 # Design Patterns – Structural (Cấu trúc)
 
 > Phương pháp: What – How – Why – Components – When – Compare – Trade-offs – Real-world – Ghi chú
+>
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
 
 ---
 
 ## What – Structural Patterns là gì?
 
 **Structural Patterns** giải quyết cách **kết hợp class và object** thành cấu trúc lớn hơn trong khi vẫn giữ cấu trúc linh hoạt và hiệu quả.
+
+> 💡 **Giải thích dễ hiểu — pattern cấu trúc là cách lắp các khối Lego:**
+> Creational pattern quan tâm tạo từng mảnh như thế nào; structural pattern quan tâm nối các mảnh đã có ra sao. Có pattern đổi đầu nối (Adapter), tách hai trục thay đổi (Bridge), dựng cây (Composite), bọc thêm năng lực (Decorator/Proxy), mở một quầy giao dịch đơn giản (Facade) hoặc chia sẻ phần dùng chung (Flyweight).
 
 **7 Structural Patterns (GoF):**
 1. Adapter – chuyển đổi interface
@@ -23,6 +28,9 @@
 
 ### What
 Chuyển đổi interface của một class thành interface khác mà client mong đợi — giống adapter phích cắm điện.
+
+> 💡 **Giải thích dễ hiểu — Adapter dịch ngôn ngữ, không viết lại thiết bị:**
+> Client nói theo contract `PaymentGateway`, còn hệ thống cũ chỉ hiểu `processVisa`. Adapter nhận request mới, chuyển sang tham số cũ rồi đổi kết quả về model mới. Hai phía không cần biết nhau đã khác chuẩn; giống đầu chuyển ổ điện đổi hình phích cắm nhưng không thay đổi chiếc máy bên trong.
 
 ### How
 
@@ -67,7 +75,7 @@ gateway.pay(new PaymentRequest(...));
 
 ### Object Adapter vs Class Adapter
 - **Object Adapter** (trên): dùng composition → linh hoạt hơn (Java thường dùng cái này)
-- **Class Adapter**: extends Adaptee + implements Target → chỉ dùng khi ngôn ngữ hỗ trợ multiple inheritance
+- **Class Adapter**: `extends Adaptee` + `implements Target`. Java làm được khi Target là interface, nhưng adapter phải dùng mất một vị trí kế thừa class và bị coupling chặt với Adaptee.
 
 ### Real-world
 - `Arrays.asList()` – Array → List
@@ -82,7 +90,7 @@ gateway.pay(new PaymentRequest(...));
 ### What
 Tách **abstraction** (high-level control) khỏi **implementation** (low-level work) để chúng có thể thay đổi độc lập nhau.
 
-**Bài toán**: Nếu dùng inheritance cho cả 2 chiều → explosion of subclasses.
+**Bài toán**: Nếu dùng inheritance cho cả 2 chiều → explosion of subclasses *(bùng nổ số lượng lớp con)*.
 
 ```
 Không có Bridge:
@@ -92,11 +100,14 @@ Shape (abstract)
   ├── SquareRedColor
   └── SquareBlueColor  → thêm 1 shape + 1 color = 4 class mới!
 
-Với Bridge: (shapes) × (colors) thay vì (shapes + colors)
+Với Bridge: chỉ cần (shapes + renderers) loại class, rồi ghép thành các tổ hợp lúc runtime
   Shape → Color (bridge)
   ├── Circle ──────┤├── Red
   └── Square       └── Blue
 ```
+
+> 💡 **Giải thích dễ hiểu — Bridge tách hai nút xoay độc lập:**
+> Nếu tạo class cho từng cặp Shape × Renderer, 3 shape và 3 renderer cần tới 9 biến thể. Bridge giữ hai hierarchy riêng nên chỉ cần 3 + 3 loại, sau đó composition tạo 9 tổ hợp khi chạy. Giống thân máy ảnh và ống kính dùng ngàm chung: mỗi bên phát triển độc lập mà vẫn ghép được với nhau.
 
 ### How
 
@@ -168,6 +179,9 @@ c2.draw(); // Pixel circle
 Tổ chức object thành **cây phân cấp** (tree structure) để client xử lý object đơn lẻ và composition giống nhau.
 
 **Ví dụ**: File system (File và Folder đều có `size()`, `delete()`)
+
+> 💡 **Giải thích dễ hiểu — lá và cành dùng chung một câu hỏi:**
+> File là leaf *(nút lá)*, Directory là composite *(nút chứa con)*, nhưng cả hai đều trả lời được `getSize()` và `delete()`. Directory thực hiện bằng cách hỏi đệ quy từng child. Nhờ interface đồng nhất, caller không cần biết đang cầm một file hay cả cây thư mục; đổi lại cần cẩn thận chu kỳ, độ sâu cây và thao tác chỉ hợp với composite như `add()`.
 
 ### How
 
@@ -248,6 +262,9 @@ System.out.println("Total: " + root.getSize()); // 1792 bytes
 
 ### What
 Gắn thêm hành vi **động** vào object mà không ảnh hưởng các object khác cùng class — thay thế subclassing bằng wrapping.
+
+> 💡 **Giải thích dễ hiểu — mặc nhiều lớp áo theo thứ tự:**
+> Mỗi decorator giữ cùng interface và bọc một component khác: áo giữ nhiệt, áo mưa rồi áo phản quang. Có thể thêm/bớt từng lớp lúc runtime mà không tạo subclass cho mọi tổ hợp. Thứ tự rất quan trọng: trim rồi escape có thể cho kết quả khác escape rồi trim, nên pipeline decorator phải thể hiện thứ tự rõ ràng.
 
 ### How
 
@@ -337,6 +354,9 @@ pipeline.apply("  hello  "); // "[PROCESSED] HELLO"
 ### What
 Cung cấp **interface đơn giản** cho một hệ thống con (subsystem) phức tạp — giấu complexity.
 
+> 💡 **Giải thích dễ hiểu — Facade là quầy lễ tân:**
+> Khách chỉ yêu cầu `convert(video, "mp4")`; lễ tân tự phối hợp decoder, codec và audio mixer. Facade giảm kiến thức mà phần lớn client phải mang, nhưng không nhất thiết cấm client nâng cao đi thẳng tới subsystem. Nếu facade ôm cả business logic và mọi use case, nó có thể phình thành God Object.
+
 ### How
 
 ```java
@@ -384,6 +404,9 @@ File mp4 = new VideoConverter().convert("video.avi", "mp4");
 
 ### What
 Chia sẻ **intrinsic state** (không đổi, chia sẻ được) giữa nhiều objects thay vì lưu riêng → tiết kiệm memory khi có cực nhiều objects tương tự.
+
+> 💡 **Giải thích dễ hiểu — dùng chung con dấu, truyền vị trí lúc đóng:**
+> Hình dạng chữ “A” và font là intrinsic state nên hàng nghìn ký tự có thể dùng chung một `CharGlyph`. Tọa độ và màu của từng lần xuất hiện là extrinsic state, được truyền vào `draw`. Flyweight chỉ đáng dùng khi số object rất lớn và phần chia sẻ đủ đáng kể; cache sai key hoặc đưa state theo context vào flyweight sẽ gây dữ liệu lẫn nhau.
 
 ```
 Object state:
@@ -444,6 +467,9 @@ public class TextEditor {
 
 ### What
 Cung cấp **placeholder** kiểm soát truy cập tới object thực — thêm behavior trước/sau mà không sửa object gốc.
+
+> 💡 **Giải thích dễ hiểu — Proxy là người gác cửa mang cùng bảng tên:**
+> Client tưởng mình gọi `UserService`, nhưng proxy đứng trước service thật để kiểm tra quyền, mở transaction, cache hoặc lazy-load rồi mới chuyển tiếp. Decorator cũng bọc cùng interface, nhưng mục đích chính là **thêm năng lực có thể xếp lớp**; Proxy chủ yếu **kiểm soát cách tiếp cận subject**, đôi khi proxy còn được framework tạo hoàn toàn tự động.
 
 **Các loại Proxy:**
 - **Virtual Proxy**: lazy initialization
@@ -517,11 +543,13 @@ proxy.findById(1L);
 
 ### How – CGLIB Proxy (Subclass-based)
 
-JDK Proxy chỉ work với **interface**. CGLIB tạo subclass → work với **class thường**:
+JDK Proxy chỉ hoạt động qua **interface**. CGLIB tạo subclass nên proxy được class thường, nhưng không thể override class/method `final` hoặc method `private`:
 ```java
 // Spring AOP dùng cả hai:
-// - JDK Proxy: nếu bean implement interface
-// - CGLIB: nếu bean không implement interface (default từ Spring 5.2)
+// - Spring Framework core: thường dùng JDK proxy khi target có interface,
+//   CGLIB khi không có interface hoặc proxy-target-class=true.
+// - Spring Boot auto-configuration mặc định bật class-based (CGLIB) proxy;
+//   đặt spring.aop.proxy-target-class=false để ưu tiên JDK proxy.
 @Aspect
 @Component
 public class LoggingAspect {
@@ -534,6 +562,9 @@ public class LoggingAspect {
     }
 }
 ```
+
+> 💡 **Giải thích dễ hiểu — loại proxy quyết định “mặt ngoài” client nhìn thấy:**
+> JDK proxy tạo object triển khai các interface nên caller phải đi qua contract interface. CGLIB tạo subclass runtime nên có thể giữ type class cụ thể, nhưng chịu giới hạn của inheritance. Dù dùng loại nào, lời gọi nội bộ `this.otherMethod()` không đi qua object proxy bên ngoài, vì vậy các advice như `@Transactional` có thể không chạy trong trường hợp self-invocation.
 
 ### How – Virtual Proxy (Lazy Initialization)
 ```java

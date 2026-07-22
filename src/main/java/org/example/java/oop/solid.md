@@ -1,12 +1,17 @@
 # SOLID Principles
 
 > Phương pháp: What – How – Why – Components – When – Compare – Trade-offs – Real-world – Ghi chú
+>
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
 
 ---
 
 ## What – SOLID là gì?
 
 **SOLID** là tập hợp 5 nguyên lý thiết kế OOP do Robert C. Martin (Uncle Bob) đề xuất, giúp code dễ bảo trì, mở rộng, và test.
+
+> 💡 **Giải thích dễ hiểu — SOLID là bộ câu hỏi kiểm tra thiết kế:**
+> SOLID không phải công thức cứ áp dụng càng nhiều càng tốt. Nó giúp hỏi: class này thay đổi vì ai, mở rộng ở đâu, subtype có giữ lời hứa không, interface có ép client dùng thứ thừa không, và business logic đang phụ thuộc vào chi tiết nào. Mục tiêu là giảm chi phí thay đổi; nếu thêm năm interface cho một đoạn code không có khả năng biến đổi, thiết kế có thể phức tạp hơn vấn đề.
 
 | Chữ | Nguyên lý | Ý nghĩa ngắn gọn |
 |-----|----------|-----------------|
@@ -24,6 +29,9 @@
 > "A class should have only one reason to change."
 
 Mỗi class chỉ nên chịu trách nhiệm cho **một aspect** của hệ thống. "Một lý do để thay đổi" = một **actor** (người/role yêu cầu thay đổi) duy nhất.
+
+> 💡 **Giải thích dễ hiểu — SRP nói về một nguồn thay đổi, không phải một method:**
+> Một đầu bếp có thể thực hiện nhiều bước nhưng tất cả cùng phục vụ việc nấu món. Ngược lại, nếu người đó vừa nấu, vừa sửa điện, vừa quyết toán thuế thì ba nhóm yêu cầu độc lập sẽ kéo công việc theo ba hướng. Class có thể có nhiều method miễn chúng cùng phục vụ một trách nhiệm gắn kết và thường thay đổi cùng nhau.
 
 ### How – Nhận biết vi phạm SRP
 
@@ -86,6 +94,9 @@ public class EmployeeRepository {
 
 > SRP không có nghĩa là "mỗi class chỉ có 1 method". Nghĩa là các method đều phục vụ cùng 1 mục đích.
 
+> 💡 **Giải thích dễ hiểu — cohesion đo các món đồ có thuộc cùng một ngăn:**
+> Dao, thớt và nồi cùng nằm trong khu bếp là cohesion cao; hóa đơn thuế và dụng cụ sửa xe chen vào đó là dấu hiệu trách nhiệm bị trộn. Tách class không nên dựa trên số dòng máy móc mà dựa trên nhóm hành vi sử dụng chung state và cùng thay đổi vì một actor.
+
 ### Real-world Usage
 ```java
 // Spring: Tách rõ Controller (HTTP) – Service (Business) – Repository (Data)
@@ -118,6 +129,9 @@ public class OrderService {
 > "Software entities should be open for extension, but closed for modification."
 
 Khi cần thêm tính năng mới → **thêm code mới**, không **sửa code cũ** đang hoạt động.
+
+> 💡 **Giải thích dễ hiểu — OCP đóng phần ổn định, mở đúng trục biến đổi:**
+> Ổ điện trên tường không cần tháo ra sửa mỗi khi mua thiết bị mới; thiết bị chỉ cần tuân theo chuẩn phích cắm. Interface đóng vai chuẩn đó. Nhưng không cần đặt ổ cắm ở mọi chỗ: chỉ tạo abstraction quanh những biến thể đã biết hoặc có khả năng thay đổi, nếu không OCP dễ biến thành “thiết kế cho tương lai tưởng tượng”.
 
 ### How – Vi phạm OCP
 
@@ -212,6 +226,9 @@ public class PricingEngine {
 
 Nếu S là subtype của T, thì bất kỳ đâu dùng T, thay bằng S vẫn phải đúng về **behavior** (không chỉ về type).
 
+> 💡 **Giải thích dễ hiểu — kế thừa type chưa đủ, phải kế thừa lời hứa:**
+> Một máy ATM thay thế được máy ATM khác nếu vẫn rút tiền theo cùng quy tắc mà khách đã biết. Máy mới không thể bất ngờ yêu cầu số tiền tối thiểu cao hơn hoặc trả ít tiền hơn cam kết. LSP kiểm tra contract quan sát được bởi caller: input được chấp nhận, output được bảo đảm, invariant và các side effect.
+
 ### How – Vi phạm LSP nổi tiếng: Rectangle–Square
 
 ```java
@@ -291,6 +308,9 @@ class ReadOnlyList<E> extends ArrayList<E> {
 > "Clients should not be forced to depend on interfaces they do not use."
 
 Tạo nhiều interface nhỏ, chuyên biệt thay vì 1 interface lớn (fat interface).
+
+> 💡 **Giải thích dễ hiểu — phát đúng bộ dụng cụ cho từng vai trò:**
+> Nhân viên giao hàng cần ứng dụng xem địa chỉ và xác nhận giao, không cần nút sửa bảng lương. Interface lớn khiến implementation phải viết method vô nghĩa hoặc ném `UnsupportedOperationException`, đồng thời client bị phụ thuộc vào những thay đổi không liên quan. Role interface nhỏ mô tả đúng năng lực mà từng client thực sự cần.
 
 ### How – Vi phạm ISP
 
@@ -384,6 +404,9 @@ public class UserProfileService {
 > "High-level modules should not depend on low-level modules. Both should depend on abstractions."
 > "Abstractions should not depend on details. Details should depend on abstractions."
 
+> 💡 **Giải thích dễ hiểu — business đặt chuẩn, hạ tầng cắm vào chuẩn:**
+> `OrderService` quyết định nó cần “lưu order” chứ không nên quyết định câu lệnh MySQL cụ thể. Interface `OrderRepository` nằm ở ranh giới do use case cần; adapter JPA, MongoDB hoặc in-memory triển khai ranh giới đó. Mũi tên phụ thuộc source code vì vậy hướng từ chi tiết hạ tầng về abstraction của tầng chính sách.
+
 ### How – Vi phạm DIP
 
 ```java
@@ -447,6 +470,9 @@ void placeOrder_savesAndNotifies() {
 ### How – IoC Container (Spring)
 DIP là nền tảng của **Inversion of Control (IoC)** và **Dependency Injection (DI)**:
 
+> 💡 **Giải thích dễ hiểu — DIP, DI và IoC không phải một thứ:**
+> **DIP** là nguyên lý chọn hướng phụ thuộc; **DI** là kỹ thuật truyền dependency từ ngoài vào thay vì tự `new`; **IoC container** như Spring là công cụ tạo và nối object. Có thể tuân thủ DIP bằng constructor injection thủ công mà không dùng Spring, và dùng DI container cũng chưa chắc tuân thủ DIP nếu business code vẫn phụ thuộc trực tiếp vào class hạ tầng.
+
 ```java
 @Service
 public class OrderService {
@@ -489,6 +515,9 @@ public class OrderService {
 ---
 
 ## Trade-offs
+
+> 💡 **Giải thích dễ hiểu — chỉ trả chi phí abstraction khi nó mua được sự linh hoạt:**
+> Mỗi interface và lớp trung gian thêm một điểm phải đặt tên, đọc, debug và điều hướng. Với code ổn định, cụ thể và chỉ có một implementation, abstraction có thể chưa đem lại lợi ích. Refactor khi xuất hiện trục thay đổi thật thường tốt hơn dự đoán mọi khả năng ngay từ đầu.
 
 | Ưu điểm | Nhược điểm |
 |---------|-----------|

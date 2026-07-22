@@ -1,12 +1,18 @@
 # Object Contract Methods: equals / hashCode / Comparable / clone (Deep Dive)
 
 > Phương pháp: What – How – Why – Components – When – Compare – Trade-offs – Real-world – Ghi chú
+>
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
 
 ---
 
 ## What – "Contract methods" là gì?
 
-Mọi class trong Java kế thừa `java.lang.Object`, cung cấp các method mà **toàn bộ ecosystem dựa vào**: Collections (HashMap, TreeSet), serialization, debug... Override sai các method này gây bug **ngầm và khó tìm** (mất phần tử trong Set, không tìm thấy key trong Map). Đây là các **"contract"** (giao kèo) có quy tắc toán học bắt buộc.
+Mọi class trong Java kế thừa `java.lang.Object`, cung cấp các method mà **toàn bộ ecosystem** *(hệ sinh thái — các thư viện/thành phần xoay quanh)* **dựa vào**: **Collections** *(các cấu trúc chứa dữ liệu như HashMap, TreeSet)*, **serialization** *(tuần tự hóa — chuyển object thành chuỗi byte để lưu/truyền)*, debug... **Override** *(ghi đè — viết lại method của lớp cha)* sai các method này gây bug **ngầm và khó tìm** (mất phần tử trong Set, không tìm thấy key trong Map). Đây là các **"contract"** *(giao kèo — bộ quy tắc bắt buộc phải tuân thủ)* có quy tắc toán học bắt buộc.
+
+> 💡 **Giải thích dễ hiểu — vì sao gọi là "contract" (giao kèo)?**
+> Hãy hình dung Java Collections như một **hệ thống bưu điện khổng lồ**. Bạn đưa object cho nó cất giữ (bỏ vào HashMap, HashSet, TreeSet). Bưu điện chỉ hoạt động đúng nếu mọi bưu kiện tuân theo **quy chuẩn đóng gói chung** — ví dụ "hai bưu kiện giống hệt nhau thì phải có cùng mã vạch". Các method `equals`/`hashCode`/`compareTo` chính là quy chuẩn đó. Nếu bạn tự viết lại (override) mà làm sai quy chuẩn, bưu điện vẫn nhận hàng nhưng sẽ **giao nhầm, làm mất kiện** — mà không báo lỗi gì cả. Đó là loại bug "ngầm" đáng sợ nhất: code chạy, không crash, nhưng kết quả sai.
+> Từ "contract" nhấn mạnh: đây không phải gợi ý, mà là **giao kèo ràng buộc** — vi phạm thì cả hệ thống hành xử sai.
 
 `Object` có 11 method; nhóm quan trọng nhất để override đúng:
 - `equals(Object)` + `hashCode()` – định nghĩa "bằng nhau"
@@ -20,7 +26,17 @@ Mọi class trong Java kế thừa `java.lang.Object`, cung cấp các method m�
 
 ## How – `equals()` Contract (5 quy tắc)
 
-`equals` mặc định ở `Object` là so sánh **identity** (`==`, cùng địa chỉ). Khi override phải giữ 5 tính chất:
+`equals` mặc định ở `Object` là so sánh **identity** *(danh tính — có phải cùng một object trong bộ nhớ không)* (`==`, cùng địa chỉ). Khi override phải giữ 5 tính chất:
+
+> 💡 **Giải thích dễ hiểu — 5 quy tắc của `equals`:**
+> Mặc định, `equals` hỏi "có phải cùng **một** vật thể không?" — như hỏi hai người có phải cùng một người không (cùng chứng minh thư). Nhưng thường ta muốn hỏi "hai vật này có **giống nhau về nội dung** không?" — như hai tờ 50k tuy là hai tờ khác nhau nhưng giá trị như nhau. Đó là lý do phải override `equals`.
+> Năm quy tắc chỉ là các đòi hỏi của lẽ thường về "bằng nhau", diễn đạt bằng ngôn ngữ toán:
+> - **Reflexive** *(phản xạ)*: mọi vật luôn bằng chính nó (A = A).
+> - **Symmetric** *(đối xứng)*: nếu A giống B thì B cũng phải giống A — không thể một chiều.
+> - **Transitive** *(bắc cầu)*: A giống B, B giống C thì A giống C — như quan hệ họ hàng.
+> - **Consistent** *(nhất quán)*: hỏi bao nhiêu lần cũng ra cùng đáp án (nếu object không đổi).
+> - **Non-null**: so với `null` luôn trả `false`, không được ném lỗi.
+> Nghe hiển nhiên, nhưng khi có kế thừa thì rất dễ vô tình phá vỡ (xem bẫy symmetry ngay dưới).
 
 | Tính chất | Ý nghĩa |
 |-----------|---------|

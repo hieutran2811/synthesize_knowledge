@@ -1,14 +1,30 @@
 # Concurrency Advanced – Fork/Join, Lock-free, Patterns
 
 > Phương pháp: What – How – Why – Components – When – Compare – Trade-offs – Real-world – Ghi chú
+>
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
 
 ---
 
+## What – Advanced Concurrency giải quyết điều gì?
+
+Các công cụ **advanced concurrency** *(lập trình đồng thời nâng cao)* giải quyết ba nhóm vấn đề: chia công việc CPU để chạy song song, phối hợp nhiều luồng mà không tạo vòng chờ, và truyền hoặc công bố trạng thái giữa các luồng một cách an toàn. Không có công cụ “nhanh nhất” cho mọi tình huống; lựa chọn đúng phụ thuộc **workload** *(dạng tải thực tế)*, mức **contention** *(tranh chấp tài nguyên)* và yêu cầu về tính đúng đắn.
+
+**Concurrency primitive** *(công cụ phối hợp đồng thời cấp thấp)* như CAS, barrier hay semaphore là các khối xây dựng. Pattern cấp cao như immutable state, thread confinement và asynchronous pipeline giúp ghép chúng thành thiết kế dễ kiểm soát hơn.
+
+> 💡 **Giải thích dễ hiểu:**
+> Đây là hộp dụng cụ điều phối một đội đông người: có dụng cụ chia việc, điểm danh ở từng chặng, giới hạn số người vào phòng và cách thay bảng thông báo mà người đọc không thấy bản dở dang. Chọn sai dụng cụ vẫn có thể làm hệ thống chậm hoặc sai dù code không báo lỗi.
+
 ## How – Fork/Join Framework (Java 7+)
 
-**Fork/Join** = divide-and-conquer parallelism. Chia bài toán lớn thành sub-tasks, chạy song song, merge kết quả.
+**Fork/Join** là mô hình **divide-and-conquer parallelism** *(song song hóa bằng cách chia để trị)*. Bài toán lớn được chia thành các **sub-task** *(tác vụ con)*, chạy song song rồi hợp nhất kết quả.
 
-### Work-Stealing Algorithm
+> 💡 **Giải thích dễ hiểu:**
+> Hãy hình dung một đơn hàng lớn được chia cho nhiều nhân viên đóng gói. Mỗi người xử lý một phần, sau đó các phần được gom lại thành đơn hoàn chỉnh. Fork là “chia việc”, join là “chờ và ghép kết quả”.
+
+### Work-Stealing Algorithm *(thuật toán đánh cắp công việc)*
+
+Mỗi worker duy trì một **deque** *(hàng đợi hai đầu)* riêng:
 
 ```
 ForkJoinPool có N worker threads, mỗi thread có deque riêng:
@@ -18,9 +34,12 @@ Thread-2 deque: []  ← idle → steal từ đuôi của Thread-1 (FIFO)
 
 Tại sao LIFO + steal FIFO?
 - LIFO (local): cache locality tốt (sub-task vừa fork còn warm trong cache)
-- Steal FIFO: steal task cũ nhất → task lớn nhất → nhiều công việc nhất
+- Steal FIFO: lấy task cũ nhất; với bài toán chia đệ quy, đây thường là task thô hơn và còn nhiều việc hơn
 - Tránh contention: producer push từ đầu, stealer steal từ đuôi (ít contention hơn)
 ```
+
+> 💡 **Giải thích dễ hiểu:**
+> Mỗi worker có một chồng việc riêng và ưu tiên việc mới nhất để tận dụng dữ liệu còn “nóng” trong CPU cache. Worker hết việc sẽ lấy từ đầu kia của hàng đợi đồng nghiệp, giống nhân viên rảnh lấy một thùng hàng lớn chưa ai xử lý mà ít va chạm với người đang thêm việc.
 
 ### RecursiveTask (có kết quả)
 
@@ -72,6 +91,11 @@ ForkJoinPool customPool = new ForkJoinPool(
     null,  // UncaughtExceptionHandler
     false  // asyncMode: false=LIFO (default), true=FIFO (for event-driven)
 );
+try {
+    int[] customSorted = customPool.invoke(new MergeSortTask(array, 0, array.length));
+} finally {
+    customPool.shutdown(); // pool tự tạo phải có lifecycle rõ ràng
+}
 ```
 
 ### RecursiveAction (không có kết quả)
@@ -84,6 +108,13 @@ class FillAction extends RecursiveAction {
     private final int from, to;
     private final double value;
 
+    FillAction(double[] data, int from, int to, double value) {
+        this.data = data;
+        this.from = from;
+        this.to = to;
+        this.value = value;
+    }
+
     @Override
     protected void compute() {
         if (to - from <= THRESHOLD) {
@@ -94,7 +125,7 @@ class FillAction extends RecursiveAction {
         invokeAll(
             new FillAction(data, from, mid, value),
             new FillAction(data, mid, to, value)
-        ); // invokeAll: fork cả 2, join cả 2
+        ); // lên lịch hai action và chờ cả hai hoàn thành
     }
 }
 ```
@@ -105,13 +136,23 @@ class FillAction extends RecursiveAction {
 // Parallel stream dùng ForkJoinPool.commonPool() mặc định
 list.parallelStream().map(this::process).toList();
 
-// Chạy trong custom pool (tránh chiếm commonPool)
+// Cách thường dùng trên OpenJDK để bao terminal operation trong custom pool
+// Lưu ý: Stream API không có tham số pool riêng trong public contract
 ForkJoinPool myPool = new ForkJoinPool(4);
-List<Result> results = myPool.submit(
-    () -> list.parallelStream().map(this::process).toList()
-).get();
-myPool.shutdown();
+List<Result> results;
+try {
+    results = myPool.submit(
+        () -> list.parallelStream().map(this::process).toList()
+    ).get();
+} finally {
+    myPool.shutdown();
+}
 ```
+
+Parallel stream phù hợp nhất với công việc **CPU-bound** *(bị giới hạn chủ yếu bởi năng lực CPU)*. Tác vụ blocking I/O kéo dài có thể giữ worker của pool và làm các tác vụ khác bị chậm. OpenJDK hiện thường thực thi terminal operation được bao như trên bằng pool bao quanh, nhưng Stream API không cam kết cách chọn pool. Nếu cần cô lập tài nguyên với contract rõ ràng, nên biểu diễn công việc trực tiếp bằng `ForkJoinTask` hoặc executor riêng.
+
+> 💡 **Giải thích dễ hiểu:**
+> `commonPool` giống một bếp chung của cả ứng dụng. Một món giữ đầu bếp để chờ mạng hoặc chờ đĩa sẽ khiến món của bộ phận khác bị xếp hàng; pool riêng tạo một nhóm nhân sự riêng, nhưng vẫn cần chọn đúng loại công việc cho nhóm đó.
 
 ---
 
@@ -120,7 +161,7 @@ myPool.shutdown();
 ### Internals
 
 ```
-ThreadLocal KHÔNG lưu trữ trong ThreadLocal object.
+ThreadLocal KHÔNG lưu value trong chính ThreadLocal object.
 Mỗi Thread object có field:
   Thread.threadLocals → ThreadLocalMap (custom HashMap)
   Key: WeakReference<ThreadLocal>  ← yếu, có thể GC
@@ -137,6 +178,11 @@ ThreadLocalMap:
   - Entry extends WeakReference<ThreadLocal<?>>
   - Stale entries được lazy-clean khi probe
 ```
+
+`ThreadLocal` cung cấp **thread confinement** *(giới hạn dữ liệu trong một thread)*: nhiều thread dùng cùng biến `ThreadLocal`, nhưng mỗi thread tra ra value riêng trong `ThreadLocalMap` của chính nó.
+
+> 💡 **Giải thích dễ hiểu:**
+> `ThreadLocal` giống dãy tủ cá nhân tại công ty. Tấm thẻ `ThreadLocal` giúp mỗi nhân viên mở đúng ngăn của mình; cùng một thẻ logic nhưng đồ trong từng ngăn không bị dùng chung.
 
 ```java
 // Tạo và dùng ThreadLocal
@@ -161,7 +207,7 @@ ThreadLocal<Integer> requestId = ThreadLocal.withInitial(
 ### Memory Leak Trong Thread Pool
 
 ```java
-// NGUY HIỂM: Thread pool thread KHÔNG chết → ThreadLocal không được GC!
+// NGUY HIỂM: thread trong pool sống lâu → value có thể bị giữ lâu nếu không remove()!
 ExecutorService pool = Executors.newFixedThreadPool(10);
 
 ThreadLocal<byte[]> cache = new ThreadLocal<>();
@@ -169,10 +215,10 @@ ThreadLocal<byte[]> cache = new ThreadLocal<>();
 pool.submit(() -> {
     cache.set(new byte[1024 * 1024]); // 1MB per thread
     doWork();
-    // THIẾU: cache.remove() → 1MB bị giữ mãi trong thread pool thread!
+    // THIẾU: cache.remove() → 1MB tiếp tục bị giữ sau khi task đã xong!
 });
 
-// Thread pool với 10 threads × 1MB = 10MB leak không bao giờ được giải phóng
+// Pool 10 threads có thể giữ khoảng 10MB cho tới khi entry được dọn hoặc thread chết
 
 // FIX: LUÔN remove() trong finally
 pool.submit(() -> {
@@ -185,10 +231,13 @@ pool.submit(() -> {
 });
 
 // Key trong ThreadLocalMap là WeakReference → key bị GC khi ThreadLocal bị GC
-// Nhưng VALUE là strong reference → value KHÔNG bị GC dù key bị!
-// → Key là null (phantom), Value còn sống → stale entry leak
-// Chỉ được clean khi ThreadLocalMap probe lần sau hoặc thread chết
+// Nhưng VALUE là strong reference → value vẫn bị giữ khi entry chưa được dọn
+// → Key trở thành null, entry trở thành stale entry (không phải phantom reference)
+// Entry thường được dọn khi ThreadLocalMap thực hiện get/set/remove liên quan hoặc thread chết
 ```
+
+> 💡 **Giải thích dễ hiểu:**
+> Key yếu giống nhãn giấy có thể rơi khỏi ngăn tủ, nhưng đồ bên trong vẫn còn vì chiếc tủ (thread) vẫn tồn tại. `remove()` là thao tác chủ động dọn ngăn sau mỗi request, thay vì chờ một lần tra cứu tương lai tình cờ quét rác.
 
 ### InheritableThreadLocal
 
@@ -209,19 +258,21 @@ child.start();
 // Thread pool reuse thread → không phải "child" của request thread
 // → InheritableThreadLocal không hoạt động đúng với thread pools
 
-// Fix: TransmittableThreadLocal (Alibaba open source library)
-// Hoặc: pass context explicitly qua method parameters
+// Giải pháp thư viện: bọc task bằng TransmittableThreadLocal và luôn dọn context
+// Ưu tiên đơn giản, rõ ownership: truyền context tường minh qua method parameters
 ```
+
+`InheritableThreadLocal` sao chép entry tại thời điểm tạo child thread; mặc định parent và child vẫn tham chiếu cùng value object nếu value đó mutable. Nó không tự đồng bộ việc gán value khác về sau. Với thread pool, quan hệ “cha tạo con” không trùng với quan hệ “request gửi task”, nên context có thể thiếu hoặc thuộc request cũ.
 
 ---
 
-## How – Lock-Free Programming
+## How – Lock-Free Programming *(lập trình không dùng khóa loại trừ)*
 
-### CAS (Compare-And-Swap) Pattern
+### CAS (Compare-And-Swap – so sánh và hoán đổi) Pattern
 
 ```java
-// CAS = atomic: read-compare-write, không cần lock
-// Hardware instruction: CMPXCHG (x86)
+// CAS = thao tác nguyên tử read-compare-write, không dùng explicit lock
+// JVM thường ánh xạ xuống lệnh phần cứng phù hợp, ví dụ CMPXCHG trên x86
 
 AtomicInteger counter = new AtomicInteger(0);
 
@@ -244,20 +295,27 @@ do {
 } while (!COUNT.compareAndSet(this, current, current + 1));
 ```
 
-### ABA Problem
+CAS chỉ ghi khi giá trị hiện tại vẫn bằng giá trị kỳ vọng. Nếu thread khác đã chen vào thay đổi dữ liệu, thao tác thất bại và vòng lặp tính lại; vì vậy không bị blocking do chờ lock, nhưng có thể tốn CPU khi tranh chấp cao.
+
+> 💡 **Giải thích dễ hiểu:**
+> CAS giống quầy đổi giá có điều kiện: “chỉ đổi nhãn 100 thành 101 nếu nhãn vẫn đang là 100”. Nếu người khác đã đổi trước, bạn đọc nhãn mới rồi thử lại thay vì đứng giữ chìa khóa khóa cả quầy.
+
+### ABA Problem *(vấn đề trạng thái đổi rồi quay lại giá trị cũ)*
 
 ```java
 // ABA: giá trị thay đổi A → B → A, CAS không phát hiện!
 // Thread 1: đọc A, chuẩn bị CAS A → C
 // Thread 2: đổi A → B → A (trong khi Thread 1 đang chuẩn bị)
-// Thread 1: CAS thành công (thấy A), nhưng A là "khác" A
+// Thread 1: CAS thành công vì chỉ so sánh A, dù trạng thái đã trải qua thay đổi
 
 // Classic example: lock-free stack
 AtomicReference<Node> head = new AtomicReference<>(nodeA);
 // Thread 1 muốn pop nodeA, đọc head = nodeA, next = nodeB
 // Thread 2: pop nodeA, pop nodeB, push nodeA lại
 // head = nodeA (same ref!) nhưng nodeA.next = null (nodeB đã bị pop)
-// Thread 1: CAS head: nodeA → nodeB? Thành công! Nhưng nodeB đã bị pop → dangling pointer!
+// Thread 1: CAS head: nodeA → nodeB? Thành công!
+// nodeB vẫn là object hợp lệ nhờ GC, nhưng đã bị loại khỏi stack về mặt logic
+// → nodeB có thể bị đưa trở lại stack và làm sai lịch sử cập nhật
 
 // FIX: AtomicStampedReference (thêm version/stamp)
 AtomicStampedReference<Node> stampedHead =
@@ -278,6 +336,9 @@ boolean success = stampedHead.compareAndSet(
 AtomicMarkableReference<Node> markableRef =
     new AtomicMarkableReference<>(node, false);
 ```
+
+> 💡 **Giải thích dễ hiểu:**
+> ABA giống nhân viên kiểm tra thấy con dấu “A” trước và sau giờ nghỉ nên tưởng hồ sơ chưa bị động tới, dù giữa hai lần kiểm tra hồ sơ đã qua B rồi quay lại A. Stamp đóng vai trò số phiên bản: cùng chữ A nhưng phiên bản khác thì CAS phải từ chối.
 
 ### Lock-Free Stack Implementation
 
@@ -315,7 +376,7 @@ public class LockFreeStack<T> {
 
 ## How – Phaser (Java 7+)
 
-`Phaser` = flexible barrier, combines CountDownLatch + CyclicBarrier + thêm nhiều tính năng.
+`Phaser` là **barrier linh hoạt** *(điểm đồng bộ nơi các thread chờ nhau)*, kết hợp ý tưởng của `CountDownLatch` và `CyclicBarrier`, đồng thời hỗ trợ nhiều phase và đăng ký/deregister party động.
 
 ```java
 // 3 threads chạy qua 3 phases, barrier sau mỗi phase
@@ -339,10 +400,18 @@ Runnable worker = () -> {
 Phaser dynamicPhaser = new Phaser(1); // chỉ main
 for (int i = 0; i < n; i++) {
     dynamicPhaser.register(); // thêm party động
-    executor.submit(() -> {
-        doWork();
-        dynamicPhaser.arriveAndDeregister();
-    });
+    try {
+        executor.submit(() -> {
+            try {
+                doWork();
+            } finally {
+                dynamicPhaser.arriveAndDeregister();
+            }
+        });
+    } catch (RejectedExecutionException e) {
+        dynamicPhaser.arriveAndDeregister(); // hoàn tác register nếu submit thất bại
+        throw e;
+    }
 }
 dynamicPhaser.arriveAndAwaitAdvance(); // main chờ tất cả
 
@@ -353,11 +422,14 @@ Phaser child2 = new Phaser(root, 100); // 100 threads trong group 2
 // child advances → khi cả child1 và child2 advance → root advances
 ```
 
+> 💡 **Giải thích dễ hiểu:**
+> Phaser giống một chuyến tham quan có nhiều chặng. Cả nhóm phải tập hợp đủ ở mỗi trạm mới đi tiếp, nhưng thành viên có thể đăng ký tham gia hoặc rời đoàn ở các chặng hợp lệ.
+
 ---
 
 ## How – Exchanger
 
-`Exchanger` = hai thread trao đổi object tại điểm gặp nhau.
+`Exchanger` là điểm hẹn để đúng hai thread trao đổi object; mỗi bên chờ cho đến khi bên còn lại cũng gọi `exchange()`.
 
 ```java
 Exchanger<DataBuffer> exchanger = new Exchanger<>();
@@ -365,25 +437,38 @@ Exchanger<DataBuffer> exchanger = new Exchanger<>();
 // Producer thread: fill buffer rồi đổi lấy empty buffer
 Thread producer = new Thread(() -> {
     DataBuffer filledBuffer = new DataBuffer();
-    while (true) {
-        fillBuffer(filledBuffer);
-        DataBuffer emptyBuffer = exchanger.exchange(filledBuffer); // exchange!
-        filledBuffer = emptyBuffer; // dùng lại empty buffer
+    try {
+        while (!Thread.currentThread().isInterrupted()) {
+            fillBuffer(filledBuffer);
+            filledBuffer = exchanger.exchange(filledBuffer); // nhận buffer rỗng
+        }
+    } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
     }
 });
 
 // Consumer thread: lấy filled buffer, đổi lại empty buffer
 Thread consumer = new Thread(() -> {
     DataBuffer emptyBuffer = new DataBuffer();
-    while (true) {
-        DataBuffer filledBuffer = exchanger.exchange(emptyBuffer); // exchange!
-        consume(filledBuffer);
-        emptyBuffer = filledBuffer; // recycle
+    try {
+        while (!Thread.currentThread().isInterrupted()) {
+            DataBuffer filledBuffer = exchanger.exchange(emptyBuffer);
+            consume(filledBuffer);
+            emptyBuffer = filledBuffer; // trả buffer này ở vòng sau
+        }
+    } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
     }
 });
 
+producer.start();
+consumer.start();
+
 // Dùng khi: double buffering, pipeline handoff giữa 2 threads
 ```
+
+> 💡 **Giải thích dễ hiểu:**
+> Hai thread giống hai người gặp nhau giữa cầu để đổi giỏ: producer đưa giỏ đầy và nhận giỏ rỗng; consumer làm ngược lại. Nếu một người không tới, người kia phải chờ hoặc dùng overload có timeout.
 
 ---
 
@@ -398,12 +483,9 @@ CompletableFuture<String> withDefault = fetchDataAsync()
     .completeOnTimeout("default-value", 5, TimeUnit.SECONDS); // trả về default nếu timeout
 
 // Delay (Java 9+)
-CompletableFuture<String> delayed = CompletableFuture
-    .supplyAsync(() -> "result")
-    .thenComposeAsync(result ->
-        CompletableFuture.completedFuture(result)
-            .completeOnTimeout(result, 0, TimeUnit.MILLISECONDS),
-        CompletableFuture.delayedExecutor(1, TimeUnit.SECONDS)); // delay 1s
+Executor delayedExecutor = CompletableFuture.delayedExecutor(1, TimeUnit.SECONDS);
+CompletableFuture<String> delayed =
+    CompletableFuture.supplyAsync(() -> "result", delayedExecutor); // bắt đầu sau 1s
 
 // Error recovery chain
 CompletableFuture<String> resilient = fetchFromPrimary()
@@ -448,6 +530,11 @@ CompletableFuture<Report> report = CompletableFuture
     .thenApply(this::aggregateReports);
 ```
 
+`orTimeout()` và `completeOnTimeout()` hoàn tất chính `CompletableFuture` theo hai cách khác nhau, nhưng không đảm bảo hủy computation hoặc I/O đang chạy bên dưới. Muốn giải phóng tài nguyên thật sự, tác vụ cần hỗ trợ cancellation, deadline hoặc timeout ở HTTP/database client.
+
+> 💡 **Giải thích dễ hiểu:**
+> Timeout của future giống việc khách ngừng chờ và nhận thông báo “quá giờ”; điều đó không có nghĩa nhà bếp đã tự dừng nấu. Cần truyền timeout xuống nơi thực hiện công việc nếu muốn ngừng tiêu tốn tài nguyên.
+
 ---
 
 ## How – Flow API (Reactive Streams, Java 9+)
@@ -455,7 +542,7 @@ CompletableFuture<Report> report = CompletableFuture
 ```java
 // Flow.Publisher, Flow.Subscriber, Flow.Subscription, Flow.Processor
 
-// Custom Publisher (simple)
+// Publisher tối giản để học protocol; phát đồng bộ, không dành cho production
 public class RangePublisher implements Flow.Publisher<Integer> {
     private final int from, to;
     RangePublisher(int from, int to) { this.from = from; this.to = to; }
@@ -464,20 +551,28 @@ public class RangePublisher implements Flow.Publisher<Integer> {
     public void subscribe(Flow.Subscriber<? super Integer> subscriber) {
         subscriber.onSubscribe(new Flow.Subscription() {
             private int current = from;
-            private boolean cancelled = false;
+            private boolean cancelled;
+            private boolean done;
 
             @Override
-            public void request(long n) {
-                for (long i = 0; i < n && current < to && !cancelled; i++) {
+            public synchronized void request(long n) {
+                if (cancelled || done) return;
+                if (n <= 0) {
+                    done = true;
+                    subscriber.onError(new IllegalArgumentException("n must be > 0"));
+                    return;
+                }
+                for (long i = 0; i < n && current < to && !cancelled && !done; i++) {
                     subscriber.onNext(current++);
                 }
-                if (current >= to && !cancelled) {
+                if (current >= to && !cancelled && !done) {
+                    done = true;
                     subscriber.onComplete();
                 }
             }
 
             @Override
-            public void cancel() { cancelled = true; }
+            public synchronized void cancel() { cancelled = true; }
         });
     }
 }
@@ -513,6 +608,11 @@ publisher.submit("item2");
 publisher.close(); // onComplete
 ```
 
+**Backpressure** *(điều tiết tốc độ từ bên nhận)* nằm ở `Subscription.request(n)`: subscriber chỉ cấp “hạn mức” số item publisher được phép gửi. Publisher production còn phải xử lý request đồng thời hoặc reentrant, nhu cầu cộng dồn, overflow, exception và quy tắc phát signal tuần tự; thường nên dùng thư viện Reactive Streams thay vì tự cài đặt.
+
+> 💡 **Giải thích dễ hiểu:**
+> Subscriber giống kho hàng báo “tôi còn chỗ cho một kiện”. Publisher chỉ giao đúng số kiện đã được yêu cầu, nhờ vậy kho chậm không bị xe tải đổ hàng vô hạn trước cửa.
+
 ---
 
 ## How – Thread Safety Patterns
@@ -539,9 +639,9 @@ public final class Money {
 ```java
 // Thread confinement: object chỉ được access từ 1 thread → không cần sync
 
-// Stack confinement: local variable không escape
+// Stack confinement: reference cục bộ không escape khỏi method/thread hiện tại
 public void doWork() {
-    List<String> localList = new ArrayList<>(); // thread-confined (trên stack)
+    List<String> localList = new ArrayList<>(); // object thường ở heap, nhưng không bị chia sẻ
     localList.add("a");
     // localList không được chia sẻ → thread-safe tự nhiên
 }
@@ -555,42 +655,58 @@ ThreadLocal<Connection> threadLocalConn = ThreadLocal.withInitial(() -> openConn
 private int counter = 0;
 ```
 
+> 💡 **Giải thích dễ hiểu:**
+> Dữ liệu không được chia sẻ thì không cần tranh khóa. Nó giống một bản nháp chỉ nằm trên bàn của một nhân viên; chỉ khi chuyền bản nháp cho người khác mới phải đặt quy tắc phối hợp.
+
 ### 3. Safe Publication Patterns
 
 ```java
+// Bốn mục dưới đây là các cách publication độc lập, không bắt buộc kết hợp.
 // 1. Static initializer (JVM thread-safe)
 public static final Singleton INSTANCE = new Singleton();
 
-// 2. volatile (JMM guarantee)
+// 2. volatile: publish bằng volatile write, đọc bằng volatile read
 private volatile Config config;
 
-// 3. final (immutable guarantee after constructor)
-private final Map<String, String> data;
+// 3. final field + immutable object, khởi tạo đầy đủ trong constructor
+final class Holder {
+    private final Map<String, String> data;
+
+    Holder(Map<String, String> source) {
+        this.data = Map.copyOf(source);
+    }
+}
 
 // 4. synchronized publication
-private synchronized void setConfig(Config c) { this.config = c; }
-private synchronized Config getConfig() { return this.config; }
+private Config synchronizedConfig;
+private synchronized void setConfig(Config c) { this.synchronizedConfig = c; }
+private synchronized Config getConfig() { return this.synchronizedConfig; }
 ```
+
+`final` bảo đảm reference không bị gán lại và có ngữ nghĩa khởi tạo an toàn cho final field; nó không tự làm object được tham chiếu trở thành immutable. Vì vậy ví dụ dùng `Map.copyOf()` để không công bố một `Map` mutable ra ngoài.
 
 ### 4. Immutable Object + Volatile Reference Pattern
 
 ```java
 // Copy-on-write immutable config (common in Spring, Guava)
 public class ConfigManager {
-    private volatile Config current; // volatile reference to immutable object
+    private volatile Config current = Config.defaults(); // immutable object
 
     public Config getConfig() {
         return current; // safe: volatile read, Config is immutable
     }
 
-    public void updateConfig(String key, String value) {
+    public synchronized void updateConfig(String key, String value) {
         // Create new immutable config with change
         Config newConfig = current.withChange(key, value); // returns new Config
         current = newConfig; // volatile write
-        // No lock needed! Reads see either old or new Config (both valid)
+        // Reader không cần lock; synchronized tránh lost update giữa nhiều writer
     }
 }
 ```
+
+> 💡 **Giải thích dễ hiểu:**
+> `volatile` giống bảng thông báo được thay nguyên tờ: người đọc luôn thấy tờ cũ hoặc tờ mới hoàn chỉnh. Nhưng hai người cùng sửa từ một bản cũ có thể dán đè nhau, nên writer phải khóa hoặc cập nhật bằng CAS.
 
 ---
 
@@ -598,8 +714,9 @@ public class ConfigManager {
 
 ```java
 // 1. Lock Ordering (canonical order)
-// Luôn acquire lock theo thứ tự hash/id
+// Luôn acquire lock theo một ID duy nhất và ổn định
 public void transfer(Account from, Account to, BigDecimal amount) {
+    if (from == to) return;
     Account first  = from.getId() < to.getId() ? from : to;
     Account second = from.getId() < to.getId() ? to : from;
 
@@ -612,7 +729,8 @@ public void transfer(Account from, Account to, BigDecimal amount) {
 }
 
 // 2. tryLock with timeout
-public boolean transfer(Account from, Account to, BigDecimal amount) {
+public boolean transfer(Account from, Account to, BigDecimal amount)
+        throws InterruptedException {
     long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1);
     while (true) {
         if (from.lock.tryLock()) {
@@ -627,7 +745,7 @@ public boolean transfer(Account from, Account to, BigDecimal amount) {
             } finally { from.lock.unlock(); }
         }
         if (System.nanoTime() >= deadline) return false; // timeout
-        Thread.sleep(1); // backoff
+        Thread.sleep(ThreadLocalRandom.current().nextLong(1, 10)); // backoff có jitter
     }
 }
 
@@ -640,6 +758,11 @@ try {
 } finally { GLOBAL_LOCK.unlock(); }
 ```
 
+Lock ordering chỉ an toàn khi khóa có khóa sắp xếp duy nhất; dùng `hashCode()` có thể đụng độ và ID trùng nhau cũng cần tie-breaker. `tryLock()` giúp thoát khi không lấy đủ lock, nhưng retry đồng nhịp vẫn có thể gây **livelock** *(các thread vẫn chạy nhưng liên tục nhường nhau nên không tiến triển)*; backoff có jitter giúp giảm rủi ro này.
+
+> 💡 **Giải thích dễ hiểu:**
+> Nếu mọi người luôn lấy chìa khóa phòng A trước phòng B thì không tạo vòng chờ A↔B. Khi không lấy đủ chìa khóa, họ trả lại và thử sau; nên chờ lệch nhau một chút để tránh cả hai cứ cùng lấy rồi cùng trả mãi.
+
 ---
 
 ## Components – Concurrency Tools Summary
@@ -649,12 +772,12 @@ try {
 | `synchronized` | Simple critical section | Reentrant, JVM native |
 | `ReentrantLock` | Advanced locking (timeout, fair) | Condition variables |
 | `ReadWriteLock` | Read-heavy, write-rare | Multiple concurrent readers |
-| `StampedLock` | Optimistic read | Fastest for read-mostly |
-| `AtomicXxx` | Single variable, no lock | CAS hardware instruction |
+| `StampedLock` | Optimistic read | Có thể giảm chi phí ở tải read-mostly; phải validate |
+| `AtomicXxx` | Atomic update cho một trạng thái nhỏ | CAS, không dùng explicit lock |
 | `LongAdder` | High-contention counter | Stripe-based, low contention |
 | `ThreadLocal` | Per-thread state | No sharing needed |
 | `ForkJoinPool` | CPU-bound divide-conquer | Work-stealing |
-| `CompletableFuture` | Async pipelines | Non-blocking composition |
+| `CompletableFuture` | Async pipelines | Composition không bắt buộc block; task vẫn có thể block |
 | `CountDownLatch` | One-time barrier | Main waits workers |
 | `CyclicBarrier` | Reusable barrier | N threads sync at checkpoints |
 | `Phaser` | Multi-phase, dynamic | Register/deregister parties |
@@ -668,11 +791,13 @@ try {
 
 | Pattern | Throughput | Latency | Complexity | Risk |
 |---------|-----------|---------|-----------|------|
-| Coarse lock | Low | High | Low | Deadlock possible |
-| Fine-grained lock | High | Low | High | Deadlock, livelock |
-| Lock-free (CAS) | Highest | Lowest | Very high | ABA problem |
+| Coarse lock | Thường thấp khi contention cao | Có thể cao | Low | Giảm song song; vẫn có thể deadlock với lock khác |
+| Fine-grained lock | Có thể cao | Thường thấp hơn | High | Deadlock, livelock |
+| Lock-free (CAS) | Cao khi retry ít | Thấp khi contention thấp | Very high | ABA, starvation, retry storm |
 | STM (via libraries) | Medium | Medium | Medium | Not JDK built-in |
 | Actor model | High | Medium | Medium | Library needed |
+
+Các mức throughput và latency chỉ mang tính định hướng. Kết quả thực tế phụ thuộc contention, kích thước critical section, số core, allocation và workload; lock-free không mặc nhiên nhanh hơn lock.
 
 ---
 
@@ -684,9 +809,14 @@ try {
 @Service
 public class ReportService {
     private final ForkJoinPool reportPool = new ForkJoinPool(
-        Math.max(2, Runtime.getRuntime().availableProcessors() / 2)
-        // Dùng nửa core cho report, để nửa còn lại cho HTTP requests
+        Math.max(1, Runtime.getRuntime().availableProcessors() / 2)
+        // Giới hạn độ song song của report; không "giữ riêng" core vật lý
     );
+
+    @PreDestroy
+    void shutdownPool() {
+        reportPool.shutdown();
+    }
 
     public Report generateReport(List<Department> departments) {
         return reportPool.invoke(new DepartmentReportTask(departments, 0, departments.size()));
@@ -758,11 +888,11 @@ public class AuditService {
 public class ExternalApiClient {
     // Cho phép tối đa 10 concurrent calls tới external API
     private final Semaphore concurrencyLimit = new Semaphore(10);
-    // Leaky bucket: tối đa 100 calls/giây
+    // Bucket đơn giản: cấp tối đa 100 token sau mỗi nhịp 1 giây
     private final Semaphore rateBucket = new Semaphore(100);
 
     @Scheduled(fixedRate = 1000)
-    public void refillBucket() {
+    public synchronized void refillBucket() { // tránh hai lần refill chạy chồng nhau
         int deficit = 100 - rateBucket.availablePermits();
         if (deficit > 0) rateBucket.release(deficit);
     }
@@ -780,6 +910,11 @@ public class ExternalApiClient {
     }
 }
 ```
+
+Đây là bộ giới hạn theo nhịp refill đơn giản, gần **token bucket** *(xô token)* hơn leaky bucket. Nó cho phép burst và có thể chấp nhận gần 200 request trong một khoảng rất ngắn nằm hai phía của thời điểm refill; nếu cần rolling-window chính xác hoặc chạy nhiều instance, nên dùng rate limiter chuyên dụng với kho trạng thái dùng chung.
+
+> 💡 **Giải thích dễ hiểu:**
+> Mỗi request phải lấy một vé trong hộp 100 vé, hết vé thì chờ hoặc bị từ chối. Mỗi giây hộp được bù đầy; vì vậy khách đến sát trước và sát sau lúc bù vé có thể tạo một đợt đông ngắn.
 
 ---
 

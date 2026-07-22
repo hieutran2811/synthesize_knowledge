@@ -1,14 +1,19 @@
 # Sealed Classes & Interfaces (Java 17)
 
 > Phương pháp: What – How – Why – Components – When – Compare – Trade-offs – Real-world – Ghi chú
+>
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
 
 ---
 
 ## What – Sealed Class là gì?
 
-**Sealed class/interface** (Java 17, preview Java 15–16) là class/interface **giới hạn tập subtype được phép**.
+**Sealed class/interface** *(lớp/interface niêm phong)* — chính thức từ Java 17, preview ở Java 15–16 — là class/interface **giới hạn tập subtype được phép**.
 
 Thay vì ai cũng có thể extends/implements → bạn kiểm soát chính xác ai được phép.
+
+> 💡 **Giải thích dễ hiểu — danh sách khách mời có kiểm soát:**
+> Class cha thông thường giống sự kiện mở: bất kỳ code nào cũng có thể tạo subtype mới. Sealed type giống sự kiện có danh sách khách mời `permits`: compiler chỉ cho đúng các subtype đã đăng ký bước vào. Nhờ biết toàn bộ “gia đình”, compiler có thể kiểm tra một `switch` đã xử lý đủ mọi trường hợp hay chưa.
 
 ```java
 // Sealed: chỉ Circle, Rectangle, Triangle được phép implement
@@ -63,11 +68,17 @@ public class Lizard extends ExoticAnimal {}  // OK
 public class Parrot extends ExoticAnimal {}  // OK
 ```
 
+> 💡 **Giải thích dễ hiểu — mỗi nhánh phải nói rõ tương lai của nó:**
+> `final` là đóng nhánh tại đây; `sealed` là nhánh vẫn tách tiếp nhưng tiếp tục có danh sách cho phép; `non-sealed` là tháo niêm phong và cho phép mở rộng tự do trở lại. Không có lựa chọn mặc định vì compiler buộc tác giả subtype thể hiện rõ ý định thiết kế.
+
 ---
 
 ## How – Algebraic Data Types (ADT)
 
 Sealed classes + Records = **Algebraic Data Types** trong Java — đặc biệt là **Sum Type** (A hoặc B hoặc C):
+
+> 💡 **Giải thích dễ hiểu — Sum Type là “một trong các mẫu phiếu”:**
+> `Result<T>` không phải đồng thời là thành công và thất bại; nó là **hoặc** `Success<T>` **hoặc** `Failure<T>`. Sealed interface khóa danh sách lựa chọn, còn record mô tả dữ liệu riêng của từng lựa chọn. Cách model này làm trạng thái bất hợp lệ khó biểu diễn hơn so với một class có hàng loạt field nullable như `data`, `errorCode`, `errorMessage`.
 
 ```java
 // Result type: Success hoặc Failure
@@ -165,6 +176,9 @@ String handlePayment(PaymentResult result) {
 
 Sức mạnh chính của Sealed: **compiler kiểm tra exhaustiveness** trong switch:
 
+> 💡 **Giải thích dễ hiểu — compiler làm checklist hộ bạn:**
+> Với hierarchy mở, compiler không biết ngày mai có subtype nào mới nên thường cần `default`. Với sealed hierarchy, nó có danh sách đầy đủ và đánh dấu từng case như checklist. Khi thêm `SlackNotification`, các `switch` thiếu case mới sẽ lỗi ngay lúc biên dịch thay vì rơi vào nhánh mặc định hoặc lỗi âm thầm ở production.
+
 ```java
 public sealed interface Notification permits EmailNotification, SMSNotification, PushNotification {}
 record EmailNotification(String to, String subject, String body) implements Notification {}
@@ -218,6 +232,9 @@ String classify(Shape shape) {
 
 Trước Sealed: Visitor Pattern phức tạp để add operations không sửa class.
 Với Sealed: dùng switch expression đơn giản hơn nhiều.
+
+> 💡 **Giải thích dễ hiểu — chọn nơi đặt độ phức tạp:**
+> Visitor phù hợp khi tập loại dữ liệu ổn định nhưng thường xuyên thêm operation và cần tách operation thành object. Sealed + pattern switch thường dễ đọc hơn khi hierarchy nhỏ, thuộc cùng domain và bạn muốn compiler kiểm tra đầy đủ. Nó không “xóa sổ” Visitor; nó cung cấp lựa chọn gọn hơn cho các cây kiểu đóng như AST, state và result.
 
 ```java
 // Biểu thức toán học

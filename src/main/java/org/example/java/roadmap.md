@@ -4,6 +4,7 @@
 ```
 java/
 ├── roadmap.md                      ← file này
+├── glossary.md                     ← bảng thuật ngữ Java dùng chung, sắp xếp A–Z
 ├── java_knowledge.md               ← overview tổng quan
 ├── oop/                            ← OOP deep dive
 │   ├── encapsulation.md

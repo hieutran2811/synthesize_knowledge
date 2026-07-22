@@ -1,12 +1,17 @@
 # JIT Compiler & JVM Performance (Deep Dive)
 
 > Phương pháp: What – How – Why – Components – When – Compare – Trade-offs – Real-world – Ghi chú
+>
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
 
 ---
 
 ## What – JIT Compiler là gì?
 
-**JIT (Just-In-Time) Compiler** là thành phần của JVM biên dịch **bytecode → native machine code** tại runtime — khi phát hiện code được chạy nhiều lần (hot code).
+**JIT (Just-In-Time) Compiler** *(trình biên dịch tức thời)* là thành phần của JVM biên dịch **bytecode → native machine code** *(mã máy chạy trực tiếp trên CPU)* ngay trong lúc chương trình chạy, khi phát hiện một đoạn code được gọi nhiều lần (*hot code — code “nóng”*).
+
+> 💡 **Giải thích dễ hiểu — JVM vừa chạy vừa học:**
+> Ban đầu JVM dùng **interpreter** *(trình thông dịch)* để đọc bytecode từng lệnh nên khởi động nhanh nhưng chạy chưa tối ưu. Trong lúc đó JVM ghi lại “đường nào đông xe nhất”. Đoạn code chạy thường xuyên sẽ được JIT xây thành “đường cao tốc” mã máy dành riêng cho CPU hiện tại. Vì vậy ứng dụng Java thường chậm hơn lúc mới bật nhưng nhanh dần sau giai đoạn **warmup** *(làm nóng)*.
 
 ```
 Source (.java)
@@ -43,6 +48,9 @@ Tier 4: C2 – Aggressively optimized (ultimate performance)
   └── Khi profiling data đủ
   └── Slow compile, fast execute
 ```
+
+> 💡 **Giải thích dễ hiểu — tiered compilation là nâng cấp theo nhu cầu:**
+> JVM không bỏ thời gian tối ưu sâu mọi method ngay từ đầu. Nó giống bếp ăn: món ít người gọi được làm nhanh theo cách đơn giản (interpreter/C1); món bán chạy mới được chuẩn hóa dây chuyền kỹ hơn (C2). Cách nhiều tầng này cân bằng giữa **startup nhanh** và **throughput cao sau warmup**.
 
 ```java
 // JVM flags
@@ -139,6 +147,9 @@ void caller() {
 
 **Hệ quả**: nhiều short-lived objects thực tế không được allocate trên heap → GC pressure giảm.
 
+> 💡 **Giải thích dễ hiểu — inlining mở đường cho escape analysis:**
+> **Inlining** giống thay việc “gọi điện hỏi công thức” bằng cách chép thẳng công thức vào chỗ nấu: bỏ chi phí gọi method và giúp JIT nhìn thấy toàn cảnh. Khi nhìn đủ rộng, **escape analysis** phát hiện một object chỉ là hộp đựng tạm trong nội bộ; JIT có thể tháo hộp ra thành vài biến rời (*scalar replacement*) và không tạo object trên heap. Kết quả là vừa chạy nhanh hơn vừa giảm việc cho GC.
+
 ### 3. Loop Optimizations
 
 **Loop Unrolling**:
@@ -220,6 +231,9 @@ if (animal instanceof Dog) {
 ## How – Deoptimization
 
 Khi JIT compile dựa trên assumption sau đó sai → **deoptimize** (quay về interpreter):
+
+> 💡 **Giải thích dễ hiểu — tối ưu suy đoán có đường lui:**
+> Nếu 99% lần gọi đều nhận `Dog`, JIT mạnh dạn tối ưu riêng cho `Dog`. Khi một `Cat` bất ngờ xuất hiện, giả định không còn đúng nên JVM hủy đoạn mã tối ưu, quay về interpreter để thu thập dữ liệu rồi biên dịch lại. Giống mở làn thu phí riêng cho xe máy: rất nhanh khi toàn xe máy, nhưng phải đổi tổ chức khi xe tải tới. Việc đổi lại này gọi là **deoptimization** *(hủy tối ưu)*.
 
 ```java
 // JIT: chỉ thấy Dog calls → devirtualize tới Dog.sound()

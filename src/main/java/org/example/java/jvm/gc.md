@@ -1,16 +1,21 @@
 # Garbage Collection (GC) – JVM Memory Management
 
 > Phương pháp: What – How – Why – Components – When – Compare – Trade-offs – Real-world – Ghi chú
+>
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
 
 ---
 
 ## What – Garbage Collection là gì?
 
-**Garbage Collection (GC)** là cơ chế tự động thu hồi bộ nhớ của các objects không còn được tham chiếu tới — giải phóng lập trình viên khỏi manual memory management (như `malloc/free` trong C).
+**Garbage Collection (GC)** *(thu gom rác — bộ nhớ)* là cơ chế tự động thu hồi bộ nhớ của các objects *(đối tượng)* không còn được tham chiếu *(reference — không còn biến nào trỏ tới)* tới — giải phóng lập trình viên khỏi việc quản lý bộ nhớ thủ công (manual memory management, như phải tự gọi `malloc/free` trong ngôn ngữ C).
+
+> 💡 **Giải thích dễ hiểu:**
+> Hãy tưởng tượng bộ nhớ RAM như một **bãi đỗ xe**. Mỗi khi chương trình tạo một object (`new Object()`), nó chiếm một chỗ đỗ. Trong C, bạn phải tự nhớ ra chỗ nào không còn xe và tự dọn (dễ quên → bãi đầy → tràn bộ nhớ). Trong Java, **GC là bảo vệ bãi xe tự động**: nó đi tuần, thấy chỗ nào xe đã bỏ đi (không ai còn dùng object đó nữa) thì tự dọn để nhường chỗ cho xe mới. Bạn không cần bận tâm dọn dẹp.
 
 ```
 Object sống → được tham chiếu từ GC Root (stack, static fields, JNI)
-Object chết → không còn path nào từ GC Root tới nó → eligible for GC
+Object chết → không còn path nào từ GC Root tới nó → eligible for GC (đủ điều kiện bị dọn)
 
 GC Root là gì?
   - Local variables trong stack frames đang chạy
@@ -19,6 +24,11 @@ GC Root là gì?
   - Active threads
   - Monitor objects (synchronized blocks)
 ```
+
+> 💡 **Giải thích dễ hiểu — "GC Root" và "còn sống":**
+> GC làm sao biết object nào còn được dùng? Nó bắt đầu từ những điểm gốc chắc chắn đang hoạt động gọi là **GC Root** *(gốc dò tìm)* — ví dụ các biến cục bộ trong hàm đang chạy, các biến `static`, các thread đang sống. Từ các gốc này, GC lần theo chuỗi tham chiếu (A trỏ tới B, B trỏ tới C...). Object nào còn **lần ra được** từ gốc → coi là **còn sống**, giữ lại. Object nào **không còn đường nào** dẫn tới → coi là **rác**, đem dọn.
+>
+> Giống trò chơi "nắm tay": người dẫn đầu (GC Root) nắm tay người kế, người kế nắm người tiếp theo... Ai còn nằm trong chuỗi nắm tay thì an toàn; ai bị tuột tay khỏi chuỗi thì bị loại.
 
 ---
 
@@ -43,6 +53,10 @@ Non-heap:
 
 ### Young Generation
 
+> 💡 **Giải thích dễ hiểu — vì sao chia heap thành nhiều vùng?**
+> Heap *(vùng bộ nhớ chứa object)* được chia thành **Young Generation** *(khu "trẻ" — nơi object mới sinh)* và **Old Generation** *(khu "già" — nơi object sống lâu)*.
+> Ví von: như một **bệnh viện**. Object mới sinh nằm ở khu sơ sinh (Young). Thực tế phần lớn trẻ sơ sinh (object) "ra viện" rất nhanh — tức là object thường chết trẻ, chỉ dùng một chốc rồi bỏ. Vài object trụ được lâu thì mới chuyển sang khu điều trị dài hạn (Old). Nhờ chia khu như vậy, GC chỉ cần quét khu sơ sinh nhỏ và nhanh thường xuyên, ít khi phải quét khu già lớn và chậm.
+
 ```
 Eden (80%) + Survivor 0 (10%) + Survivor 1 (10%)
 
@@ -55,6 +69,12 @@ Object allocation flow:
 6. Age >= tenuring_threshold (default 15) → promote sang Old Gen
 ```
 
+> 💡 **Giải thích dễ hiểu — Eden, Survivor và "lên lão":**
+> - **Eden** *(vườn địa đàng — nơi object "chào đời")*: mọi object mới `new` ra đều nằm đây trước.
+> - **Survivor S0/S1** *(hai khu "sống sót")*: khi Eden đầy, GC quét, object nào còn sống thì được **copy** *(chép)* sang một khu Survivor, phần rác bị xóa sạch. Mỗi lần sống sót qua một đợt quét, object được cộng **1 tuổi** (age +1).
+> - **tenuring_threshold** *(ngưỡng "lên lão", mặc định 15)*: object nào sống sót đủ nhiều lần (đủ "già") sẽ được **promote** *(thăng cấp)* sang Old Generation — nghĩa là "công dân này chứng tỏ sống lâu, chuyển sang khu dài hạn để khỏi quét đi quét lại".
+> - Việc luân phiên copy giữa S0 và S1 (đổi vai "from"/"to") giúp gom object sống về một chỗ, để lại vùng trống liền mạch — tránh bộ nhớ bị vụn.
+
 ```java
 // TLAB (Thread Local Allocation Buffer):
 // Mỗi thread có TLAB riêng trong Eden
@@ -64,6 +84,10 @@ Object allocation flow:
 -XX:TLABSize=512k
 -XX:+PrintTLAB  // xem TLAB stats
 ```
+
+> 💡 **Giải thích dễ hiểu — TLAB và "pointer bump":**
+> **TLAB** *(bộ đệm cấp phát riêng cho mỗi luồng)* giải quyết bài toán tranh chấp. Nếu mọi thread *(luồng chạy song song)* cùng xin chỗ trong Eden, chúng phải xếp hàng chờ khóa (synchronization) → chậm.
+> Ví von: Eden như một **quán buffet đông khách**. Nếu mọi người chung một khay lấy đồ thì phải chen chúc. Giải pháp: chia cho **mỗi khách (thread) một khay riêng (TLAB)**. Trong khay của mình, muốn lấy thêm món chỉ việc đặt vào chỗ trống kế tiếp — đó chính là **pointer bump** *(dịch con trỏ tới ô trống tiếp theo)*: nhanh như `++`, không cần hỏi ai. Chỉ khi khay đầy mới quay lại quầy xin khay mới.
 
 ### Old Generation (Tenured)
 
@@ -77,6 +101,10 @@ Major GC / Full GC: khi Old Gen đầy hoặc promotion fails
 Major GC: chậm hơn Minor GC (large area, whole-heap scan)
 Full GC: stop-the-world, GC cả Young + Old + Metaspace
 ```
+
+> 💡 **Giải thích dễ hiểu — "stop-the-world" (STW):**
+> **stop-the-world** *(tạm dừng toàn bộ ứng dụng)* là khoảnh khắc GC bắt tất cả thread của chương trình **đứng im** để nó dọn dẹp an toàn (nếu vừa dọn vừa để chương trình chạy, object có thể bị di chuyển ngay lúc đang dùng → lỗi).
+> Ví von: như lao công lau sàn siêu thị — họ đặt biển "sàn ướt, dừng lại" và **mọi khách phải đứng yên** vài giây cho tới khi lau xong. Với người dùng cuối, đó là lúc ứng dụng "khựng lại" (freeze). Vì thế mục tiêu tối cao khi tune GC là làm STW **ngắn** và **hiếm** nhất có thể. `Full GC` là đợt dừng lâu nhất vì phải dọn cả heap.
 
 ---
 
@@ -93,6 +121,10 @@ Phase 2: SWEEP
 
 Nhược điểm: fragmentation! Free space rải rác → khó allocate large object
 ```
+
+> 💡 **Giải thích dễ hiểu — Mark-Sweep và "fragmentation":**
+> Thuật toán này 2 bước: **Mark** *(đánh dấu)* — đi từ GC Root tô đậm mọi object còn sống; **Sweep** *(quét dọn)* — xóa những object không được tô.
+> Vấn đề **fragmentation** *(phân mảnh bộ nhớ)*: sau khi xóa, các chỗ trống nằm rải rác xen kẽ với object còn sống. Ví von: **kệ sách** sau khi rút bừa vài cuốn — có nhiều khe hở nhỏ, nhưng khi muốn nhét một cuốn *dày* (object lớn) thì không khe nào đủ rộng, dù tổng chỗ trống vẫn thừa. Đó là lý do cần tới **Mark-Compact** (dồn sách lại một phía cho liền mạch).
 
 ### 2. Mark-Compact
 
@@ -128,9 +160,20 @@ Eden + Survivors: Copying algorithm (fast Minor GC)
 Old Gen: Mark-Compact (slow Major GC, nhưng ít khi xảy ra)
 ```
 
+> 💡 **Giải thích dễ hiểu — "hầu hết object chết trẻ":**
+> **Weak Generational Hypothesis** *(giả thuyết phân thế hệ)* là quan sát thực nghiệm: trong hầu hết chương trình, đại đa số object chỉ sống rất ngắn (biến tạm trong một vòng lặp, kết quả trung gian...) rồi thành rác ngay; chỉ số ít trụ lâu.
+> Ví von: giống **giấy nháp và hồ sơ lưu trữ**. Bạn viết nháp liên tục rồi vứt (object chết trẻ), chỉ thỉnh thoảng mới có tài liệu đáng cất vào tủ lưu dài hạn (Old Gen). GC tận dụng điều này: dọn khu giấy nháp (Young) thật thường xuyên và nhanh, còn tủ lưu trữ (Old) thì hiếm khi phải lục — nhờ vậy tiết kiệm được rất nhiều công.
+
 ---
 
 ## How – Reference Types
+
+> 💡 **Giải thích dễ hiểu — 4 mức "níu giữ" object:**
+> Reference type quyết định GC được phép dọn object "dễ dàng" tới mức nào. Hãy hình dung như **mức độ bạn giữ một món đồ**:
+> - **Strong** *(tham chiếu mạnh — mặc định)*: "Đồ này của tôi, cấm đụng!". GC **không bao giờ** dọn khi còn strong ref. Đây là `Object o = new Object()` thông thường.
+> - **Soft** *(mềm)*: "Giữ giùm, nhưng nếu nhà chật quá thì cứ bỏ đi". GC chỉ dọn **khi sắp hết bộ nhớ**. Hợp cho cache tiếc bộ nhớ.
+> - **Weak** *(yếu)*: "Có thì tốt, không có cũng chẳng sao". GC dọn ngay **đợt quét kế tiếp**, kể cả còn dư bộ nhớ. Dùng cho `WeakHashMap`.
+> - **Phantom** *(bóng ma)*: "Tôi không cần dùng nữa, chỉ muốn được **báo** khi nó thực sự bị dọn xong" — để giải phóng tài nguyên đi kèm (file, kết nối). `get()` luôn trả `null`.
 
 ```java
 // 4 loại reference, quyết định GC behavior
@@ -250,6 +293,11 @@ E = Eden, S = Survivor, O = Old, H = Humongous (large objects)
 # 4. Full GC: fallback nếu concurrent không kịp (slow, avoid!)
 ```
 
+> 💡 **Giải thích dễ hiểu — vì sao G1 gọi là "Garbage First":**
+> Các GC cũ chia heap thành vài khối lớn cố định. G1 chia heap thành **hàng trăm ô vuông nhỏ bằng nhau** gọi là **region** *(vùng nhỏ)*, mỗi ô lúc thì đóng vai Eden, lúc Survivor, lúc Old — linh hoạt.
+> Điểm hay: G1 **ước lượng ô nào chứa nhiều rác nhất và dọn ô đó trước** → thu về nhiều bộ nhớ nhất với công ít nhất, nên tên là "Garbage First" *(rác trước)*.
+> Ví von: dọn nhà mà **ưu tiên hốt cái thùng đầy rác nhất trước**, thay vì lau đều từng phòng. Ngoài ra **concurrent marking** *(đánh dấu song song)* nghĩa là G1 vừa chạy ứng dụng vừa âm thầm rà object sống ở nền, chỉ dừng hẳn (STW) trong khoảng rất ngắn — nhờ vậy đạt được "thời gian dừng mục tiêu" (`MaxGCPauseMillis`) mà bạn đặt ra. **Humongous** *(object khổng lồ)* là object lớn hơn nửa một region, được xếp riêng.
+
 ```bash
 # G1 tuning
 -XX:G1HeapRegionSize=16m          # region size (1, 2, 4, 8, 16, 32 MB)
@@ -281,6 +329,11 @@ E = Eden, S = Survivor, O = Old, H = Humongous (large objects)
 # - Heap lớn (>32GB) mà G1 pause quá dài
 # - Java 21+ với Generational ZGC
 ```
+
+> 💡 **Giải thích dễ hiểu — vì sao ZGC dừng dưới một mili giây:**
+> ZGC làm gần như mọi việc dọn rác trong lúc ứng dụng vẫn chạy (*concurrent*), kể cả di chuyển object (*relocation*). **Colored pointers** *(con trỏ “tô màu”)* lưu một phần trạng thái GC ngay trong reference; **load barrier** *(rào chắn khi đọc)* kiểm tra reference mỗi lần code sử dụng và tự chuyển sang địa chỉ mới nếu object vừa bị dời.
+>
+> Ví von: ZGC sửa đường trong khi xe vẫn chạy và đặt biển chỉ lối ngay trước từng xe, thay vì đóng cả cao tốc theo kiểu *stop-the-world*. Đổi lại, mỗi lượt đọc reference phải trả thêm một chi phí kiểm tra nhỏ.
 
 ### Shenandoah GC
 

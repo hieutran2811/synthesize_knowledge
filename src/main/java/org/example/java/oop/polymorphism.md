@@ -1,12 +1,17 @@
 # Polymorphism (Đa Hình)
 
 > Phương pháp: What – How – Why – Components – When – Compare – Trade-offs – Real-world – Ghi chú
+>
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
 
 ---
 
 ## What – Polymorphism là gì?
 
-**Polymorphism** (đa hình) là khả năng một entity (method, object) thể hiện **nhiều hình thái khác nhau** tùy theo ngữ cảnh.
+**Polymorphism** *(đa hình)* là khả năng cùng một lời gọi hoặc abstraction có **nhiều cách thực hiện khác nhau** tùy kiểu tham số ở compile-time hoặc kiểu object thực ở runtime.
+
+> 💡 **Giải thích dễ hiểu — cùng nút “thanh toán”, nhiều cách xử lý:**
+> Checkout chỉ biết gọi `paymentMethod.pay(amount)`. Credit card, PayPal hay chuyển khoản tự thực hiện theo cách riêng. Caller làm việc với một hợp đồng chung, còn object cụ thể cung cấp hành vi phù hợp; đó là đa hình runtime. Overloading cũng dùng cùng tên method, nhưng compiler chọn phiên bản trước khi chương trình chạy.
 
 Trong Java có 2 loại polymorphism:
 
@@ -38,6 +43,9 @@ Compiler tìm method phù hợp theo thứ tự ưu tiên:
 2. **Widening primitive** (`int` → `long` → `float` → `double`)
 3. **Autoboxing** (`int` → `Integer`)
 4. **Varargs** (`int...`)
+
+> 💡 **Giải thích dễ hiểu — overloading là compiler chọn đúng quầy:**
+> Khi thấy `test(5)`, compiler nhìn kiểu biểu thức là `int` rồi chọn overload cụ thể nhất theo các bước chuyển đổi được phép. Nó không đợi runtime xem object “thực ra là gì”. Vì widening, boxing, varargs và `null` có thể tạo lựa chọn mơ hồ, quá nhiều overload gần giống nhau sẽ khiến API khó đoán.
 
 ```java
 void test(int x)     { System.out.println("int"); }
@@ -117,6 +125,9 @@ s1.area(); // Circle.area() = 78.54...
 s2.area(); // Rectangle.area() = 24.0
 ```
 
+> 💡 **Giải thích dễ hiểu — hợp đồng ở compile-time, implementation ở runtime:**
+> Compiler cho phép `s1.area()` vì kiểu `Shape` có method `area`. Khi chạy, JVM nhìn object thực là `Circle` rồi theo vtable tới `Circle.area`. Hai bước này cho phép code tầng cao chỉ phụ thuộc abstraction nhưng vẫn nhận đúng hành vi của implementation được inject vào.
+
 **Cách JVM thực hiện (Vtable):**
 ```
 Circle vtable:
@@ -183,6 +194,9 @@ p.instanceMethod(); // "Child.instance" – runtime decision (kiểu thực)!
 
 > `static` method KHÔNG có polymorphism. Gọi theo kiểu khai báo, không phải kiểu thực.
 
+> 💡 **Giải thích dễ hiểu — static thuộc biển hiệu class, không thuộc object:**
+> `Parent.staticMethod()` gắn với chính tên `Parent`, nên `p.staticMethod()` được compiler giải quyết theo kiểu khai báo của `p`. Method cùng tên ở `Child` chỉ che khuất (*hiding*), không thay thế một slot virtual. Gọi static qua tên class giúp ý nghĩa rõ ràng hơn và tránh tưởng nhầm đó là overriding.
+
 ---
 
 ## How – Upcasting & Downcasting
@@ -203,6 +217,9 @@ d.bark();
 Animal a2 = new Cat("Kitty");
 Dog d2 = (Dog) a2;            // ClassCastException tại RUNTIME!
 ```
+
+> 💡 **Giải thích dễ hiểu — upcast bỏ bớt quyền nhìn, downcast đòi lại quyền:**
+> Upcast `Dog → Animal` luôn an toàn vì Dog đã cam kết là Animal; biến chỉ không còn thấy các method riêng như `bark`. Downcast `Animal → Dog` là lời khẳng định cần kiểm chứng: object có thể là Cat nên JVM phải kiểm tra và có thể ném `ClassCastException`. Nếu code phải downcast liên tục, abstraction có thể đang thiếu một hành vi chung.
 
 ### instanceof – Kiểm tra trước khi cast
 
@@ -244,6 +261,9 @@ String describe(Animal a) {
 ## Components – Polymorphism với Interface
 
 Interface là nền tảng mạnh nhất cho polymorphism trong Java thực tế:
+
+> 💡 **Giải thích dễ hiểu — ổ cắm chung cho nhiều thiết bị:**
+> Interface định nghĩa hình dạng phích cắm, còn mỗi implementation là một thiết bị khác nhau. `Checkout` chỉ cần ổ `PaymentMethod`, nên có thể thay CreditCard bằng PayPal, production adapter bằng mock test, mà không sửa thuật toán checkout. Đây là nền tảng của Dependency Inversion và dependency injection.
 
 ```java
 interface PaymentMethod {
@@ -404,6 +424,9 @@ public abstract class Payment { }
 ```
 
 ### 4. Visitor Pattern – Double Dispatch
+
+> 💡 **Giải thích dễ hiểu — chọn theo cả loại người ghé và nơi được ghé:**
+> Overriding thông thường chọn method theo một object nhận lời gọi (*single dispatch*). Visitor thực hiện hai lần: `shape.accept(visitor)` chọn loại shape, rồi `visitor.visit(this)` chọn overload tương ứng trên visitor. Nhờ vậy operation mới có thể tách khỏi class hình học, nhưng đổi lại phải thêm nhiều method và khó mở rộng khi xuất hiện subtype mới.
 ```java
 // Khi cần thêm operation mà không sửa class
 interface ShapeVisitor {

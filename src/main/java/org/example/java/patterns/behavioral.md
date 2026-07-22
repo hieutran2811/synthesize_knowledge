@@ -1,12 +1,17 @@
 # Design Patterns – Behavioral (Hành vi)
 
 > Phương pháp: What – How – Why – Components – When – Compare – Trade-offs – Real-world – Ghi chú
+>
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
 
 ---
 
 ## What – Behavioral Patterns là gì?
 
-**Behavioral Patterns** tập trung vào **giao tiếp và phân công trách nhiệm** giữa các object — "ai làm gì và ai nói chuyện với ai".
+**Behavioral Patterns** *(nhóm mẫu hành vi)* tập trung vào **giao tiếp và phân công trách nhiệm** giữa các object *(đối tượng)* — "ai làm gì và ai nói chuyện với ai".
+
+> 💡 **Giải thích dễ hiểu:**
+> Nếu ví một chương trình như một **công ty**, thì Behavioral Patterns là "quy trình làm việc và cách các phòng ban trao đổi công văn". Chúng không quan tâm object trông như thế nào (đó là việc của Structural Patterns), mà quan tâm object **phối hợp và ra quyết định** ra sao: ai gọi ai, việc được chuyền tay thế nào, ai được thông báo khi có thay đổi. Học nhóm này giống như học "sơ đồ tổ chức và luồng công việc" của một doanh nghiệp.
 
 **9 Behavioral Patterns (GoF):**
 1. Strategy – hoán đổi algorithm
@@ -24,7 +29,10 @@
 ## 1. Strategy
 
 ### What
-Định nghĩa họ algorithm, đóng gói từng cái, và cho phép hoán đổi nhau. Client chọn algorithm tại runtime mà không thay đổi code sử dụng.
+Định nghĩa họ algorithm *(thuật toán)*, đóng gói từng cái, và cho phép hoán đổi nhau. Client *(bên gọi/sử dụng)* chọn algorithm tại runtime *(lúc chương trình đang chạy)* mà không thay đổi code sử dụng.
+
+> 💡 **Giải thích dễ hiểu:**
+> Strategy giống như việc bạn **chọn phương tiện đi lại** cho cùng một quãng đường: đi bộ, xe máy, hay taxi. Đích đến (nhu cầu) không đổi, chỉ "cách đi" (thuật toán) là thay được. Bạn đóng gói mỗi cách đi thành một "chiến thuật" riêng, rồi lúc cần chỉ việc rút ra dùng — hôm nay kẹt xe thì đổi từ taxi sang xe máy mà không phải thiết kế lại cả chuyến đi. Trong code, "đổi phương tiện" chính là `setStrategy(...)`.
 
 ### How
 
@@ -88,7 +96,10 @@ sorter.setStrategy(list -> list.sort(Comparator.reverseOrder()));
 ## 2. Observer
 
 ### What
-Định nghĩa quan hệ **1-nhiều** giữa objects: khi Subject thay đổi state, tất cả Observer được thông báo và tự động cập nhật.
+Định nghĩa quan hệ **1-nhiều** giữa objects: khi Subject *(đối tượng bị quan sát — nguồn phát sự kiện)* thay đổi state *(trạng thái)*, tất cả Observer *(người quan sát — bên đăng ký nhận tin)* được thông báo và tự động cập nhật.
+
+> 💡 **Giải thích dễ hiểu:**
+> Observer chính là cơ chế **đăng ký nhận thông báo** như khi bạn bấm "Subscribe" một kênh YouTube. Kênh (Subject) không cần biết ai là người theo dõi; hễ có video mới, tất cả người đã đăng ký (Observer) đều nhận chuông báo. Bạn có thể đăng ký hoặc hủy bất cứ lúc nào mà kênh chẳng phải sửa gì. Trong ví dụ dưới, một `Order` khi đổi trạng thái sẽ tự động "báo chuông" cho email, kho hàng và bộ phận phân tích cùng lúc.
 
 ### How
 
@@ -205,7 +216,10 @@ public void updateInventory(OrderCreatedEvent event) {
 ## 3. Template Method
 
 ### What
-Định nghĩa **skeleton của một algorithm** trong superclass, để subclass override các bước cụ thể mà không thay đổi cấu trúc tổng thể.
+Định nghĩa **skeleton của một algorithm** *(bộ khung các bước)* trong superclass *(lớp cha)*, để subclass *(lớp con)* override *(ghi đè — viết lại)* các bước cụ thể mà không thay đổi cấu trúc tổng thể.
+
+> 💡 **Giải thích dễ hiểu:**
+> Template Method giống như một **công thức nấu ăn có sẵn khung**: "1. sơ chế nguyên liệu → 2. nấu → 3. trình bày → 4. dọn ra". Thứ tự các bước là cố định (khung do lớp cha giữ), nhưng "nấu món gì" thì mỗi đầu bếp (lớp con) tự điền: người làm phở, người làm bún. Nhờ vậy quy trình chung được đảm bảo không ai làm sai thứ tự, còn chi tiết từng bước thì linh hoạt. `postProcess()` là một **hook** *(móc tùy chọn)* — như bước "trang trí thêm nếu thích", ai không cần thì bỏ qua.
 
 ### How
 
@@ -285,7 +299,10 @@ public class InventoryReportGenerator extends ReportGenerator {
 ## 4. Command
 
 ### What
-Đóng gói một **request** thành object — cho phép parameterize methods với requests, queue/log requests, và hỗ trợ undo.
+Đóng gói một **request** *(yêu cầu/lệnh)* thành object — cho phép parameterize *(truyền vào như tham số)* methods với requests, queue/log requests *(xếp hàng / ghi nhật ký các lệnh)*, và hỗ trợ undo *(hoàn tác)*.
+
+> 💡 **Giải thích dễ hiểu:**
+> Command biến một hành động thành **tờ phiếu gọi món** ghi ra giấy, thay vì hét thẳng vào bếp. Khi bạn viết yêu cầu ("thêm chữ Hello ở vị trí 0") ra một object, tờ phiếu đó có thể: xếp vào hàng chờ, lưu lại làm lịch sử, gửi đi nơi khác, và quan trọng nhất — **hoàn tác** được (mỗi phiếu biết cách "làm ngược lại" chính nó). Đó là lý do mọi phần mềm có nút Undo/Redo (Word, Photoshop) đều dùng pattern này: mỗi thao tác là một phiếu nằm trong chồng phiếu, muốn undo thì lật phiếu trên cùng ra làm ngược.
 
 ### How
 
@@ -380,7 +397,10 @@ System.out.println(editor.getText()); // "Hello World"
 ## 5. Chain of Responsibility
 
 ### What
-Tạo chuỗi handlers. Request được truyền dọc chuỗi cho đến khi một handler xử lý nó — hoặc tất cả đều xử lý.
+Tạo chuỗi handlers *(bộ xử lý)*. Request được truyền dọc chuỗi cho đến khi một handler xử lý nó — hoặc tất cả đều xử lý.
+
+> 💡 **Giải thích dễ hiểu:**
+> Chain of Responsibility giống chuỗi **các cửa kiểm tra an ninh ở sân bay**: cửa soát vé → cửa kiểm tra hộ chiếu → cửa soi hành lý → cửa an ninh. Hành khách (request) đi lần lượt qua từng cửa; cửa nào thấy vấn đề thì chặn lại (ném exception), còn không thì "mời qua cửa tiếp theo" (`passToNext`). Mỗi cửa chỉ lo đúng phần việc của mình và không cần biết chi tiết các cửa khác. Muốn thêm/bớt một khâu kiểm tra, chỉ việc chèn thêm cửa vào hàng — đó chính là cách các Filter/Interceptor trong web hoạt động.
 
 ### How
 
@@ -469,6 +489,9 @@ Cho phép object thay đổi **hành vi** khi **state** thay đổi — giống 
 
 **Giải quyết**: Thay thế if/switch khổng lồ kiểm tra state bằng State objects.
 
+> 💡 **Giải thích dễ hiểu:**
+> State giống **đèn giao thông**: cùng một cái đèn, nhưng khi đang xanh thì phản ứng khác lúc đang đỏ. Thay vì viết một mớ `if (màu == đỏ) ... else if (màu == xanh) ...` rải khắp nơi, ta cho mỗi trạng thái (đỏ/vàng/xanh) tự biết "khi hết giờ thì chuyển sang màu nào". Đối tượng chính (`Order`) chỉ việc "ủy thác" cho trạng thái hiện tại xử lý. Ở đơn hàng: lúc PENDING thì cho phép confirm, nhưng cùng lệnh confirm khi đã CONFIRMED lại báo lỗi — hành vi thay đổi theo trạng thái, đúng như đèn giao thông đổi ý nghĩa theo màu. Đây thực chất là một **FSM** *(Finite State Machine — máy trạng thái hữu hạn)*.
+
 ### How
 
 ```java
@@ -554,9 +577,14 @@ System.out.println(order.getStatus()); // SHIPPED
 ## 7. Visitor
 
 ### What
-Tách **operation** khỏi **object structure**. Thêm operation mới mà không sửa class của element.
+Tách **operation** *(thao tác/phép tính)* khỏi **object structure** *(cấu trúc đối tượng)*. Thêm operation mới mà không sửa class của element *(phần tử)*.
 
-**Double dispatch**: method được gọi phụ thuộc cả element type lẫn visitor type.
+**Double dispatch** *(điều phối kép)*: method được gọi phụ thuộc cả element type lẫn visitor type.
+
+> 💡 **Giải thích dễ hiểu:**
+> Visitor giống một **đoàn thanh tra đi thăm từng phòng ban**. Các phòng ban (Number, Addition, Multiplication) giữ nguyên; mỗi khi cần một loại "kiểm tra" mới — kế toán, an toàn cháy nổ, vệ sinh — bạn chỉ cần cử một đoàn thanh tra (Visitor) mới đến, chứ không phải cải tạo lại các phòng. Nhờ đó, thêm phép tính mới (đánh giá, in ra, tối ưu...) chỉ là viết thêm một Visitor, không đụng vào các class Expression.
+>
+> **Double dispatch** ở đây nghĩa là: kết quả cuối cùng phụ thuộc **hai yếu tố** — đang thăm phòng nào (loại element) và đoàn thanh tra làm nghề gì (loại visitor). Object gọi `accept(visitor)`, rồi bên trong nó gọi ngược lại `visitor.visitXxx(this)` — hai lần "bắt tay" mới xác định đúng việc cần làm.
 
 ### How
 
@@ -633,7 +661,10 @@ System.out.println(expr.accept(new EvaluateVisitor())); // 20.0
 ## 8. Mediator
 
 ### What
-Giảm dependencies hỗn loạn giữa nhiều objects bằng cách buộc chúng giao tiếp **qua mediator** thay vì trực tiếp.
+Giảm dependencies *(sự phụ thuộc)* hỗn loạn giữa nhiều objects bằng cách buộc chúng giao tiếp **qua mediator** *(bên trung gian điều phối)* thay vì trực tiếp.
+
+> 💡 **Giải thích dễ hiểu:**
+> Mediator giống **đài kiểm soát không lưu (ATC) ở sân bay**. Nếu để các máy bay tự liên lạc chằng chịt với nhau thì rối loạn và dễ va chạm (mesh — ai cũng nối với ai). Thay vào đó, mọi máy bay chỉ nói chuyện với đài ATC (hub — một đầu mối), và đài điều phối lại. Nhờ vậy số "đường dây" giảm mạnh và mỗi máy bay không cần biết những máy bay khác. Trong phòng chat dưới đây, người dùng không gửi tin trực tiếp cho nhau mà đưa qua `ChatRoom` để nó phát lại — đổi luật chat chỉ cần sửa mỗi ChatRoom.
 
 ```
 Không có Mediator: A ↔ B ↔ C ↔ D (mesh, n*(n-1)/2 connections)
@@ -719,7 +750,10 @@ alice.send("Hello everyone!");
 ## 9. Iterator
 
 ### What
-Cung cấp cách **duyệt qua** các phần tử của collection mà không expose cấu trúc nội bộ.
+Cung cấp cách **duyệt qua** các phần tử của collection *(tập hợp)* mà không expose *(để lộ)* cấu trúc nội bộ.
+
+> 💡 **Giải thích dễ hiểu:**
+> Iterator giống chiếc **điều khiển TV**: bạn bấm nút "kênh kế tiếp" để xem lần lượt từng kênh mà **không cần biết** TV lưu danh sách kênh trong bộ nhớ kiểu gì. Vòng lặp `for (x : collection)` chính là bạn liên tục hỏi Iterator "còn phần tử không?" (`hasNext`) và "cho tôi phần tử tiếp theo" (`next`). Nhờ vậy, dù bên trong là mảng, danh sách liên kết hay cây, cách bạn duyệt vẫn giống hệt nhau — bộ sưu tập giữ kín "ruột" của nó.
 
 ### How
 

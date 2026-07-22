@@ -1,12 +1,17 @@
 # Inheritance (Kế Thừa)
 
 > Phương pháp: What – How – Why – Components – When – Compare – Trade-offs – Real-world – Ghi chú
+>
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
 
 ---
 
 ## What – Inheritance là gì?
 
-**Inheritance** là cơ chế cho phép một class (**subclass/child**) tái sử dụng, mở rộng, và/hoặc override hành vi của class khác (**superclass/parent**).
+**Inheritance** *(kế thừa)* là cơ chế cho phép một class (**subclass/child — lớp con**) tái sử dụng, mở rộng hoặc override *(ghi đè)* hành vi của class khác (**superclass/parent — lớp cha**).
+
+> 💡 **Giải thích dễ hiểu — kế thừa là lời cam kết “con dùng được ở chỗ của cha”:**
+> `Dog extends Animal` không chỉ có nghĩa Dog mượn code của Animal. Nó còn cam kết mọi nơi cần `Animal` đều có thể nhận `Dog` mà hành vi vẫn hợp lý. Nếu chỉ muốn dùng lại một tiện ích nhưng không có quan hệ **is-a** thật sự, composition thường an toàn hơn inheritance.
 
 Trong Java:
 ```java
@@ -50,6 +55,9 @@ new Dog("Rex", "Labrador");
 ```
 
 > Nếu superclass không có no-arg constructor mà subclass không gọi `super(...)` tường minh → **compile error**.
+
+> 💡 **Giải thích dễ hiểu — xây móng trước rồi mới xây tầng:**
+> Phần state thuộc superclass phải được khởi tạo trước khi constructor lớp con đụng tới phần mở rộng của nó. Vì vậy `super(...)` luôn là lệnh đầu tiên và chuỗi constructor chạy từ class gốc xuống class cụ thể. Compiler chèn `super()` chỉ khi bạn không viết lời gọi khác; nó không tự đoán tham số cho constructor cha.
 
 ---
 
@@ -95,6 +103,9 @@ a.describe();   // gọi Dog.describe() → dynamic dispatch!
 
 > Tất cả instance methods trong Java đều là **virtual** (trừ `private`, `static`, `final`).
 
+> 💡 **Giải thích dễ hiểu — biến giữ “vai”, object quyết định “diễn viên”:**
+> Biến `Animal a` quy định những method caller được phép gọi, còn object `new Dog()` quyết định implementation nào chạy. Vtable giống bảng chỉ dẫn của từng class: cùng ô `describe()`, bảng của `Dog` trỏ tới `Dog.describe`. Nhờ **dynamic dispatch** *(phân phối động)*, caller không cần chuỗi `if (a instanceof Dog)` để chọn hành vi.
+
 ---
 
 ### 4. Field Shadowing vs Method Overriding
@@ -118,6 +129,9 @@ p.greet();                   // "Hello from Child" – method resolved at RUNTIM
 ```
 
 > **Field không có polymorphism** — luôn dùng theo kiểu khai báo. Đây là lý do không nên dùng public fields.
+
+> 💡 **Giải thích dễ hiểu — method được phát động, field chỉ được tra tên:**
+> Overridden instance method được chọn theo object thực tại runtime. Field shadowing chỉ tạo hai field cùng tên; compiler chọn field dựa trên kiểu khai báo của biến. Vì `Parent p = new Child()` có thể đọc `Parent.name` nhưng gọi `Child.greet()`, shadow field rất dễ gây bất ngờ và thường nên tránh.
 
 ---
 
@@ -186,6 +200,9 @@ Mọi class trong Java đều ngầm kế thừa `java.lang.Object`. Các method
 
 **Contract bắt buộc**: Nếu `a.equals(b) == true` thì `a.hashCode() == b.hashCode()`.
 Phá vỡ contract → HashMap, HashSet hoạt động sai.
+
+> 💡 **Giải thích dễ hiểu — `equals` và `hashCode` là địa chỉ cùng một hồ sơ:**
+> `HashMap` dùng `hashCode` để chọn ngăn tủ trước, rồi mới dùng `equals` để tìm đúng hồ sơ trong ngăn. Nếu hai object được coi là bằng nhau nhưng bị gửi vào hai ngăn khác nhau, collection có thể không tìm thấy object đã lưu. Vì vậy override `equals` thì gần như luôn phải override `hashCode` theo cùng các thuộc tính.
 
 ```java
 public class Point {
@@ -270,6 +287,9 @@ Nếu `Dog.eat()` và `Cat.eat()` khác nhau, `DogCat.eat()` gọi cái nào? �
 
 Java giải quyết bằng cách **chỉ cho phép single class inheritance**. Multiple inheritance đạt được qua **interface** (xem bài Abstraction để biết cách Java 8+ xử lý diamond với `default` methods).
 
+> 💡 **Giải thích dễ hiểu — hai bản hướng dẫn trái nhau:**
+> Nếu một class nhận implementation từ hai class cha và cả hai cùng định nghĩa `eat()`, JVM không biết phải thừa hưởng bản nào. Java tránh mơ hồ này bằng một class cha duy nhất. Interface cho phép nhiều “hợp đồng”; khi hai default method đụng nhau, class triển khai phải tự override để nói rõ lựa chọn.
+
 ---
 
 ### 11. Fragile Base Class Problem
@@ -295,6 +315,9 @@ new Child().methodA();
 
 > Đây là một trong những lý do **prefer Composition over Inheritance**.
 
+> 💡 **Giải thích dễ hiểu — subclass phụ thuộc cả những điều cha không hứa:**
+> Child thường vô tình dựa vào thứ tự gọi method hoặc chi tiết implementation `protected` của Base. Base refactor nội bộ nhưng vẫn giữ nguyên public API có thể làm Child đổi hành vi — đó là **Fragile Base Class**. Composition thu hẹp phụ thuộc vào một interface rõ ràng và delegation tường minh, nên thay implementation ít gây hiệu ứng dây chuyền hơn.
+
 ---
 
 ## Why – Tại sao dùng Inheritance?
@@ -310,6 +333,9 @@ new Child().methodA();
 
 Dùng khi thỏa mãn **Liskov Substitution Principle (LSP)**:
 > "Nếu S là subtype của T, thì object của T có thể được thay bằng object của S mà không làm thay đổi tính đúng đắn của chương trình."
+
+> 💡 **Giải thích dễ hiểu — subtype phải giữ lời hứa của type cha:**
+> Nếu `Rectangle` cho phép đổi chiều rộng mà không đổi chiều cao, `Square` không thể override setter để âm thầm đổi cả hai rồi vẫn tự nhận là một `Rectangle` thay thế hoàn hảo. LSP kiểm tra hành vi và kỳ vọng, không chỉ kiểm tra câu “Square is a Rectangle” ngoài đời. Kế thừa đúng cần giữ precondition, postcondition và invariant mà API cha đã hứa.
 
 **Test đơn giản**: thay thế `Dog` bằng `Animal` có hợp lý không? Nếu có → inheritance đúng.
 

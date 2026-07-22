@@ -1,16 +1,21 @@
 # String – Deep Dive
 
 > Phương pháp: What – How – Why – Components – When – Compare – Trade-offs – Real-world – Ghi chú
+>
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
 
 ---
 
 ## What – String trong Java
 
 `String` là class đặc biệt nhất trong Java:
-- **Immutable**: một khi tạo ra, nội dung không thay đổi
-- **Interned**: string literals chia sẻ từ String Pool
-- **Overloaded operators**: `+` và `+=` được compile-time xử lý đặc biệt
-- **char[] backed**: Java 8 và trước. **byte[] backed**: Java 9+ (Compact Strings)
+- **Immutable** *(bất biến — tạo xong không sửa được nội dung)*: một khi tạo ra, nội dung không thay đổi
+- **Interned** *(gom vào bể dùng chung)*: string literals chia sẻ từ String Pool
+- **Overloaded operators** *(toán tử được "chế" thêm nghĩa)*: `+` và `+=` được compile-time *(lúc biên dịch)* xử lý đặc biệt
+- **char[] backed** *(ruột là mảng ký tự)*: Java 8 và trước. **byte[] backed** *(ruột là mảng byte)*: Java 9+ (Compact Strings)
+
+> 💡 **Giải thích dễ hiểu — immutable là gì và tại sao quan trọng:**
+> **Immutable** nghĩa là "đúc xong không sửa được", giống như **một tấm bia đá đã khắc chữ**: muốn nội dung khác thì phải khắc bia mới, chứ không tẩy xóa được bia cũ. Khi bạn viết `s = s + "!"`, Java **không** thêm dấu `!` vào chuỗi cũ — nó **đúc một tấm bia hoàn toàn mới** mang nội dung `"...!"`, rồi cho biến `s` trỏ sang bia mới; tấm bia cũ vẫn nằm y nguyên (chờ bị GC dọn nếu không ai dùng). Chính vì "không ai sửa được bia đã khắc" mà String an toàn khi nhiều luồng cùng đọc, an toàn khi làm khóa (key) của HashMap, và an toàn khi dùng làm đường dẫn file hay URL nhạy cảm.
 
 ```java
 // String là object nhưng hoạt động như primitive
@@ -23,6 +28,13 @@ String s = "hello"; // không cần new
 ## How – String Pool & Immutability
 
 ### String Pool (String Interning)
+
+> 💡 **Giải thích dễ hiểu — String Pool & intern:**
+> **String Pool** *(bể chứa chuỗi dùng chung)* là một cái **kho trung tâm chứa các chuỗi ký tự duy nhất**. Ví von như một **thư viện chỉ giữ đúng 1 bản mỗi đầu sách**: khi hai người cùng cần cuốn "hello", thư viện không in hai bản — nó đưa cả hai tới **cùng một cuốn trên kệ**. Vì vậy hai biến literal `"hello"` thực chất trỏ tới **cùng một object** (nên `a == b` là `true`).
+> - Viết `new String("hello")` giống như **tự photo một bản riêng** mang về nhà — nội dung y hệt nhưng là cuốn khác, nằm ngoài kho (`a == c` là `false`).
+> - Gọi `c.intern()` *(nhập bể)* nghĩa là "trả bản photo, xin dùng bản chính thức trên kệ thư viện" → lại về đúng cuốn chung trong pool.
+>
+> Nhờ dùng chung mà chương trình tiết kiệm bộ nhớ (hàng nghìn chỗ dùng chữ `"OK"` chỉ tốn 1 object). Và mẹo này chỉ an toàn **vì String immutable** — nếu ai đó sửa được cuốn sách chung thì mọi người mượn nó đều bị ảnh hưởng.
 
 ```java
 // String literals → tự động vào String Pool (Heap, Java 7+)
@@ -84,6 +96,9 @@ connect(url); // không ai có thể modify url sau khi truyền vào
 
 ### Compact Strings (Java 9+)
 
+> 💡 **Giải thích dễ hiểu — Compact Strings:**
+> Trước Java 9, mỗi ký tự trong String luôn tốn **2 byte** (kiểu **UTF-16** *(bảng mã dùng 2 byte cho mỗi ký tự)*), kể cả những chữ Latin đơn giản như `a`, `b`, `c` vốn chỉ cần 1 byte. Giống như **cửa hàng chỉ có một loại hộp cỡ lớn**, đựng cây kim cũng phải nhét vào hộp to → phí chỗ. Từ Java 9, **Compact Strings** *(chuỗi nén)* cho phép dùng **hộp nhỏ 1 byte** (bảng mã **LATIN-1**) cho những chuỗi chỉ chứa ký tự Latin, và chỉ dùng hộp lớn 2 byte khi chuỗi có ký tự "khó" (tiếng Việt có dấu, emoji, chữ Hán...). Kết quả: các ứng dụng web (đầy chuỗi ASCII) tiết kiệm khoảng 40% bộ nhớ cho String mà lập trình viên **không phải sửa dòng code nào** — JVM tự lo.
+
 ```java
 // Java 8: String backed by char[] (UTF-16, 2 bytes per char)
 // Java 9+: String backed by byte[] + encoding flag
@@ -124,6 +139,7 @@ String result = new StringBuilder()
 // NHƯNG: trong loop vẫn là vấn đề!
 // Anti-pattern:
 String s = "";
+// (xem callout bên dưới để hiểu vì sao nối chuỗi trong vòng lặp lại chậm khủng khiếp)
 for (String item : list) {
     s += item + ", "; // mỗi vòng tạo StringBuilder MỚI + String mới!
 }

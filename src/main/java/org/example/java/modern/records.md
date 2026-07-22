@@ -1,12 +1,17 @@
 # Records (Java 16)
 
 > Phương pháp: What – How – Why – Components – When – Compare – Trade-offs – Real-world – Ghi chú
+>
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
 
 ---
 
 ## What – Record là gì?
 
-**Record** (Java 16, preview Java 14–15) là một loại class đặc biệt được thiết kế để là **immutable data carrier** — lưu trữ dữ liệu thuần túy, không có hành vi phức tạp.
+**Record** *(lớp biểu diễn dữ liệu cô đọng)* — chính thức từ Java 16, preview ở Java 14–15 — là một loại class đặc biệt được thiết kế làm **immutable data carrier** *(vật mang dữ liệu bất biến)*: ưu tiên mô tả dữ liệu và giá trị của nó thay vì viết nhiều code khuôn mẫu.
+
+> 💡 **Giải thích dễ hiểu — record là “phiếu thông tin” có mẫu sẵn:**
+> Với class thường, bạn phải tự in cả bộ mẫu gồm field, constructor, accessor, `equals`, `hashCode` và `toString`. Record chỉ yêu cầu khai báo các ô trên phiếu, ví dụ `Point(int x, int y)`; compiler tự in phần còn lại. Record vẫn là class thật, vẫn có constructor và method, chứ không phải một cấu trúc dữ liệu “nhẹ hơn JVM”.
 
 ```java
 // Trước Records: ~50 dòng boilerplate
@@ -31,6 +36,9 @@ Compiler tự sinh:
 - `equals()` dựa trên tất cả components
 - `hashCode()` dựa trên tất cả components
 - `toString()`: `Point[x=1, y=2]`
+
+> 💡 **Giải thích dễ hiểu — bất biến “nông”, không phải bất biến tuyệt đối:**
+> Component của record là `final`, nghĩa là reference không thể trỏ sang object khác sau khi khởi tạo. Nhưng object được trỏ tới vẫn có thể mutable. Ví dụ `record Team(List<String> members)` không ngăn caller sửa chính `members`. Với collection, thường nên chuẩn hóa bằng `members = List.copyOf(members)` trong canonical constructor để record thực sự an toàn hơn.
 
 ---
 
@@ -72,6 +80,9 @@ public record Range(int min, int max) {
     }
 }
 ```
+
+> 💡 **Giải thích dễ hiểu — canonical constructor là cổng kiểm soát duy nhất:**
+> Mọi cách tạo record cuối cùng đều phải đi qua constructor có đủ component theo đúng thứ tự. Vì vậy đây là nơi thích hợp để kiểm tra invariant *(điều kiện luôn phải đúng)* và chuẩn hóa dữ liệu. Compact constructor cho phép kiểm tra tham số trước; compiler sẽ tự gán chúng vào field sau khi block kết thúc.
 
 ### Custom Constructor (Non-canonical)
 ```java
@@ -177,6 +188,9 @@ Pair<Integer, String> swapped = p.swap(); // (5, "hello")
 
 ## How – Giới hạn của Record
 
+> 💡 **Giải thích dễ hiểu — record đổi sự linh hoạt lấy một hợp đồng rõ ràng:**
+> Record tuyên bố “trạng thái của tôi chính là danh sách component trên header”. Vì thế nó không cho thêm instance field ẩn, không cho kế thừa class khác và bản thân luôn `final`. Nếu object cần thay đổi trạng thái qua thời gian, cần proxy kế thừa hoặc có nhiều field nội bộ không thuộc danh tính giá trị, class thường phù hợp hơn.
+
 ```java
 // 1. KHÔNG thể extends class (implicit extends java.lang.Record)
 public record Bad() extends SomeClass {} // COMPILE ERROR
@@ -224,6 +238,9 @@ public record UserDto(Long id, String name) implements Serializable {
 
 ## How – Record với Pattern Matching (Java 21)
 
+> 💡 **Giải thích dễ hiểu — đóng gói bằng record, mở gói bằng pattern:**
+> Constructor gom nhiều giá trị thành một record; record pattern làm chiều ngược lại, lấy các component ra và đặt tên ngay tại chỗ kiểm tra kiểu. Giống đóng hàng vào hộp có nhãn rồi mở đúng từng ngăn mà không phải gọi `point.x()` và `point.y()` thủ công.
+
 ```java
 // Deconstruction pattern (Java 21)
 Object obj = new Point(3, 4);
@@ -270,6 +287,9 @@ String describe(Shape shape) {
 - Class cần extend class khác
 - Class có state mutable theo business logic
 - Class cần nhiều custom behavior phức tạp (dùng class thường)
+
+> 💡 **Giải thích dễ hiểu — DTO tốt, JPA Entity thường không:**
+> DTO giống ảnh chụp dữ liệu tại một thời điểm nên rất hợp với record. JPA Entity lại giống hồ sơ đang được ORM theo dõi: ID và quan hệ có thể được gán muộn, lazy-loading có thể cần proxy, trạng thái thay đổi trong persistence context. Những yêu cầu đó xung đột với tính `final` và constructor đầy đủ của record.
 
 ---
 

@@ -1,12 +1,17 @@
 # Java Error – Deep Dive
 
 > Phương pháp: What – How – Why – Components – When – Compare – Trade-offs – Real-world – Ghi chú
+>
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
 
 ---
 
 ## What – Error là gì?
 
-**Error** là subclass của `Throwable` đại diện cho các vấn đề **nghiêm trọng ở tầng JVM hoặc môi trường** mà ứng dụng thông thường **không thể và không nên** cố phục hồi. Khác với `Exception` (lỗi ở tầng ứng dụng, có thể handle), Error báo hiệu rằng JVM hoặc hệ thống đang ở trạng thái không đảm bảo tiếp tục chạy an toàn.
+**Error** là subclass *(lớp con)* của `Throwable` *(gốc chung của mọi thứ có thể "ném" ra trong Java)* đại diện cho các vấn đề **nghiêm trọng ở tầng JVM hoặc môi trường** mà ứng dụng thông thường **không thể và không nên** cố phục hồi *(recover)*. Khác với `Exception` (lỗi ở tầng ứng dụng, có thể handle *(xử lý)*), Error báo hiệu rằng JVM hoặc hệ thống đang ở trạng thái không đảm bảo tiếp tục chạy an toàn.
+
+> 💡 **Giải thích dễ hiểu — Error vs Exception:**
+> Hãy coi ứng dụng như một **chuyến bay**. `Exception` là những **sự cố trong khoang** mà phi hành đoàn xử lý được: khách quên thắt dây an toàn, đồ ăn hết món — khó chịu nhưng chuyến bay vẫn tiếp tục (bạn catch và xử lý). `Error` là **hỏng động cơ hay thủng thân máy bay**: đó là chuyện ở tầng "phần cứng" (JVM/hệ thống), phi công không thể "vá" giữa trời. Cố bắt và bay tiếp là liều lĩnh — việc đúng là **báo động và hạ cánh khẩn (log + tắt tiến trình)**, chứ không phải giả vờ mọi thứ ổn.
 
 ```java
 // Throwable là gốc chung

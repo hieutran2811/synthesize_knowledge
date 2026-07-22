@@ -1,12 +1,17 @@
 # Virtual Threads – Project Loom (Java 21)
 
 > Phương pháp: What – How – Why – Components – When – Compare – Trade-offs – Real-world – Ghi chú
+>
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
 
 ---
 
 ## What – Virtual Threads là gì?
 
-**Virtual Threads** (Java 21, preview Java 19–20) là **lightweight threads** được JVM quản lý — không phải OS threads. Một JVM có thể chạy **hàng triệu** virtual threads đồng thời mà trước đây chỉ có thể làm được với Reactive Programming.
+**Virtual Threads** *(luồng ảo)* — chính thức từ Java 21, preview ở Java 19–20 — là **lightweight threads** *(luồng nhẹ)* được JVM lập lịch, thay vì gắn cố định mỗi Java thread với một OS thread *(luồng hệ điều hành)*. Nhờ chi phí thấp, một JVM có thể duy trì số lượng virtual thread rất lớn cho các tác vụ đồng thời thiên về I/O.
+
+> 💡 **Giải thích dễ hiểu — nhiều khách, ít nhân viên phục vụ:**
+> Platform thread giống mỗi khách phải giữ riêng một nhân viên kể cả lúc đang chờ bếp. Virtual thread giống phiếu yêu cầu của khách: khi một yêu cầu chờ database hoặc mạng, JVM cất trạng thái của nó và để số ít **carrier thread** *(luồng vận chuyển)* phục vụ yêu cầu khác. Virtual thread không làm CPU mạnh hơn; nó chủ yếu tránh lãng phí OS thread trong thời gian chờ I/O.
 
 **Bài toán cốt lõi**: Traditional thread model không scale cho IO-bound applications.
 
@@ -40,6 +45,9 @@ Virtual Thread:
   (M-N mapping, JVM scheduler = ForkJoinPool)
 ```
 
+> 💡 **Giải thích dễ hiểu — M:N thay cho 1:1:**
+> Nhiều virtual thread (M) được luân phiên chạy trên ít carrier/platform thread hơn (N). Carrier không phải “thread cha” sở hữu virtual thread; nó chỉ là chiếc xe tạm thời chở một virtual thread tới CPU. Sau mỗi lần unmount/remount, cùng một virtual thread có thể tiếp tục trên carrier khác.
+
 ### Cơ chế Mount/Unmount (Continuation)
 
 ```
@@ -58,6 +66,9 @@ Khi IO hoàn thành:
 ```
 
 **Từ góc nhìn lập trình viên**: hoàn toàn transparent — code blocking thông thường, JVM tự xử lý mounting.
+
+> 💡 **Giải thích dễ hiểu — continuation là dấu trang có thể mang đi:**
+> Khi gặp thao tác chờ hỗ trợ virtual thread, JVM chụp lại trạng thái thực thi thành **continuation** *(phần việc có thể tạm dừng rồi tiếp tục)*, giống kẹp dấu trang và cất cuốn sách lên kệ. Carrier rảnh để đọc cuốn khác; khi I/O xong, JVM lấy cuốn cũ xuống và đọc tiếp đúng dòng đang dở.
 
 ---
 
@@ -94,6 +105,9 @@ try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
     }
 } // executor.close() = awaitTermination
 ```
+
+> 💡 **Giải thích dễ hiểu — một task, một virtual thread:**
+> Với virtual thread, không cần pool nhỏ để hạn chế số thread như mô hình platform thread. Mỗi task có thể nhận một virtual thread mới; nếu cần bảo vệ database hoặc API khỏi quá tải, hãy giới hạn **tài nguyên đích** bằng connection pool, semaphore hoặc rate limiter, thay vì dùng thread pool như một van tiết lưu gián tiếp.
 
 ### Cách 3: Trong Spring Boot (Automatic từ Spring 6.1 / Boot 3.2)
 ```java
@@ -134,7 +148,10 @@ try (ExecutorService exec = Executors.newVirtualThreadPerTaskExecutor()) {
 
 ## How – Structured Concurrency (Java 21 Preview)
 
-**Structured Concurrency**: đảm bảo lifetime của subtask không vượt quá task cha → dễ quản lý, cancel, propagate error.
+**Structured Concurrency** *(đồng thời có cấu trúc)*: ràng buộc vòng đời của subtask bên trong task cha → dễ chờ, hủy và lan truyền lỗi có kiểm soát.
+
+> 💡 **Giải thích dễ hiểu — task con phải về nhà trước khi đóng cửa:**
+> Scope giống một chuyến đi gia đình: cha có thể chia người đi lấy thông tin user, order và wallet cùng lúc, nhưng không ai được lang thang sau khi chuyến đi kết thúc. Khi một nhánh thất bại, policy của scope quyết định hủy các nhánh còn lại; log và stack trace cũng giữ được quan hệ cha–con thay vì tạo các `Future` sống rời rạc.
 
 ```java
 // StructuredTaskScope: tất cả subtask phải hoàn thành trước khi scope đóng
@@ -175,17 +192,21 @@ try (var scope = new StructuredTaskScope.ShutdownOnSuccess<String>()) {
 
 **Pinned virtual thread** = virtual thread bị "ghim" vào carrier thread, không thể unmount khi blocking — làm mất lợi thế.
 
-**2 nguyên nhân pinning:**
+**Hành vi phụ thuộc phiên bản JDK:**
+- **JDK 21–23**: blocking bên trong `synchronized` có thể pin virtual thread; native/foreign call cũng có thể pin.
+- **JDK 24+**: [JEP 491](https://openjdk.org/jeps/491) cho phép virtual thread unmount khi đang giữ hoặc chờ monitor `synchronized`, loại bỏ gần như toàn bộ pinning do `synchronized`. Pinning vẫn có thể xảy ra khi chạy native method hoặc foreign function.
+
+> 💡 **Giải thích dễ hiểu — pinning là giữ luôn chiếc xe khi đang chờ:**
+> Bình thường virtual thread xuống khỏi carrier khi phải chờ để carrier chở việc khác. Khi bị pin, nó ngồi nguyên trên xe dù chưa làm gì, khiến cả virtual thread lẫn carrier cùng mắc kẹt. Một lần pin ngắn không đáng ngại; pin thường xuyên và lâu mới làm cạn carrier, giảm khả năng phục vụ đồng thời.
+
+**Ví dụ tương thích JDK 21–23:**
 ```java
-// 1. synchronized block/method (PINNING!)
+// Trên JDK 21–23, sleep/blocking trong synchronized có thể pin carrier.
 synchronized void badMethod() {
     Thread.sleep(1000); // virtual thread bị pin, carrier thread bị block!
 }
 
-// 2. Native method (JNI) trong blocking call
-nativeBlockingCall(); // pin nếu native code giữ monitor
-
-// FIX: thay synchronized bằng ReentrantLock
+// Cách tránh trên JDK 21–23: thu hẹp critical section hoặc dùng ReentrantLock.
 private final ReentrantLock lock = new ReentrantLock();
 void goodMethod() {
     lock.lock();
@@ -195,21 +216,28 @@ void goodMethod() {
         lock.unlock();
     }
 }
+
+// JDK 24+: synchronized ở trên không còn pin do JEP 491.
+// Native/foreign call vẫn cần được đánh giá riêng.
+nativeBlockingCall();
 ```
 
-**Phát hiện pinning:**
+**Phát hiện pinning trên JDK 21–23:**
 ```bash
 -Djdk.tracePinnedThreads=full    # log khi pinning xảy ra
 -Djdk.tracePinnedThreads=short   # log tóm tắt
 ```
 
-> **Java 24 update**: `synchronized` sẽ không còn pin virtual thread — đang được fix trong Project Loom.
+> **JDK 24+**: JEP 491 đã loại bỏ system property `jdk.tracePinnedThreads`; đặt cờ này không còn tác dụng.
 
 ---
 
 ## How – ThreadLocal với Virtual Threads
 
 **Vấn đề**: `ThreadLocal` vẫn hoạt động, nhưng với hàng triệu virtual threads → hàng triệu ThreadLocal instances → memory tăng đột biến.
+
+> 💡 **Giải thích dễ hiểu — đồ trong ngăn riêng vẫn nhân theo số luồng:**
+> Virtual thread rẻ không có nghĩa dữ liệu gắn vào từng thread cũng rẻ. Nếu mỗi khách được phát một vali `ThreadLocal` chứa connection hoặc cache lớn, một triệu khách vẫn tạo ra một triệu vali. `ScopedValue` phù hợp với dữ liệu chỉ đọc truyền theo phạm vi lời gọi, như user hiện tại hoặc trace ID, vì vòng đời và quyền thay đổi rõ ràng hơn.
 
 ```java
 // Vấn đề: ThreadLocal với nhiều virtual threads
@@ -243,7 +271,7 @@ User user = CURRENT_USER.get();
 | Blocking IO | Block OS thread | Unmount, carrier thread free |
 | Scheduler | OS scheduler | JVM ForkJoinPool |
 | ThreadLocal | OK | Cẩn thận (nhiều instances) |
-| synchronized | OK | Có thể pin (avoid hoặc dùng Lock) |
+| synchronized | OK | JDK 21–23 có thể pin; JDK 24+ không còn pin do monitor |
 | Debug | Dễ (thread name, stack) | Giống platform (Java 21 cải thiện) |
 
 ---
@@ -301,8 +329,12 @@ Response handle(Request req) {
 **Không phù hợp:**
 - **CPU-bound** tasks: virtual thread không giúp ích (vẫn cần CPU, không unmount khi tính toán)
   → Dùng platform thread pool với số lượng = CPU cores
-- Code dùng nhiều `synchronized` (pinning)
+- Trên JDK 21–23: code blocking lâu bên trong `synchronized`
+- Native/foreign call blocking lâu làm virtual thread bị pin
 - Code nặng `ThreadLocal`
+
+> 💡 **Giải thích dễ hiểu — concurrency không tạo thêm parallelism:**
+> Virtual thread giúp rất nhiều công việc **cùng tồn tại** và thay nhau dùng CPU khi phần lớn thời gian là chờ. Nếu mọi task đều tính toán liên tục, chúng vẫn tranh cùng số core vật lý; tạo thêm virtual thread chỉ làm hàng chờ dài hơn. Với CPU-bound workload, pool platform thread xấp xỉ số core thường dễ kiểm soát hơn.
 
 ```java
 // CPU-bound: virtual thread không lợi
@@ -342,7 +374,7 @@ cpuPool.submit(() -> computeHeavyMath(data));
 
 | Ưu | Nhược |
 |----|-------|
-| Code đơn giản như sync | `synchronized` có thể pin (dùng Lock) |
+| Code đơn giản như sync | Native/foreign call vẫn có thể pin; JDK 21–23 còn pin trong `synchronized` |
 | Hàng triệu concurrent threads | ThreadLocal cần cẩn thận |
 | Không cần reactive framework | CPU-bound không benefit |
 | Tương thích với code hiện có | Java 21+ |

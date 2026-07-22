@@ -1,6 +1,8 @@
 # Collections Internals – Advanced Deep Dive
 
 > Phương pháp: What – How – Why – Components – When – Compare – Trade-offs – Real-world – Ghi chú
+>
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
 
 ---
 
@@ -26,6 +28,9 @@ Parent(i) = (i - 1) / 2
 Left(i)   = 2*i + 1
 Right(i)  = 2*i + 2
 ```
+
+> 💡 **Giải thích dễ hiểu — heap chỉ hứa phần tử tốt nhất nằm ở gốc:**
+> Min-heap bảo đảm node cha không lớn hơn node con, nên phần tử nhỏ nhất luôn ở `heap[0]`; các phần tử còn lại không được sắp xếp hoàn toàn. Vì vậy `peek()` O(1), còn thêm/xóa phải đưa phần tử đi qua nhiều tầng nên O(log n). Nếu cần tìm một phần tử bất kỳ, heap không phù hợp vì `contains()` vẫn phải quét O(n).
 
 ### offer() – Sift-Up (Swim)
 
@@ -90,7 +95,7 @@ PriorityQueue<Integer> maxHeap = new PriorityQueue<>(Comparator.reverseOrder());
 // Custom Comparator
 PriorityQueue<Task> taskQueue = new PriorityQueue<>(
     Comparator.comparingInt(Task::getPriority)
-              .thenComparingLong(Task::getCreatedAt) // tiebreaker: FIFO
+              .thenComparingLong(Task::getCreatedAt) // ưu tiên task tạo sớm hơn khi cùng priority
 );
 
 // heapify từ Collection: O(n) thay vì O(n log n) khi add từng cái
@@ -112,6 +117,9 @@ for (int num : numbers) {
 // contains(): O(n)  ← linear scan (không có index)
 // remove(Object): O(n) để tìm + O(log n) để sift
 ```
+
+> 💡 **Giải thích dễ hiểu — PriorityQueue là hàng ưu tiên, không phải hàng đã sort:**
+> Duyệt toàn bộ queue không trả ra dãy tăng dần; chỉ `peek()`/`poll()` mới lấy phần tử có ưu tiên cao nhất. Với comparator nhiều tiêu chí, hãy định nghĩa rõ chiều tăng/giảm và tie-breaker; nếu mọi tiêu chí đều bằng nhau thì PriorityQueue không cam kết FIFO.
 
 ---
 
@@ -145,6 +153,9 @@ head=6, tail=3
 Circular: index = (head - 1 + capacity) & (capacity - 1)
                                           ↑ bitmask (capacity luôn là power of 2)
 ```
+
+> 💡 **Giải thích dễ hiểu — circular buffer tái sử dụng chỗ trống ở hai đầu:**
+> `head` và `tail` chạy vòng quanh mảng thay vì dồn phần tử sau mỗi lần thêm/xóa. Vì phần tử nằm liền nhau trong một mảng, ArrayDeque thường tận dụng CPU cache tốt hơn LinkedList; khi vòng chạm nhau, deque cấp mảng lớn hơn rồi copy dữ liệu.
 
 ```java
 // Internals (simplified)
@@ -197,6 +208,9 @@ queue.peek();    // = peekFirst
 // Only exception: insertion in middle (but Deque rarely does that)
 ```
 
+> 💡 **Giải thích dễ hiểu — ArrayDeque là lựa chọn mặc định cho stack/queue cục bộ:**
+> Dùng `push/pop` cho LIFO hoặc `offer/poll` cho FIFO trên cùng một cấu trúc. Nó không tự đồng bộ hóa và không nhận `null`; nếu nhiều thread trao đổi dữ liệu, hãy dùng implementation của `BlockingQueue` thay vì tự bọc bằng khóa rời rạc.
+
 ---
 
 ## How – EnumSet (Bit Vector)
@@ -240,6 +254,9 @@ weekdays.containsAll(EnumSet.of(Day.MON, Day.TUE)); // true, O(1)
 weekdays.retainAll(EnumSet.of(Day.MON, Day.WED));   // intersection in-place
 ```
 
+> 💡 **Giải thích dễ hiểu — EnumSet biến mỗi enum thành một bit:**
+> Với tối đa 64 hằng enum, một `long` có thể biểu diễn cả tập hợp; thêm, xóa và kiểm tra chỉ là phép toán bit. Đây là lý do EnumSet vừa nhanh vừa tiết kiệm bộ nhớ, nhưng chỉ dùng được với đúng một kiểu enum và không nhận `null`.
+
 ---
 
 ## How – EnumMap (Array-based)
@@ -255,8 +272,8 @@ EnumMap<Day, String> schedule = new EnumMap<>(Day.class);
 schedule.put(Day.MON, "Meeting");
 schedule.put(Day.FRI, "Review");
 
-// Tốc độ: ~2-4x nhanh hơn HashMap<Day, String>
-// Memory: compact array thay vì hash table với entry objects
+// Thường nhanh và compact hơn HashMap<Day, String>
+// Memory: array gọn thay vì hash table với entry objects
 
 // Iteration order: enum declaration order (not insertion order)
 schedule.forEach((day, event) -> System.out.println(day + ": " + event));
@@ -265,6 +282,9 @@ schedule.forEach((day, event) -> System.out.println(day + ": " + event));
 
 // Dùng khi: key là enum type → luôn prefer EnumMap over HashMap
 ```
+
+> 💡 **Giải thích dễ hiểu — EnumMap đổi hash lookup thành index mảng:**
+> Mỗi enum có `ordinal()` ổn định trong phạm vi thứ tự khai báo, nên EnumMap có thể tra vào mảng gần như O(1) mà vẫn duy trì thứ tự khai báo enum. Chỉ nên dùng khi toàn bộ key thuộc cùng một enum type; đừng dùng `ordinal()` làm ID lưu bền vững trong database.
 
 ---
 
@@ -301,8 +321,11 @@ Map<Widget, WidgetData> safeCache = Collections.synchronizedMap(new WeakHashMap<
 // Dùng String literal → String pool là strong ref → entry không bị xóa
 WeakHashMap<String, Data> map = new WeakHashMap<>();
 map.put("hello", data); // "hello" in pool, never GC'd → entry permanent!
-map.put(new String("hello"), data); // NO pool → entry sẽ bị GC!
+map.put(new String("hello"), data); // không ở pool → entry có thể bị dọn khi key hết strong ref
 ```
+
+> 💡 **Giải thích dễ hiểu — WeakHashMap để cache tự nhường chỗ cho GC:**
+> Entry có thể biến mất bất kỳ lúc nào sau khi key không còn strong reference; `System.gc()` chỉ là lời gợi ý, không phải lệnh dọn ngay. Ngoài ra value không được giữ ngược lại key: nếu value chứa chính key, graph tham chiếu vẫn giữ entry sống và cache không tự giải phóng như mong đợi.
 
 ---
 
@@ -340,6 +363,9 @@ void traverse(Object obj) {
 // 3. Proxy detection (proxy != original dù equals() có thể true)
 ```
 
+> 💡 **Giải thích dễ hiểu — IdentityHashMap phân biệt “cùng object” với “cùng giá trị”:**
+> Hai object có cùng nội dung nhưng được tạo bằng `new` vẫn là hai key khác nhau vì `a != b`. Cấu trúc này hữu ích khi duyệt object graph hoặc serialize cần nhận diện alias/cycle, nhưng không phù hợp cho map nghiệp vụ vốn mong đợi semantics của `equals()`.
+
 ---
 
 ## How – Java 9+ Immutable Collections
@@ -350,14 +376,13 @@ void traverse(Object obj) {
 
 ```java
 // List.of(1, 2, 3):
-// 0-2 elements: specialized classes (List0, List1, List2)
-// 3-10 elements: ImmutableCollections.ListN (stores in Object[])
-// > 10: same ListN
+// JDK có thể dùng class chuyên biệt cho collection nhỏ và Object[] cho collection lớn.
+// Tên class/layout bên trong là implementation detail, không phải API để phụ thuộc.
 
 // Compact array layout:
 // [1, 2, 3] stored in minimal Object[]
 // NO null allowed (throws NullPointerException)
-// Iteration order preserved for List.of() and Map.entry()
+// List.of() giữ đúng thứ tự đối số; Set.of()/Map.of() không cam kết thứ tự duyệt
 
 // Set.of(1, 2, 3):
 // Uses hash table without LinkedList (no chaining)
@@ -396,6 +421,9 @@ original.add("c"); // view.get(2) = "c" now! (not truly immutable!)
 // List.of(): truly immutable, never changes
 ```
 
+> 💡 **Giải thích dễ hiểu — unmodifiable view khác immutable snapshot:**
+> `Collections.unmodifiableList(original)` chỉ khóa các method ghi qua biến `view`; nếu code khác còn giữ `original` và sửa nó, `view` vẫn nhìn thấy thay đổi. `List.copyOf(original)` tạo collection không sửa được (và không nhận `null`), nhưng tính bất biến của collection không làm object bên trong tự bất biến.
+
 ---
 
 ## How – Spliterator (Parallel Stream Engine)
@@ -405,7 +433,7 @@ original.add("c"); // view.get(2) = "c" now! (not truly immutable!)
 ```java
 // Spliterator characteristics (bit flags)
 Spliterator<String> sp = list.spliterator();
-sp.characteristics(); // ORDERED | SIZED | SUBSIZED | IMMUTABLE (for List.of)
+sp.characteristics(); // các bit ORDERED/SIZED... tùy source
 
 // Key characteristics:
 // ORDERED: encounter order defined
@@ -467,6 +495,9 @@ Stream<Integer> stream = StreamSupport.stream(
 );
 ```
 
+> 💡 **Giải thích dễ hiểu — Spliterator chia việc, không tự làm code nhanh hơn:**
+> `trySplit()` tách phần dữ liệu chưa xử lý thành các đoạn để ForkJoinPool có thể chạy song song. Chỉ bật parallel stream khi dữ liệu đủ lớn, thao tác độc lập và chi phí chia/merge nhỏ; nếu source khó chia hoặc công việc nhẹ, sequential stream thường đơn giản và nhanh hơn.
+
 ---
 
 ## How – Collections Utility Class (Deep Dive)
@@ -496,7 +527,7 @@ Collections.reverse(list); // in-place reverse
 
 // Fill + Copy
 Collections.fill(list, 0);          // fill tất cả với 0
-List<Integer> dest = new ArrayList<>(list.size());
+List<Integer> dest = new ArrayList<>(Collections.nCopies(list.size(), 0));
 Collections.copy(dest, list);        // dest phải đủ lớn!
 
 // Frequency & disjoint
@@ -505,7 +536,8 @@ boolean noCommon = Collections.disjoint(list1, list2); // true nếu không có 
 
 // Min/Max
 int min = Collections.min(list);
-int max = Collections.max(list, Comparator.reverseOrder()); // min với custom comparator
+int max = Collections.max(list);
+int minWithReverseComparator = Collections.max(list, Comparator.reverseOrder()); // min tự nhiên
 
 // Singletons (immutable, cached)
 List<String> single = Collections.singletonList("only");  // size=1, immutable
@@ -532,6 +564,9 @@ checked.add("ok");  // fine
 // Raw type bypass attempt:
 ((Set) checked).add(42); // throws ClassCastException at runtime!
 ```
+
+> 💡 **Giải thích dễ hiểu — utility method thường sửa trực tiếp collection:**
+> `sort`, `shuffle`, `rotate`, `reverse` và `fill` đều mutate list truyền vào. `binarySearch` chỉ đúng khi list đã được sort theo cùng comparator; còn `new ArrayList<>(capacity)` chỉ đặt sức chứa, chưa tạo phần tử nên không đủ điều kiện cho `Collections.copy`. Với wrapper thread-safe, lock phải bao trọn cả vòng lặp chứ không chỉ lúc lấy iterator.
 
 ---
 
@@ -567,6 +602,9 @@ Queue<T> queue2 = new ArrayDeque<>();
 queue2.offer(item); queue2.poll(); queue2.peek();
 ```
 
+> 💡 **Giải thích dễ hiểu — chọn cặp method theo contract lỗi mong muốn:**
+> `add/remove/element` báo lỗi bằng exception khi queue đầy/rỗng; `offer/poll/peek` trả về giá trị đặc biệt (`false` hoặc `null`). Trong code xử lý bình thường, nhóm thứ hai thường giúp luồng điều khiển rõ hơn; nhưng nếu trạng thái đầy/rỗng là lỗi lập trình, exception giúp phát hiện sớm.
+
 ---
 
 ## Components – Collection Selection Guide (Expanded)
@@ -591,6 +629,9 @@ queue2.offer(item); queue2.poll(); queue2.peek();
 | Thread-safe list (read-heavy) | CopyOnWriteArrayList | CopyOnWriteArrayList |
 | Thread-safe queue | ArrayBlockingQueue, LinkedBlockingQueue | ArrayBlockingQueue (bounded) |
 | Immutable collection | List.of(), Set.of(), Map.of() | List/Set/Map.of() (Java 9+) |
+
+> 💡 **Giải thích dễ hiểu — mỗi collection tối ưu một câu hỏi khác nhau:**
+> Hãy xác định trước cần index, thứ tự, uniqueness, priority, lifetime của key hay concurrency. “Nhanh” không chỉ là Big-O: locality, allocation, GC pressure và kích thước dữ liệu thực tế thường quyết định implementation nào tốt hơn trong production.
 
 ---
 

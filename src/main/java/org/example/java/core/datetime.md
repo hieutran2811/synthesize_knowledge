@@ -1,12 +1,14 @@
 # Date/Time API (java.time)
 
 > Phương pháp: What – How – Why – Components – When – Compare – Trade-offs – Real-world – Ghi chú
+>
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
 
 ---
 
 ## What – java.time là gì?
 
-**java.time** (Java 8, JSR-310) là Date/Time API hoàn toàn mới, thay thế `java.util.Date` và `java.util.Calendar` vốn rất nhiều vấn đề.
+**java.time** (Java 8, JSR-310) là Date/Time API *(bộ thư viện xử lý ngày giờ)* hoàn toàn mới, thay thế `java.util.Date` và `java.util.Calendar` vốn rất nhiều vấn đề.
 
 ```
 Trước Java 8 (Legacy):                After Java 8 (java.time):
@@ -22,16 +24,22 @@ Trước Java 8 (Legacy):                After Java 8 (java.time):
 ```
 
 **Thiết kế nguyên tắc:**
-1. **Immutable**: mọi operation tạo object mới
-2. **Fluent API**: method chaining rõ ràng
-3. **Clear separation**: timezone vs no timezone, date vs time vs datetime
-4. **Thread-safe**: DateTimeFormatter, không như SimpleDateFormat
+1. **Immutable** *(bất biến — không thể sửa, mọi thao tác trả về object mới)*: mọi operation tạo object mới
+2. **Fluent API** *(gọi nối chuỗi liền mạch)*: method chaining rõ ràng
+3. **Clear separation** *(tách bạch rõ ràng)*: timezone *(múi giờ)* vs no timezone, date vs time vs datetime
+4. **Thread-safe** *(an toàn khi nhiều luồng cùng dùng)*: DateTimeFormatter, không như SimpleDateFormat
+
+> 💡 **Giải thích dễ hiểu — vì sao "immutable" lại quan trọng?**
+> Lớp `Date` cũ giống như **một cuốn lịch để bàn dùng chung**: ai cũng xé, ghi, sửa lên được. Hai người cùng chỉnh một lúc → nội dung loạn (đây là gốc của lỗi thread-safe). `java.time` chọn cách **bất biến (immutable)**: mỗi tờ lịch một khi in ra là cố định, không sửa. Muốn "cộng thêm 1 giờ"? Nó **in cho bạn một tờ mới** thay vì sửa tờ cũ. Nhờ vậy nhiều người cùng cầm một tờ lịch không bao giờ giẫm chân nhau — an toàn tuyệt đối khi chạy đa luồng.
 
 ---
 
 ## How – Instant (Machine Time)
 
-`Instant` = điểm trên timeline tuyệt đối, tính từ Unix epoch (1970-01-01T00:00:00Z).
+`Instant` *(khoảnh khắc — một điểm thời gian máy tính)* = điểm trên timeline *(trục thời gian)* tuyệt đối, tính từ **Unix epoch** *(mốc 0 của thời gian máy tính: 1970-01-01T00:00:00Z)*.
+
+> 💡 **Giải thích dễ hiểu — `Instant` là "giờ máy":**
+> `Instant` không quan tâm bạn đang ở Hà Nội hay New York — nó là **một cái đồng hồ đếm giây liên tục kể từ đêm giao thừa năm 1970** (mốc epoch). Ví von: giống **số thứ tự tích tắc của vũ trụ**. Cùng một `Instant`, người VN đọc thành "14h" còn người Mỹ đọc thành "2h sáng", nhưng đó vẫn là **đúng một khoảnh khắc**. Vì thế `Instant` là kiểu lý tưởng để ghi log, đánh dấu thời điểm sự kiện, lưu vào DB — không mập mờ theo múi giờ.
 
 ```java
 // Tạo Instant
@@ -169,9 +177,15 @@ LocalDateTime yesterday = dt.minusDays(1);
 ZonedDateTime zdt = dt.atZone(ZoneId.of("Asia/Ho_Chi_Minh"));
 ```
 
+> 💡 **Giải thích dễ hiểu — `LocalDateTime` là "giờ trên tường":**
+> `LocalDateTime` là **con số bạn thấy trên đồng hồ treo tường**: "9 giờ sáng ngày mùng 1" — nhưng 9 giờ sáng *ở đâu*? Nó không nói. Ví von như câu hẹn "họp lúc 9h sáng": nếu bạn ở VN và đối tác ở Mỹ, hai người cùng nói "9h" nhưng đó là hai khoảnh khắc khác nhau. Vì thiếu múi giờ, `LocalDateTime` hợp cho những thứ "giờ địa phương" (lịch họp hiển thị cho người dùng, báo thức hằng ngày) nhưng **tuyệt đối không dùng để đánh dấu thời điểm tuyệt đối** (dùng `Instant`) hay tính toán giữa các múi giờ (dùng `ZonedDateTime`).
+
 ---
 
 ## How – ZonedDateTime và OffsetDateTime
+
+> 💡 **Giải thích dễ hiểu — `ZonedDateTime` và cái bẫy DST:**
+> `ZonedDateTime` = giờ trên tường + **tên múi giờ đầy đủ** (biết cả quy tắc đổi giờ). **DST** *(Daylight Saving Time — quy ước lùi/tiến giờ theo mùa ở nhiều nước)* là cái bẫy khét tiếng: mỗi năm có một đêm đồng hồ "nhảy cóc" từ 2h lên 3h (mất 1 tiếng) hoặc lặp lại 1h hai lần. Ví von: như **lịch tàu hỏa mùa hè/mùa đông** — cùng chuyến "8h tối" nhưng thực tế lệch nhau 1 tiếng tùy mùa. Nếu bạn tự cộng "24×3600 giây" để sang ngày mai, bạn sẽ **sai đúng 1 tiếng** vào đêm chuyển giờ. `ZonedDateTime.plusDays(1)` biết luật này nên cộng "theo lịch" cho đúng. Đây là lý do luôn dùng **tên vùng** (`Asia/Ho_Chi_Minh`) chứ đừng dùng offset cứng (`+07:00`) — offset có thể đổi theo mùa, tên vùng thì mang sẵn cả cuốn luật.
 
 ```java
 // ZonedDateTime = LocalDateTime + ZoneId (timezone rules: DST, historical changes)
@@ -210,6 +224,12 @@ Instant back = odt.toInstant();
 ---
 
 ## How – Duration & Period
+
+> 💡 **Giải thích dễ hiểu — `Duration` vs `Period`:**
+> Hai cái đều là "khoảng cách thời gian" nhưng đo bằng thước khác nhau:
+> - **`Duration`** *(khoảng thời gian máy — giây/nano)*: đo bằng **giây chính xác**, như bấm **đồng hồ bấm giờ**. "2 tiếng 30 phút" là con số cứng, không phụ thuộc lịch.
+> - **`Period`** *(khoảng thời gian theo lịch — năm/tháng/ngày)*: đo bằng **tờ lịch**, như đếm "1 tháng", "1 năm". Mà "1 tháng" thì co giãn: tháng 2 có 28/29 ngày, tháng 3 có 31. Vì thế `Period.ofMonths(1)` cộng vào 31/1 sẽ ra 29/2 (nó tự chỉnh cho khớp cuối tháng), chứ không phải "cộng đúng 30 ngày".
+> Quy tắc: tính **tuổi, thời hạn gói cước** (theo lịch) → dùng `Period`; tính **thời gian trôi qua, timeout** (theo giây) → dùng `Duration`.
 
 ```java
 // Duration = time-based amount (seconds, nanoseconds)
@@ -337,6 +357,9 @@ LocalDate nextWorkDay = LocalDate.now().with(skipWeekend);
 ---
 
 ## How – Clock (Testability)
+
+> 💡 **Giải thích dễ hiểu — `Clock` giúp test thế nào?**
+> Code gọi `Instant.now()` giống như **nhìn thẳng lên đồng hồ mặt trời**: mỗi lần chạy test lại ra một giờ khác → không thể kiểm tra "đúng chưa". `Clock` *(nguồn cấp thời gian, có thể tráo đổi)* biến đồng hồ thành **một thiết bị cắm rời** mà bạn đưa vào từ ngoài (dependency injection). Khi chạy thật, cắm đồng hồ thật (`Clock.systemUTC()`). Khi test, cắm **đồng hồ giả đứng yên** (`Clock.fixed(...)`) chỉ mãi một giờ cố định → kết quả luôn lặp lại, test đáng tin. Ví von như đạo diễn phim muốn quay cảnh "hoàng hôn": thay vì chờ mặt trời thật, họ dùng đèn giả bật đúng góc — muốn quay lại bao nhiêu lần cũng y hệt.
 
 ```java
 // Clock: source of Instant, injectable → testable!

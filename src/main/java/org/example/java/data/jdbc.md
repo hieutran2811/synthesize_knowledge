@@ -1,12 +1,18 @@
 # JDBC & Connection Pooling
 
 > Phương pháp: What – How – Why – Components – When – Compare – Trade-offs – Real-world – Ghi chú
+>
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
 
 ---
 
 ## What – JDBC là gì?
 
-**JDBC (Java Database Connectivity)** là API chuẩn của Java để kết nối và tương tác với relational databases. JDBC cung cấp tầng abstraction giữa Java code và database-specific drivers.
+**JDBC (Java Database Connectivity)** *(bộ API chuẩn để Java "nói chuyện" với database)* là API *(giao diện lập trình — tập hàm/lớp có sẵn để gọi)* chuẩn của Java để kết nối và tương tác với relational databases *(cơ sở dữ liệu quan hệ — dữ liệu lưu dạng bảng có quan hệ với nhau)*. JDBC cung cấp tầng abstraction *(lớp trừu tượng — che đi chi tiết bên dưới)* giữa Java code và database-specific drivers *(trình điều khiển riêng của từng loại database)*.
+
+> 💡 **Giải thích dễ hiểu:**
+> Mỗi loại database (MySQL, PostgreSQL, Oracle...) nói một "ngôn ngữ" giao tiếp riêng ở tầng thấp. Nếu code Java phải học riêng từng ngôn ngữ đó thì đổi database là phải viết lại hết.
+> Ví von: JDBC giống như **ổ cắm điện chuẩn quốc gia**. Thiết bị (code Java) chỉ cần cắm vào ổ chuẩn; còn việc điện lấy từ thủy điện, nhiệt điện hay điện mặt trời (database nào) là do "dây nối phía sau" — chính là **driver** — lo. Đổi nhà cung cấp điện, bạn chỉ đổi dây phía sau, thiết bị giữ nguyên. Nhờ vậy đổi từ MySQL sang PostgreSQL, code JDBC gần như không phải sửa.
 
 ```
 Java Application
@@ -19,10 +25,13 @@ Database (MySQL, PostgreSQL, Oracle...)
 ```
 
 **4 thành phần cốt lõi:**
-1. **DriverManager** – quản lý drivers, tạo connections
-2. **Connection** – kết nối tới database
-3. **Statement/PreparedStatement** – thực thi SQL
-4. **ResultSet** – kết quả trả về
+1. **DriverManager** *(người quản lý các driver)* – quản lý drivers, tạo connections *(kết nối)*
+2. **Connection** *(một phiên kết nối tới database)* – kết nối tới database
+3. **Statement/PreparedStatement** *(câu lệnh SQL để thực thi)* – thực thi SQL
+4. **ResultSet** *(tập kết quả trả về, duyệt theo từng dòng)* – kết quả trả về
+
+> 💡 **Giải thích dễ hiểu — 4 thành phần này phối hợp thế nào:**
+> Hình dung bạn gọi món ở nhà hàng: **DriverManager** là lễ tân sắp cho bạn một bàn (tạo **Connection**); **Connection** là chiếc bàn bạn ngồi để làm việc với bếp (database); **Statement/PreparedStatement** là tờ order ghi món (câu lệnh SQL) bạn đưa cho phục vụ; **ResultSet** là mâm đồ ăn bưng ra, bạn gắp từng đĩa một (duyệt từng dòng kết quả). Hiểu 4 vai này thì mọi đoạn code JDBC bên dưới đều dễ theo.
 
 ---
 
@@ -112,6 +121,11 @@ try (PreparedStatement ps = conn.prepareStatement(insertSql,
 ```
 
 ### Tại sao PreparedStatement an toàn hơn?
+
+> 💡 **Giải thích dễ hiểu — SQL Injection và cách PreparedStatement chặn:**
+> **SQL Injection** *(tấn công tiêm mã SQL)* xảy ra khi bạn nối thẳng dữ liệu người dùng vào chuỗi SQL. Kẻ xấu nhập một đoạn "dữ liệu" thực ra là mã lệnh, và database vô tình chạy luôn mã đó.
+> Ví von: giống như bạn đọc cho thư ký ghi một lá thư. Với **Statement** (nối chuỗi), bạn đọc liền một mạch — nếu người ta chèn câu "...và xé hết hồ sơ đi", thư ký nghe không phân biệt được đâu là nội dung thư đâu là mệnh lệnh, cứ thế làm theo.
+> Với **PreparedStatement** *(câu lệnh biên dịch sẵn với chỗ trống)*, bạn đưa trước cho database một biểu mẫu có sẵn các ô trống `?` và nói rõ: "cấu trúc câu lệnh là đây, cố định rồi". Sau đó dữ liệu người dùng chỉ được **điền vào ô trống** như điền form — dù có viết gì trong ô đó cũng chỉ được coi là chữ trong ô, không bao giờ được đọc thành lệnh mới. Đó là lý do dữ liệu độc hại trở nên vô hại.
 
 ```
 Database xử lý PreparedStatement:
@@ -242,10 +256,14 @@ for (int i = 1; i <= cols; i++) {
 ## How – Connection Pooling
 
 **Vấn đề với DriverManager.getConnection():**
-- Tạo connection tốn kém: TCP handshake + DB authentication + session setup ≈ 50–100ms
-- Mỗi request tạo/đóng connection → bottleneck nghiêm trọng
+- Tạo connection tốn kém: TCP handshake *(bắt tay ba bước để mở kết nối mạng)* + DB authentication *(xác thực đăng nhập database)* + session setup ≈ 50–100ms
+- Mỗi request tạo/đóng connection → bottleneck *(nút thắt cổ chai — điểm làm chậm cả hệ thống)* nghiêm trọng
 
-**Connection Pool** = pool của connections được tái sử dụng:
+**Connection Pool** *(bể chứa sẵn các kết nối để tái sử dụng)* = pool của connections được tái sử dụng:
+
+> 💡 **Giải thích dễ hiểu — vì sao cần Connection Pool:**
+> Mở một kết nối database mất 50–100ms vì phải bắt tay mạng, đăng nhập, thiết lập phiên — rất tốn so với bản thân câu query chỉ mất vài ms. Nếu mỗi request đều mở rồi đóng kết nối, phần lớn thời gian bị đốt vào việc "mở cửa" chứ không phải làm việc.
+> Ví von: giống một **hãng taxi**. Nếu mỗi lần có khách mới đi tuyển tài xế, mua xe, đăng ký biển số rồi xong chuyến lại bán xe đi thì quá phí. Thay vào đó hãng **nuôi sẵn một đội xe (pool)**: khách cần thì điều một xe đang rảnh, đi xong xe quay về bãi chờ khách tiếp theo. **Connection Pool** chính là đội xe kết nối luôn sẵn sàng — mượn cực nhanh (~0.1ms), dùng xong trả lại chứ không hủy. Khi hết xe rảnh, khách mới phải xếp hàng chờ (WAIT).
 
 ```
 Application Request 1 ──→ [Pool] ──→ Connection A (in use)
@@ -311,6 +329,10 @@ spring:
 
 ### HikariCP Pool Sizing Formula
 
+> 💡 **Giải thích dễ hiểu — vì sao pool to hơn chưa chắc nhanh hơn:**
+> Trực giác thường nghĩ "cứ tăng số kết nối là chạy nhanh hơn". Sai. Database chỉ có ngần ấy CPU core và ổ đĩa; số việc chạy song song thực sự bị giới hạn ở đó.
+> Ví von: một **quầy thu ngân siêu thị**. Mở thêm quầy giúp bớt xếp hàng — nhưng chỉ tới khi hết nhân viên. Nếu cố ép 50 khách chen vào 8 quầy thật, họ giẫm chân nhau, nhân viên loay hoay chuyển qua chuyển lại (DB context switching) và mọi người còn chậm hơn. Vì thế công thức khuyến nghị pool nhỏ gọn quanh `số core × 2 + số đĩa` chứ không phải càng nhiều càng tốt.
+
 ```
 Pool Size = Tn × (Cm - 1) + 1  (Little's Law biến thể)
 
@@ -348,7 +370,11 @@ Ví dụ: 8 cores, SSD → pool size ≈ (8×2) + 1 = 17
 
 ## How – JdbcTemplate (Spring)
 
-JdbcTemplate wrap JDBC boilerplate (open/close connection, handle exceptions):
+JdbcTemplate wrap *(bọc lại)* JDBC boilerplate *(đoạn code lặp đi lặp lại nhàm chán — mở/đóng kết nối, bắt exception)* (open/close connection, handle exceptions):
+
+> 💡 **Giải thích dễ hiểu:**
+> Viết JDBC "trần" phải lặp lại hoài mấy bước: xin connection → tạo statement → chạy → duyệt kết quả → nhớ đóng mọi thứ → bắt `SQLException`. Đoạn khung này (boilerplate) chiếm phần lớn code và rất dễ quên đóng gây rò rỉ.
+> Ví von: **JdbcTemplate** như một **bộ đồ nấu ăn có sẵn nồi, bếp, và tự rửa dọn**. Bạn chỉ cần đưa "công thức" (câu SQL) và cách bày món ra đĩa (RowMapper — hàm biến một dòng kết quả thành object), còn mọi việc bật bếp, tắt bếp, lau dọn (mở/đóng connection, xử lý lỗi) nó lo hết.
 
 ```java
 @Repository

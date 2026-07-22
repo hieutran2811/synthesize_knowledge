@@ -1,14 +1,19 @@
 # Kafka Production Operations – Performance, Monitoring & Security – Deep Dive
 
 > Phương pháp: What – How – Why – Components – Compare – Trade-offs – Real-world – Ghi chú
+>
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
 
 ---
 
 ## What – Production Operations
 
-Kafka production operations bao gồm: OS + JVM tuning, broker configurations tối ưu cho throughput/latency, monitoring chiến lược với JMX/Prometheus, consumer lag alerting, security (SASL, TLS, ACLs), và disaster recovery.
+**Production operations** *(vận hành hệ thống thực tế)* của Kafka bao gồm: điều chỉnh OS/JVM, cấu hình broker theo mục tiêu throughput *(thông lượng)* và latency *(độ trễ)*, monitoring *(giám sát)* bằng **JMX** *(giao diện metric của JVM)* và **Prometheus** *(hệ thống thu thập metric chuỗi thời gian)*, cảnh báo **consumer lag** *(khoảng cách consumer chưa theo kịp log)*, bảo mật bằng **SASL** *(xác thực)*, **TLS** *(mã hóa đường truyền)*, **ACL** *(phân quyền)* và disaster recovery – DR *(khôi phục sau thảm họa)*.
 
-```
+> 💡 **Giải thích dễ hiểu:**
+> Vận hành Kafka giống quản lý một kho hàng 24/7: không chỉ làm băng chuyền chạy nhanh, mà còn phải biết khi nào hàng ùn, ai được mở cửa kho, một máy hỏng thì hàng đi đâu và mất cả trung tâm thì khôi phục thế nào.
+
+```text
 Operations pillars:
   Performance:  broker/OS/JVM tuning, producer/consumer config
   Monitoring:   JMX metrics, Prometheus, Grafana dashboards
@@ -20,6 +25,8 @@ Operations pillars:
 
 ## How – OS & JVM Tuning
 
+Các giá trị dưới đây là **điểm bắt đầu để benchmark**, không phải preset dùng chung. Trước khi đổi kernel/JVM, ghi lại baseline về request latency, disk utilization, page cache, GC pause và recovery time; thay từng nhóm cấu hình và chuẩn bị rollback.
+
 ```bash
 # OS settings (/etc/sysctl.conf)
 net.core.wmem_default=131072
@@ -28,9 +35,9 @@ net.core.wmem_max=2097152
 net.core.rmem_max=2097152
 net.ipv4.tcp_wmem=4096 65536 2048000
 net.ipv4.tcp_rmem=4096 65536 2048000
-vm.swappiness=1                          # near-disable swap (I/O latency)
-vm.dirty_ratio=80                        # % RAM before force flush
-vm.dirty_background_ratio=5             # % RAM before background flush
+vm.swappiness=1                          # giảm xu hướng swap, không phải tắt swap
+# dirty_ratio/dirty_background_ratio ảnh hưởng writeback.
+# Không sao chép một tỷ lệ cố định nếu chưa đo RAM, tốc độ disk và latency spike.
 
 # Filesystem: XFS recommended (ext4 also fine)
 # Mount options
@@ -43,7 +50,7 @@ kafka hard nofile 128000
 kafka soft nproc 65536
 kafka hard nproc 65536
 
-# Disable transparent huge pages (latency spikes)
+# Transparent Huge Pages: chỉ thay đổi khi benchmark chứng minh gây latency spike.
 echo never > /sys/kernel/mm/transparent_hugepage/enabled
 echo never > /sys/kernel/mm/transparent_hugepage/defrag
 ```
@@ -51,36 +58,41 @@ echo never > /sys/kernel/mm/transparent_hugepage/defrag
 ```properties
 # jvm.options (Kafka broker)
 -Xms6g
--Xmx6g                                   # 6-12GB typical; not too large (GC pauses)
+-Xmx6g                                   # ví dụ; heap thực tế phụ thuộc metadata/request load
 -XX:+UseG1GC
--XX:MaxGCPauseMillis=20                  # target max 20ms GC pause
+-XX:MaxGCPauseMillis=20                  # mục tiêu soft, JVM không bảo đảm pause <= 20ms
 -XX:InitiatingHeapOccupancyPercent=35
 -XX:+ExplicitGCInvokesConcurrent
--XX:G1HeapRegionSize=16m
+# -XX:G1HeapRegionSize=16m               # chỉ pin sau khi phân tích GC; mặc định JVM tự chọn
 -XX:+HeapDumpOnOutOfMemoryError
--XX:HeapDumpPath=/tmp/kafka-heap.hprof
+-XX:HeapDumpPath=/var/lib/kafka/dumps/kafka-heap.hprof  # disk riêng, đủ chỗ và giới hạn quyền
 -XX:+ExitOnOutOfMemoryError              # restart on OOM
 
 # GC logging
 -Xlog:gc*:file=/var/log/kafka/gc.log:time,tags:filecount=10,filesize=100m
 ```
 
+> 💡 **Giải thích dễ hiểu:**
+> Kafka tận dụng RAM còn lại làm page cache cho log. Dồn quá nhiều RAM vào heap giống chất kín đồ trong phòng làm việc, khiến kho đệm ngoài cửa không còn chỗ. Heap, page cache và disk phải được đo như một hệ thống; tuning GC chỉ đặt mục tiêu, không phải lời hứa độ trễ.
+
 ---
 
 ## How – Broker Configuration (Performance)
+
+Broker config phải xuất phát từ SLO *(service-level objective – mục tiêu độ trễ/khả dụng)* và workload. Các số dưới đây là ví dụ để load test; một cluster có record 1 KB và một cluster có record 8 MB không thể dùng chung cấu hình.
 
 ```properties
 # server.properties – performance tuning
 
 # --- Network ---
-num.network.threads=8              # threads for network I/O (tune to CPU cores)
-num.io.threads=16                  # threads for disk I/O (tune to disk count * 2)
+num.network.threads=8              # ví dụ; tune theo CPU + network request queue/idle
+num.io.threads=16                  # ví dụ; tune theo disk latency + request handler saturation
 socket.send.buffer.bytes=102400
 socket.receive.buffer.bytes=102400
 socket.request.max.bytes=104857600  # 100MB
 
 # --- Log storage ---
-log.dirs=/data/kafka1,/data/kafka2   # multiple dirs = multiple disks
+log.dirs=/data/kafka1,/data/kafka2   # chỉ tăng I/O khi nằm trên disk/device phù hợp
 num.recovery.threads.per.data.dir=2
 
 # --- Replication ---
@@ -92,7 +104,7 @@ leader.imbalance.check.interval.seconds=300
 leader.imbalance.per.broker.percentage=10
 
 # --- Topic defaults ---
-num.partitions=6                   # default partitions for new topics
+num.partitions=6                   # chỉ là default; partition thật phải theo capacity/parallelism
 auto.create.topics.enable=false    # disable auto-creation (explicit control)
 delete.topic.enable=true
 
@@ -102,10 +114,10 @@ log.segment.bytes=1073741824       # 1GB segments
 log.retention.check.interval.ms=300000
 
 # --- Throughput optimization ---
-log.flush.interval.messages=Long.MAX_VALUE   # rely on OS flush
-log.flush.interval.ms=Long.MAX_VALUE
-replica.fetch.max.bytes=10485760   # 10MB per fetch (match message.max.bytes)
-message.max.bytes=10485760         # 10MB max message size
+# Thường giữ mặc định flush để Kafka dựa vào OS page cache + replication.
+# Nếu buộc cấu hình, giá trị phải là số hợp lệ và cần benchmark fsync/latency.
+replica.fetch.max.bytes=10485760   # phải đủ cho record batch lớn nhất
+message.max.bytes=10485760         # đồng bộ thêm topic max.message.bytes và client limits
 
 # --- Request handling ---
 queued.max.requests=500
@@ -120,6 +132,11 @@ controller.quorum.election.backoff.max.ms=1000
 controller.quorum.fetch.timeout.ms=2000
 ```
 
+`replica.fetch.max.bytes` phải đủ lớn để follower sao chép record batch được broker chấp nhận. Producer `max.request.size`, consumer `max.partition.fetch.bytes`/`fetch.max.bytes` và topic `max.message.bytes` cũng cần tương thích. Ba timeout KRaft ở cuối là giá trị minh họa gần mặc định; chỉ đổi sau khi đo controller quorum latency, không dùng để “tăng tốc” tùy ý.
+
+> 💡 **Giải thích dễ hiểu:**
+> Cấu hình kích thước giống giới hạn chiều cao ở các cửa kho: xe qua được cửa producer nhưng mắc ở cửa broker hoặc follower thì pipeline vẫn hỏng. `RF=3`, `min.insync.replicas=2` chỉ bảo vệ write khi producer dùng `acks=all`; từng tham số riêng lẻ không tạo durability.
+
 ---
 
 ## How – Monitoring (JMX + Prometheus)
@@ -127,33 +144,32 @@ controller.quorum.fetch.timeout.ms=2000
 ```yaml
 # docker-compose.yml – Prometheus JMX Exporter
 kafka:
-  image: confluentinc/cp-kafka:7.5.0
+  image: confluentinc/cp-kafka:<approved-version>  # pin bản đang được tổ chức hỗ trợ
   environment:
-    KAFKA_JMX_PORT: 9999
-    KAFKA_JMX_HOSTNAME: kafka
-    EXTRA_ARGS: "-javaagent:/opt/prometheus/jmx_prometheus_javaagent.jar=9090:/opt/prometheus/kafka.yml"
+    KAFKA_OPTS: "-javaagent:/opt/prometheus/jmx_prometheus_javaagent.jar=9090:/opt/prometheus/kafka.yml"
 
 # kafka.yml (JMX Exporter config)
-hostPort: kafka:9999
+lowercaseOutputName: true
 rules:
-  - pattern: kafka.server<type=BrokerTopicMetrics, name=MessagesInPerSec><>OneMinuteRate
+  - pattern: 'kafka.server<type=BrokerTopicMetrics, name=MessagesInPerSec, topic=(.+)><>OneMinuteRate'
     name: kafka_server_brokertopicmetrics_messagesin_rate
     labels:
       topic: "$1"
 ```
 
+Java agent ở ví dụ đọc JMX ngay trong broker rồi mở HTTP metrics; endpoint đó chỉ nên nằm trong mạng quản trị. Nếu dùng remote JMX thay thế, không mở công khai: giới hạn bind/firewall và bật authentication/TLS. Tên metric sau khi export phụ thuộc rule và phiên bản exporter; kiểm tra `/metrics` thực tế trước khi viết alert.
+
 ### Critical Broker Metrics
 
-```
+```text
 JMX Metrics (kafka.server domain):
 
 CLUSTER HEALTH:
   kafka.controller:type=KafkaController,name=ActiveControllerCount
-    → Must be exactly 1 cluster-wide
-    → 0: no controller → critical
-    → > 1: split-brain → critical
+    → Mỗi controller node có 0 hoặc 1; tổng theo đúng một cluster phải là 1
+    → 0 kéo dài: không có active controller; >1 thường cần kiểm tra label/scrape/stale data
 
-  kafka.controller:type=KafkaController,name=OfflinePartitionsCount
+  kafka.controller:type=KafkaController,name=OfflinePartitionCount
     → 0: all good
     → > 0: partitions unavailable (CRITICAL ALERT)
 
@@ -163,6 +179,9 @@ CLUSTER HEALTH:
 
   kafka.server:type=ReplicaManager,name=UnderMinIsrPartitionCount
     → > 0: writes may fail with NotEnoughReplicas (WARNING)
+
+  kafka.log:type=LogManager,name=OfflineLogDirectoryCount
+    → > 0: broker có log directory/disk offline (CRITICAL)
 
 THROUGHPUT:
   kafka.server:type=BrokerTopicMetrics,name=BytesInPerSec
@@ -178,46 +197,61 @@ LATENCY:
 
 RESOURCE:
   kafka.server:type=KafkaRequestHandlerPool,name=RequestHandlerAvgIdlePercent
-    → < 30%: broker overloaded
+    → thấp kéo dài: request handler bão hòa; ngưỡng phải theo baseline/SLO
   java.lang:type=Memory,HeapMemoryUsage (used/max)
   kafka.log:type=LogFlushStats,name=LogFlushRateAndTimeMs
 ```
 
+Đừng chỉ nhìn một ảnh chụp. Cảnh báo tốt kết hợp **symptom** *(triệu chứng người dùng thấy)* như request p99/timeout với **cause** *(nguyên nhân)* như disk saturation, ISR shrink hoặc network queue. Metric controller phải được lọc theo `cluster_id` để không cộng nhiều cluster vào cùng biểu đồ.
+
+> 💡 **Giải thích dễ hiểu:**
+> Một đồng hồ đỏ chưa chắc là cháy nhà. Consumer lag tăng có thể do traffic vừa tăng, còn lag cao nhưng đang giảm có thể đang hồi phục. Hãy nhìn độ lớn, tốc độ thay đổi và thời gian kéo dài cùng nhau.
+
 ### Consumer Lag Monitoring
 
+**Consumer lag** *(độ trễ consumer theo offset)* là chênh lệch giữa log end offset và committed offset. Nó không luôn bằng số record “chưa xử lý”: ứng dụng có thể xử lý xong nhưng chưa commit, hoặc commit sớm trước khi side effect hoàn tất. Với workload không đều, nên quy đổi thêm sang **lag time** *(độ trễ theo thời gian)* và đối chiếu processing latency/error rate.
+
 ```bash
-# CLI: lag check
+# CLI: lag check; thêm --command-config khi cluster bật authentication
 kafka-consumer-groups.sh --bootstrap-server localhost:9092 \
   --describe --group order-processor-group
-# GROUP              TOPIC  PARTITION  CURRENT-OFFSET  LOG-END-OFFSET  LAG
-# order-processor    orders 0          10000           10050           50
+# GROUP                 TOPIC  PARTITION  CURRENT-OFFSET  LOG-END-OFFSET  LAG
+# order-processor-group orders 0          10000           10050           50
+```
 
-# Prometheus: consumer lag via kafka-exporter or Burrow
-# kafka_consumergroup_lag{consumergroup="order-processor", topic="orders", partition="0"}
-# kafka_consumergroup_lag_sum{consumergroup="order-processor", topic="orders"}
+Exporter có thể cung cấp các gauge như:
 
-# Alerting rule (Prometheus):
+```promql
+kafka_consumergroup_lag{consumergroup="order-processor-group", topic="orders", partition="0"}
+kafka_consumergroup_lag_sum{consumergroup="order-processor-group", topic="orders"}
+```
+
+Alert mẫu phải hiệu chỉnh theo traffic/SLO và đúng tên metric mà exporter thực sự sinh:
+
+```yaml
 groups:
   - name: kafka_alerts
     rules:
       - alert: KafkaConsumerGroupLagHigh
-        expr: sum(kafka_consumergroup_lag) by (consumergroup, topic) > 10000
+        expr: sum by (consumergroup, topic) (kafka_consumergroup_lag) > 10000
         for: 5m
         labels:
           severity: warning
         annotations:
           summary: "Consumer group {{ $labels.consumergroup }} lag is {{ $value }}"
-          
+
       - alert: KafkaConsumerGroupLagGrowing
-        expr: increase(kafka_consumergroup_lag[10m]) > 5000
+        # Lag là gauge: dùng deriv/delta và `for`, không dùng increase() như counter.
+        expr: deriv(kafka_consumergroup_lag_sum[10m]) > 8
+        for: 5m
         labels:
           severity: critical
         annotations:
-          summary: "Consumer lag growing rapidly"
+          summary: "Consumer lag is growing continuously"
 
       - alert: KafkaOfflinePartitions
-        expr: kafka_controller_kafkacontroller_offlinepartitionscount > 0
-        for: 0m
+        expr: kafka_controller_kafkacontroller_offlinepartitioncount > 0
+        for: 1m
         labels:
           severity: critical
 
@@ -228,28 +262,35 @@ groups:
           severity: warning
 ```
 
+> 💡 **Giải thích dễ hiểu:**
+> Lag giống số đơn chưa được xác nhận giao xong. Chỉ đếm số đơn có thể gây hiểu lầm khi đơn lớn nhỏ khác nhau; cần biết hàng đang ùn thêm hay đang rút xuống, đơn cũ nhất chờ bao lâu và consumer có lỗi hay không.
+
 ---
 
 ## How – Security (TLS + SASL)
 
 ### TLS Setup
 
+**TLS** *(mã hóa đường truyền và có thể xác thực certificate)* cần certificate có SAN khớp hostname trong `advertised.listeners`, chuỗi CA đầy đủ, cơ chế rotation và secret store. Lệnh dưới đây chỉ minh họa lab; production nên dùng PKI/certificate manager của tổ chức, không để private key hoặc mật khẩu trong Git.
+
 ```bash
-# Generate CA and broker certs (production)
+# Minh họa lab: production dùng PKI/certificate manager và secret store.
 # 1. Generate CA
 openssl req -new -x509 -keyout ca-key.pem -out ca-cert.pem \
   -days 3650 -subj "/CN=Kafka CA/O=MyOrg"
 
 # 2. Generate broker keystore
 keytool -keystore kafka.broker.keystore.jks -alias broker \
-  -validity 365 -keyalg RSA -genkey \
+  -validity 365 -keyalg RSA -genkeypair \
+  -ext SAN=dns:broker1.kafka.example.com \
   -dname "CN=broker1.kafka.example.com,O=MyOrg"
 
 # 3. Sign with CA
 keytool -keystore kafka.broker.keystore.jks -alias broker -certreq \
-  -file broker-cert-request.pem
+  -file broker-cert-request.pem -ext SAN=dns:broker1.kafka.example.com
 openssl x509 -req -CA ca-cert.pem -CAkey ca-key.pem \
-  -in broker-cert-request.pem -out broker-signed-cert.pem -days 365
+  -CAcreateserial -in broker-cert-request.pem -out broker-signed-cert.pem -days 365 \
+  -extfile <(printf 'subjectAltName=DNS:broker1.kafka.example.com')
 
 # 4. Import to keystore
 keytool -keystore kafka.broker.keystore.jks -alias CARoot \
@@ -264,8 +305,8 @@ keytool -keystore kafka.broker.truststore.jks -alias CARoot \
 
 ```properties
 # server.properties – TLS configuration
-listeners=PLAINTEXT://0.0.0.0:9092,SSL://0.0.0.0:9093,SASL_SSL://0.0.0.0:9094
-advertised.listeners=PLAINTEXT://broker1:9092,SSL://broker1:9093,SASL_SSL://broker1:9094
+listeners=SSL://0.0.0.0:9093,SASL_SSL://0.0.0.0:9094
+advertised.listeners=SSL://broker1.kafka.example.com:9093,SASL_SSL://broker1.kafka.example.com:9094
 
 # SSL/TLS
 ssl.keystore.location=/etc/kafka/certs/kafka.broker.keystore.jks
@@ -276,47 +317,50 @@ ssl.truststore.password=truststore_password
 ssl.client.auth=required              # required | requested | none
 ssl.protocol=TLSv1.3
 ssl.enabled.protocols=TLSv1.3,TLSv1.2
-ssl.cipher.suites=TLS_AES_128_GCM_SHA256,TLS_AES_256_GCM_SHA384
+# ssl.cipher.suites=...               # chỉ pin khi policy/compatibility yêu cầu và đã test JDK
 ```
+
+> 💡 **Giải thích dễ hiểu:**
+> TLS giống phong bì niêm phong kèm giấy tờ người giao. Mã hóa ngăn nghe lén; kiểm tra hostname/CA ngăn giao nhầm cho kẻ giả mạo. Chỉ bật TLS nhưng bỏ qua certificate validation vẫn chưa đủ an toàn.
 
 ### SASL Authentication
 
+**SASL** *(khung xác thực client/broker)* hỗ trợ nhiều mechanism. Các đoạn PLAIN, SCRAM, GSSAPI và OAUTHBEARER là **phương án thay thế hoặc cấu hình nhiều mechanism có chủ đích**; không dán nối tiếp các dòng `sasl.enabled.mechanisms`, vì property sau sẽ ghi đè property trước.
+
+Ví dụ ưu tiên SCRAM-SHA-512 trên TLS:
+
 ```properties
-# SASL/PLAIN (simple, credentials in config – use with TLS)
-sasl.enabled.mechanisms=PLAIN
-sasl.mechanism.inter.broker.protocol=PLAIN
+# server.properties
 inter.broker.listener.name=SASL_SSL
-
-# JAAS config
-listener.name.sasl_ssl.plain.sasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required \
-  username="admin" \
-  password="admin_password" \
-  user_admin="admin_password" \
-  user_app_service="app_password";
-
-# SASL/SCRAM (better: credentials stored in ZooKeeper/KRaft)
 sasl.enabled.mechanisms=SCRAM-SHA-512
-kafka-configs.sh --zookeeper zk:2181 --alter --entity-type users \
-  --entity-name app_service --add-config 'SCRAM-SHA-512=[password=secure_pass]'
-
-# SASL/GSSAPI (Kerberos) – enterprise environments
-sasl.enabled.mechanisms=GSSAPI
-sasl.kerberos.service.name=kafka
-# KafkaServer {
-#   com.sun.security.auth.module.Krb5LoginModule required
-#   useKeyTab=true
-#   storeKey=true
-#   keyTab="/etc/kafka/kafka.keytab"
-#   principal="kafka/broker1.example.com@EXAMPLE.COM";
-# };
-
-# OAUTHBEARER (JWT tokens) – modern SSO
-sasl.enabled.mechanisms=OAUTHBEARER
-sasl.oauthbearer.jwks.endpoint.url=https://sso.example.com/.well-known/jwks.json
-sasl.oauthbearer.expected.audience=kafka-cluster
+sasl.mechanism.inter.broker.protocol=SCRAM-SHA-512
+listener.name.sasl_ssl.scram-sha-512.sasl.jaas.config=\
+  org.apache.kafka.common.security.scram.ScramLoginModule required \
+  username="admin" password="<broker-secret-from-vault>";
 ```
 
+Trong KRaft, SCRAM credential được lưu trong metadata log. Credential dùng cho inter-broker phải được bootstrap trước khi broker khởi động (ví dụ qua `kafka-storage.sh --add-scram`). Với user ứng dụng trên cluster đang chạy, tạo/rotate qua broker bảo mật như dưới đây; không dùng lệnh ZooKeeper cũ:
+
+```bash
+kafka-configs.sh --bootstrap-server broker1.kafka.example.com:9094 \
+  --command-config admin.properties \
+  --alter --entity-type users --entity-name app_service \
+  --add-config 'SCRAM-SHA-512=[iterations=8192,password=<secret-from-vault>]'
+```
+
+| Mechanism | Khi phù hợp | Lưu ý |
+|-----------|--------------|-------|
+| PLAIN | Hệ thống đơn giản/legacy | Chỉ dùng qua TLS; broker JAAS chứa password nên cần secret management |
+| SCRAM-SHA-256/512 | Username/password không cần Kerberos | Dùng TLS, password mạnh, rotation và bảo vệ KRaft controller/metadata log |
+| GSSAPI | Tổ chức đã vận hành Kerberos/AD | FQDN, keytab và clock/DNS phải đúng; vận hành phức tạp hơn |
+| OAUTHBEARER | Tích hợp IdP/OAuth 2.0 | Production cần callback handler/JWKS/audience/issuer đúng; unsecured token mặc định chỉ phù hợp dev |
+
+> 💡 **Giải thích dễ hiểu:**
+> TLS là đường hầm kín, SASL là cách kiểm tra thẻ nhân viên bên trong đường hầm. SCRAM không gửi password thô nhưng vẫn cần TLS; ACL ở bước tiếp theo mới quyết định người đã đăng nhập được phép làm gì.
+
 ### ACLs (Authorization)
+
+**ACL – Access Control List** *(danh sách quyền truy cập)* ánh xạ principal đã xác thực với operation trên topic, consumer group, transactional ID hoặc cluster. Production nên deny-by-default, cấp least privilege *(đặc quyền tối thiểu)* và quản lý ACL bằng code/review thay vì thao tác tay.
 
 ```bash
 # Enable ACLs
@@ -326,6 +370,7 @@ allow.everyone.if.no.acl.found=false      # deny by default
 super.users=User:admin;User:kafka_internal
 
 # Create ACLs
+# Với cluster bảo mật, mọi lệnh kafka-acls bên dưới cần --command-config admin.properties.
 kafka-acls.sh --bootstrap-server localhost:9092 \
   --command-config admin.properties \
   --add \
@@ -366,9 +411,16 @@ kafka-acls.sh --bootstrap-server localhost:9092 \
   --remove --allow-principal User:old_service --operation Read --topic orders
 ```
 
+Cần test cả luồng startup, produce, consume, transaction và admin vì mỗi luồng dùng resource/operation khác nhau. Prefix ACL tiện quản lý nhưng dễ cấp rộng ngoài ý muốn; luôn kiểm tra `--list` và audit thay đổi.
+
+> 💡 **Giải thích dễ hiểu:**
+> Authentication là kiểm tra căn cước ở cổng; ACL là chìa khóa từng phòng. Được vào tòa nhà không đồng nghĩa được đọc topic, ghi topic hoặc dùng consumer group bất kỳ.
+
 ---
 
 ## How – Operational Runbooks
+
+Runbook *(quy trình xử lý vận hành)* phải ghi rõ precondition, người phê duyệt, lệnh quan sát, tiêu chí dừng/rollback và bằng chứng sau thay đổi. Luôn dùng `--command-config` trên cluster bảo mật và thử ở staging/canary trước.
 
 ```bash
 # 1. Leader rebalance (after broker restart)
@@ -378,8 +430,9 @@ kafka-leader-election.sh --bootstrap-server localhost:9092 \
 # 2. Increase topic partitions
 kafka-topics.sh --bootstrap-server localhost:9092 \
   --alter --topic orders --partitions 24
-# WARNING: existing keyed messages lose ordering guarantees!
-# → Create new topic with desired partitions and migrate consumers
+# WARNING: record cũ không bị đảo; nhưng hash(key) có thể map sang partition mới.
+# Ordering theo cùng key xuyên qua thời điểm tăng partition có thể bị phá.
+# Nếu ordering lịch sử là bắt buộc, tạo topic mới và migrate có kiểm soát.
 
 # 3. Move partition to specific broker (overloaded broker)
 # Generate reassignment plan
@@ -387,8 +440,10 @@ cat > topics.json << EOF
 {"topics": [{"topic": "orders"}], "version": 1}
 EOF
 kafka-reassign-partitions.sh --bootstrap-server localhost:9092 \
-  --topics-to-move-json-file topics.json --broker-list "1,2,3,4" --generate \
-  > reassignment_plan.json
+  --topics-to-move-json-file topics.json --broker-list "1,2,3,4" --generate
+
+# Output gồm Current + Proposed và lời mô tả.
+# Lưu Current JSON để rollback; copy riêng Proposed JSON vào reassignment_plan.json rồi review.
 
 # Execute with throttle
 kafka-reassign-partitions.sh --bootstrap-server localhost:9092 \
@@ -399,116 +454,120 @@ kafka-reassign-partitions.sh --bootstrap-server localhost:9092 \
 kafka-reassign-partitions.sh --bootstrap-server localhost:9092 \
   --reassignment-json-file reassignment_plan.json --verify
 
-# Remove throttle after done
-kafka-configs.sh --bootstrap-server localhost:9092 \
-  --entity-type brokers --entity-default \
-  --alter --delete-config leader.replication.throttled.rate,follower.replication.throttled.rate
+# --verify sẽ gỡ throttle khi reassignment hoàn tất.
+# Kiểm tra lại broker- và topic-level throttled configs; không xóa entity-default mù quáng.
 
 # 4. Drain broker before maintenance
-# Reassign all partitions off the broker
-# Set replica.lag.time.max.ms to low value to force ISR shrink
-# Then restart broker
+# Reassign replicas/leaders khỏi broker, lưu current assignment để rollback.
+# Chờ --verify hoàn tất; OfflinePartitions=0, UnderMinISR=0 và replication lag ổn.
+# Dừng broker bằng SIGTERM/controlled shutdown; làm từng broker, chờ cluster hồi phục.
 ```
+
+> 💡 **Giải thích dễ hiểu:**
+> Reassignment giống chuyển hàng giữa kho đang mở cửa. Throttle quá thấp khiến xe chuyển hàng không theo kịp hàng mới; quá cao làm khách hàng thường bị nghẽn. `--verify` vừa xác nhận chuyển xong vừa giúp tháo giới hạn đúng lúc.
 
 ---
 
-## How – Disaster Recovery (MirrorMaker2)
+## How – Disaster Recovery (MirrorMaker 2)
 
-```bash
-# Active-passive DR setup
-# Primary cluster: us-east (active)
-# DR cluster: us-west (passive, warm standby)
+**RPO – Recovery Point Objective** *(mức dữ liệu tối đa chấp nhận mất)* và **RTO – Recovery Time Objective** *(thời gian tối đa để phục hồi)* phải được định nghĩa trước. MirrorMaker 2 (MM2) replicate bất đồng bộ, nên RPO không mặc định bằng 0; phải đo replication lag, checkpoint freshness và diễn tập failover.
 
-# MirrorMaker2 on DR cluster
-cat > mm2.properties << EOF
+```properties
+# Active-passive: primary (us-east) → dr (us-west warm standby)
 clusters = primary, dr
 
 primary.bootstrap.servers = us-east-broker1:9092,us-east-broker2:9092
 dr.bootstrap.servers = us-west-broker1:9092,us-west-broker2:9092
+# Thêm primary./dr. security.protocol, SASL/SSL config và secret theo môi trường.
 
 primary->dr.enabled = true
 primary->dr.topics = orders,payments,user-events
 primary->dr.replication.factor = 3
 
-# Sync consumer offsets for quick failover
+# Offset sync chỉ ghi vào target khi group tương ứng không active ở target.
+primary->dr.emit.offset-syncs.enabled = true
+primary->dr.emit.checkpoints.enabled = true
 primary->dr.sync.group.offsets.enabled = true
 primary->dr.sync.group.offsets.interval.seconds = 60
 
-# Heartbeat for lag monitoring
 heartbeats.topic.replication.factor = 3
 checkpoints.topic.replication.factor = 3
-EOF
-
-bin/connect-mirror-maker.sh mm2.properties
-
-# Failover procedure:
-# 1. Stop producers writing to primary
-# 2. Wait for MirrorMaker2 lag to reach 0
-# 3. Translate consumer offsets
-kafka-consumer-groups.sh --bootstrap-server us-west-broker:9092 \
-  --group order-processor --reset-offsets \
-  --to-latest --topic primary.orders --execute
-# 4. Restart consumers pointing to DR cluster with translated offsets
-# 5. Update DNS/load balancer to DR cluster
-
-# Monitor lag
-kafka-consumer-groups.sh --bootstrap-server us-west-broker:9092 \
-  --describe --group primary.order-processor  # MirrorMaker2 group
+offset-syncs.topic.replication.factor = 3
 ```
+
+```bash
+bin/connect-mirror-maker.sh mm2.properties
+```
+
+Quy trình failover active-passive tối thiểu:
+
+1. Fence/stop producer và consumer ở primary để tránh hai site cùng ghi hoặc group active ở target quá sớm.
+2. Xác nhận MM2 khỏe; lag/checkpoint/offset-sync đạt RPO đã duyệt. Không giả định lag luôn về 0 khi primary đã hỏng.
+3. Kiểm tra remote topic name theo replication policy (mặc định thường có alias như `primary.orders`), schema, ACL và translated group offsets ở DR.
+4. Khởi động consumer bằng đúng group ID trên DR, rồi chuyển producer/DNS sau khi smoke test. Theo dõi duplicate/gap và side effect idempotent.
+5. Ghi lại cutoff/failover point. Failback là một migration riêng: tránh replication loop và kiểm tra offset translation chiều ngược lại.
+
+Không dùng `--reset-offsets --to-latest` thay cho offset translation: thao tác đó bỏ qua toàn bộ backlog chưa đọc và có thể gây mất xử lý nghiệp vụ. Nếu offset sync tự động không dùng được, phải lấy checkpoint/translation được kiểm chứng và dry-run trước khi execute.
+
+> 💡 **Giải thích dễ hiểu:**
+> MM2 giống xe chở hàng sang kho dự phòng; số kệ ở hai kho không nhất thiết trùng nhau nên offset cần “phiên dịch”. Nhảy thẳng đến kệ cuối (`--to-latest`) là tuyên bố mọi kiện đang chờ đã giao, dù thực tế chúng chưa được xử lý.
 
 ---
 
 ## Trade-offs
 
-```
-TLS overhead:
-  ✅ Encryption in transit (required for compliance)
-  ❌ ~5-10% throughput reduction (CPU for encryption)
-  ❌ Increased latency (handshake)
-  → TLSv1.3 + hardware AES: minimal overhead
+| Quyết định | Lợi ích | Chi phí/rủi ro cần đo |
+|------------|---------|------------------------|
+| TLS | Mã hóa in transit, hỗ trợ mTLS/compliance | CPU, handshake và certificate rotation; overhead phụ thuộc JDK, cipher, connection reuse và phần cứng, không có % cố định |
+| PLAIN qua TLS | Đơn giản, tương thích rộng | Password nằm ở broker/client config; cần vault/rotation và TLS bắt buộc |
+| SCRAM qua TLS | Không gửi password thô, credential ở KRaft metadata log | Vẫn cần password policy, bảo vệ controller và quy trình rotation |
+| GSSAPI/OAuth | Tích hợp identity platform của tổ chức | DNS/clock/keytab hoặc IdP/callback/JWKS phức tạp; không mặc định “an toàn nhất” cho mọi môi trường |
+| ACL chi tiết | Least privilege, blast radius nhỏ | Nhiều rule, dễ drift; nên dùng prefix có quy ước và policy-as-code |
+| MM2 active-passive | Replication liên tục, RTO thường tốt hơn restore thủ công | RPO khác 0, offset/topic naming/failback phức tạp; failover không hoàn toàn tự động |
+| Backup/export | Hữu ích cho archive, audit hoặc rebuild dài hạn | Không thay thế ngay cluster DR/consumer offsets; RTO có thể dài |
 
-SASL/PLAIN vs SASL/SCRAM:
-  PLAIN:  credentials in config file (less secure, simple)
-  SCRAM:  credentials in ZK/KRaft (can rotate without restart), more secure
-  GSSAPI: enterprise Kerberos (most secure, complex setup)
-  → SCRAM-SHA-512 for most production; GSSAPI for Kerberos environments
-
-ACL granularity:
-  Broad ACLs:  easier management, less secure
-  Granular:    secure, hard to manage (many rules)
-  → Prefix-based ACLs for topic families (logs-*, orders-*)
-
-MirrorMaker2 vs manual DR:
-  MM2:    automated, near real-time, managed failover
-  Manual: simpler, less infra, but slow RTO
-  → MM2 for RPO < 1h; snapshots for RPO > 1h
-```
+> 💡 **Giải thích dễ hiểu:**
+> Bảo mật và DR không phải công tắc bật/tắt. Chúng giống mua bảo hiểm kèm diễn tập thoát hiểm: chính sách đẹp trên giấy không có giá trị nếu certificate hết hạn, ACL drift hoặc đội vận hành chưa từng thử failover.
 
 ---
 
 ## Real-world Production Checklist
 
-```
+```text
 Pre-production checklist:
-  ✅ OS: swappiness=1, noatime, XFS
-  ✅ JVM: G1GC, 6-12GB heap, ExitOnOutOfMemoryError
-  ✅ Broker: RF=3, min.insync.replicas=2, acks=all for producers
-  ✅ TLS: enabled for both listeners + inter-broker
-  ✅ SASL: SCRAM or GSSAPI (not PLAIN in production)
-  ✅ ACLs: enabled, deny-all default, explicit allow per service
-  ✅ Monitoring: Prometheus JMX exporter + Grafana dashboards
-  ✅ Alerts: OfflinePartitions, UnderReplicated, ConsumerLag, ActiveController
-  ✅ DR: MirrorMaker2 to DR cluster
-  ✅ Testing: chaos tests (kill broker, network partition)
+  ✅ SLO/capacity: peak + growth, partition count, disk retention/recovery headroom, quota
+  ✅ Failure domains: RF/minISR, rack/AZ placement, unclean election policy đã duyệt
+  ✅ OS/JVM: supported JDK, page cache/heap/GC và kernel settings đã benchmark
+  ✅ Client durability: producer acks/idempotence/retry; consumer commit/idempotency đã test
+  ✅ Network/security: TLS hostname/CA/rotation, SASL mechanism, deny-default ACL
+  ✅ Secret handling: không commit password/key; rotation và audit có owner
+  ✅ Monitoring: broker/controller/client/MM2 metrics có cluster label và recording rules
+  ✅ Alerts: offline partition/log dir, UnderMinISR, request p99/error, disk, lag time
+  ✅ Runbook: broker drain, reassignment, disk failure, certificate expiry, rollback
+  ✅ DR: RPO/RTO, offset translation, schema/ACL/topic config và failover/failback đã diễn tập
+  ✅ Upgrade: compatibility matrix, canary/rolling plan và rollback constraint
+  ✅ Testing: load/soak, broker/controller loss, network impairment và dependency outage
 
 Monitoring dashboard must-haves:
-  Broker: throughput in/out, request rate, handler idle %
-  Topics: messages in/out per topic, bytes in/out
-  Consumers: lag per consumer group + topic + partition
-  Replication: under-replicated partitions, ISR changes
-  JVM: heap usage, GC time
+  Broker/controller: throughput, request p95/p99/error, queue/idle, active/fenced brokers
+  Storage: disk utilization/latency, OfflineLogDirectoryCount, retention growth
+  Topics/replication: bytes/messages, UnderReplicated/UnderMinISR, ISR changes
+  Consumers: lag offset + lag time + processing/error rate theo group/topic/partition
+  JVM/host: heap, GC pause/time, CPU, page cache, network và file descriptors
+  DR/MM2: replication lag, checkpoint age, heartbeat và connector/task health
 ```
+
+> 💡 **Giải thích dễ hiểu:**
+> Checklist tốt không chỉ hỏi “đã bật chưa?” mà hỏi “đã đo, đã thử hỏng và đã biết quay lui chưa?”. Một cấu hình RF=3 chưa chứng minh chịu được mất một AZ nếu cả ba replica nằm cùng failure domain.
 
 ---
 
-*Cập nhật lần cuối: 2026-05-06*
+## Ghi chú – Chủ đề tiếp theo
+
+> Chủ đề nên đào sâu tiếp: capacity planning theo retention/RF, KRaft controller quorum, quota, rack awareness, rolling upgrade, certificate/credential rotation, SLO-based alerting, MM2 offset translation và game day DR.
+
+> Tài liệu chính thức: [Kafka Monitoring](https://kafka.apache.org/43/operations/monitoring/), [Basic Kafka Operations](https://kafka.apache.org/43/operations/basic-kafka-operations/), [SASL authentication](https://kafka.apache.org/43/security/authentication-using-sasl/), [Authorization & ACLs](https://kafka.apache.org/43/security/authorization-and-acls/), [MirrorMaker 2 geo-replication](https://kafka.apache.org/43/operations/geo-replication-cross-cluster-data-mirroring/). Khi chạy phiên bản khác, mở tài liệu đúng version vì metric/config có thể đổi.
+
+---
+
+*Cập nhật lần cuối: 2026-07-22*

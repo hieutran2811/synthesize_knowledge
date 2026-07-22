@@ -1,14 +1,20 @@
 # Lambda & Functional Interface (Deep Dive)
 
 > Phương pháp: What – How – Why – Components – When – Compare – Trade-offs – Real-world – Ghi chú
+>
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
 
 ---
 
 ## What – Lambda & Functional Interface là gì?
 
-**Functional Interface**: interface có **đúng 1 abstract method** (SAM – Single Abstract Method). Có thể có nhiều `default` và `static` method.
+**Functional Interface** *(interface hàm — interface chỉ có đúng một phương thức trừu tượng)*: interface có **đúng 1 abstract method** *(phương thức trừu tượng — chỉ khai báo, chưa có thân)* (SAM – Single Abstract Method *(một phương thức trừu tượng duy nhất)*). Có thể có nhiều `default` và `static` method.
 
-**Lambda Expression**: cú pháp ngắn gọn để tạo **instance của Functional Interface** — một anonymous function.
+**Lambda Expression** *(biểu thức lambda — cách viết gọn một hàm không tên)*: cú pháp ngắn gọn để tạo **instance của Functional Interface** — một anonymous function *(hàm vô danh — hàm không cần đặt tên)*.
+
+> 💡 **Giải thích dễ hiểu:**
+> Trước đây, muốn "đưa một hành động cho ai đó chạy sau", bạn phải viết cả một lớp ẩn danh dài dòng (anonymous class). Lambda cho phép **gói gọn hành động đó thành một dòng**.
+> Ví von: giống việc **để lại lời nhắn cho người giúp việc**. Thay vì viết cả bản hợp đồng công việc kèm chức danh (anonymous class), bạn chỉ dán một tờ giấy nhớ ngắn: "tưới cây lúc 6h" (`() -> tuoiCay()`). "Functional Interface" chính là **cái khung tờ giấy nhớ chỉ cho phép ghi đúng MỘT việc** — vì chỉ có một việc nên người nhận không bao giờ nhầm phải làm việc gì.
 
 ```java
 // Anonymous class (trước Java 8)
@@ -53,7 +59,11 @@ name -> name.toUpperCase()
 
 ## How – Method References (4 loại)
 
-Method reference = cú pháp ngắn hơn khi lambda chỉ gọi 1 method.
+Method reference *(tham chiếu phương thức — cách viết tắt của lambda)* = cú pháp ngắn hơn khi lambda chỉ gọi 1 method.
+
+> 💡 **Giải thích dễ hiểu — method reference:**
+> Nếu lambda của bạn **chỉ đơn thuần gọi một method có sẵn** (`s -> Integer.parseInt(s)`), thì viết lambda vẫn hơi thừa. Method reference (`Integer::parseInt`) là cách nói tắt: "đừng viết lại, cứ dùng thẳng cái method kia".
+> Ví von: thay vì dặn "khi có thư đến, hãy cầm thư lên rồi bỏ vào hộp" (lambda mô tả từng bước), bạn chỉ cần chỉ tay vào cái hộp có sẵn và nói "**bỏ vào đây**" (`::`). Dấu `::` giống như **ngón tay chỉ thẳng vào method cần gọi**.
 
 ### 1. Static Method Reference: `ClassName::staticMethod`
 ```java
@@ -152,7 +162,7 @@ Predicate<Integer> isPositive = n -> n > 0;
 | `BiPredicate<T,U>` | `(T,U) → boolean` | `String::startsWith` |
 | `UnaryOperator<T>` | `T → T` | `String::toUpperCase` |
 | `BinaryOperator<T>` | `(T,T) → T` | `Integer::sum`, `String::concat` |
-| `IntSupplier` | `() → int` | tránh boxing |
+| `IntSupplier` | `() → int` | tránh boxing *(đóng hộp — chuyển kiểu nguyên thủy `int` thành object `Integer`, tốn bộ nhớ và thời gian)* |
 | `IntFunction<R>` | `int → R` | `size -> new int[size]` |
 | `ToIntFunction<T>` | `T → int` | `String::length` |
 
@@ -215,7 +225,7 @@ pipeline.accept("Order placed");
 | Type | Functional Interface | Bất kỳ interface/class |
 | Capture | Effectively final | Effectively final |
 | State | Stateless (best practice) | Có thể có state |
-| Compile | Invokedynamic | Bytecode class file |
+| Compile | Invokedynamic *(lệnh JVM tạo lambda linh hoạt lúc chạy, không đẻ ra file class riêng)* | Bytecode class file |
 
 ```java
 public class Outer {
@@ -245,7 +255,11 @@ public class Outer {
 
 ## How – Closure & Effectively Final
 
-Lambda có thể **capture** biến từ enclosing scope, nhưng biến đó phải **effectively final** (không được reassign sau khi khai báo):
+Lambda có thể **capture** *(bắt/giữ lại)* biến từ enclosing scope *(phạm vi bao quanh — nơi lambda được viết ra)*, nhưng biến đó phải **effectively final** *(bất biến trên thực tế — khai báo xong không gán lại giá trị)* (không được reassign *(gán lại)* sau khi khai báo):
+
+> 💡 **Giải thích dễ hiểu — closure & "effectively final":**
+> **Closure** *(bao đóng — lambda "mang theo" các biến của môi trường nơi nó sinh ra)* nghĩa là lambda có thể dùng các biến ở bên ngoài nó. Nhưng lambda có thể chạy **muộn hơn rất nhiều** so với lúc nó được tạo (ví dụ được cất vào một hàng đợi rồi chạy sau). Lúc đó cái method sinh ra nó có thể đã kết thúc, biến local đã biến mất. Nên Java **chụp lại một bản sao giá trị** của biến ngay lúc tạo lambda — và để bản sao này không lệch với bản gốc, Java bắt buộc biến **không được đổi giá trị** (effectively final).
+> Ví von: như **chụp ảnh màn hình một con số** rồi gửi kèm lời nhắn. Người nhận sẽ đọc con số trong ảnh (bản sao), chứ không nhìn màn hình gốc. Nếu Java cho phép bạn vừa gửi ảnh vừa liên tục sửa con số trên màn hình gốc, thì "con số trong ảnh" và "con số thật" sẽ mâu thuẫn → gây bug khó lường. Vì thế Java cấm: đã chụp thì cấm sửa gốc.
 
 ```java
 void example() {
@@ -273,6 +287,11 @@ void example() {
 ---
 
 ## How – Currying & Partial Application
+
+> 💡 **Giải thích dễ hiểu — currying & partial application:**
+> **Currying** *(chia hàm nhiều tham số thành chuỗi hàm một tham số)*: thay vì một hàm nhận cả 2 tham số cùng lúc `add(a, b)`, ta biến nó thành "hàm nhận `a`, rồi trả về một hàm khác nhận `b`" → `add(a)(b)`.
+> **Partial Application** *(áp dụng từng phần — cố định sẵn một vài tham số)*: điền trước một tham số, để dành phần còn lại điền sau.
+> Ví von bằng **máy pha cà phê**: hàm gốc cần 2 nút "loại hạt" + "lượng đường". Partial application giống như bạn **bấm sẵn nút 'hạt Arabica' và dán băng keo giữ nó**, tạo ra một cái máy mới chỉ còn chờ chọn lượng đường. Currying là thiết kế máy sao cho **bấm từng nút một theo thứ tự**, mỗi lần bấm lại cho ra một cái máy "đã nhớ" lựa chọn trước đó. Cả hai đều giúp tái sử dụng: định nghĩa `add5` một lần từ `add`, rồi cộng 5 cho mọi số về sau.
 
 ```java
 // Currying: biến đổi f(a,b) thành f(a)(b)

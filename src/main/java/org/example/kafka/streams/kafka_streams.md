@@ -1,18 +1,20 @@
 # Kafka Streams – Deep Dive
 
 > Phương pháp: What – How – Why – Components – Compare – Trade-offs – Real-world – Ghi chú
+>
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
 
 ---
 
 ## What – Kafka Streams là gì?
 
-**Kafka Streams** là Java library cho stream processing trực tiếp trong Kafka – không cần cluster riêng (như Flink/Spark). Ứng dụng là standard Java app với KafkaStreams embedded.
+**Kafka Streams** là Java library cho **stream processing** *(xử lý luồng sự kiện)* trực tiếp trong Kafka – không cần cluster xử lý riêng như Flink/Spark. Ứng dụng là standard Java app với `KafkaStreams` embedded *(nhúng trong tiến trình ứng dụng)*.
 
 ```
 Kafka Streams vs Other Stream Processors:
   Kafka Streams:   library (no separate cluster), easy ops, tightly coupled with Kafka
-  Apache Flink:    separate cluster, very powerful, complex ops, lower latency
-  Apache Spark:    micro-batch, high latency, good for batch+streaming
+  Apache Flink:    thường cần cluster riêng, nhiều khả năng, vận hành phức tạp
+  Apache Spark:    hệ sinh thái batch + streaming; latency phụ thuộc engine/configuration
   ksqlDB:          SQL interface on top of Kafka Streams
 
 Use cases:
@@ -23,31 +25,41 @@ Use cases:
   - Event-driven microservices (consume-process-produce)
 ```
 
+Kafka Streams phù hợp khi dữ liệu đã ở Kafka và topology cần scale cùng consumer group. Flink/Spark có thể phù hợp hơn khi cần nhiều nguồn ngoài Kafka, batch lớn hoặc runtime quản lý tập trung. Không nên kết luận công cụ nào luôn có latency thấp/cao hơn; phải benchmark theo workload, state và topology thực tế.
+
+> 💡 **Giải thích dễ hiểu:**
+> Kafka Streams giống thư viện bếp đặt ngay trong từng cửa hàng; Flink/Spark giống thuê một bếp trung tâm riêng. Bếp tại cửa hàng giảm hạ tầng phải vận hành, còn bếp trung tâm có thể phục vụ nhiều loại nguyên liệu và quy trình hơn.
+
 ---
 
 ## Components – Core Abstractions
 
 ```
-KStream:  unbounded stream of records (events)
+KStream:  unbounded stream *(luồng không có điểm kết thúc)* của records/events
   - Each record is independent
   - Immutable append-only log
 
-KTable:   changelog stream (latest value per key)
+KTable:   changelog stream *(luồng thay đổi)*, giữ latest value per key
   - Represents current state (like a database table)
-  - Backed by state store (RocksDB)
+  - Thường materialize vào state store (RocksDB hoặc store provider khác)
   - Updated on each record with same key
 
 GlobalKTable: KTable replicated on ALL instances
   - Available for foreign key lookups across all tasks
-  - No partitioning → full data on every instance
+  - Không chia theo partition → full data trên every instance
   - Use for small reference data (products, users)
   - vs KTable: KTable is partitioned (each instance has subset)
 
-Processor Topology:
+Processor Topology *(đồ thị xử lý)*:
   Source → Processor → Sink
   KStream/KTable operations build a DAG (topology)
-  Topology compiled into tasks → parallelized across partitions
+  Topology compiled into **tasks** *(đơn vị xử lý gắn với partition)* → parallelized across partitions
 ```
+
+Task không đồng nghĩa một thread hoặc một record: một task có thể sở hữu một hoặc nhiều input partition; Kafka Streams phân task active/standby lên các instance và stream thread. Tổng parallelism hữu ích bị giới hạn bởi số partition của input/source, không chỉ bởi số CPU.
+
+> 💡 **Giải thích dễ hiểu:**
+> Topology là sơ đồ dây chuyền, task là một ca làm việc được giao cho quầy cụ thể. Thêm người nhưng không thêm quầy (partition) không tạo thêm luồng hàng; mỗi người vẫn phải xử lý phần quầy mình được giao.
 
 ---
 
@@ -89,7 +101,7 @@ KStream<String, LineItem> lineItems = orders
 KStream<String, String> orderSummaries = orders
     .mapValues(order -> order.getId() + ":" + order.getAmount());
 
-// SelectKey: change key (triggers repartitioning!)
+// SelectKey: change key; repartition chỉ được tạo khi downstream cần grouping/join theo key mới
 KStream<String, Order> byCustomer = orders
     .selectKey((key, order) -> order.getCustomerId());
 
@@ -108,6 +120,22 @@ orders.peek((key, order) -> log.info("Processing order: {}", key));
 // Sink: write to topic
 events.to("order-events", Produced.with(Serdes.String(), new OrderEventSerde()));
 ```
+
+`selectKey()` chỉ đổi key trong record và đánh dấu stream cần xem xét repartition. Khi một operation stateful *(có trạng thái)* như `groupByKey()`, `groupBy()` hoặc một số join cần dữ liệu co-partitioned, Kafka Streams mới chèn repartition topic (hoặc bạn gọi `.repartition()` tường minh). Repartition tạo network I/O và topic nội bộ, nên tránh đổi key lặp lại không cần thiết.
+
+**DSL** *(API khai báo cấp cao)* là điểm bắt đầu phù hợp cho filter/map/join/aggregate thông thường. **Processor API** *(API cấp thấp)* cho phép tự nối processor, state store và punctuation khi DSL không biểu diễn đủ logic; đổi lại cần tự chịu trách nhiệm nhiều hơn về topology và lifecycle.
+
+> 💡 **Giải thích dễ hiểu:**
+> Đổi nhãn kiện hàng chưa cần chuyển kho ngay. Chỉ khi bước sau yêu cầu các kiện cùng khách nằm chung một kho, Kafka mới gom và chuyển chúng qua repartition topic—giống phân loại lại hàng trước khi đưa vào quầy tính tổng.
+
+### SerDes & Schema
+
+**Serde** *(Serializer + Deserializer)* phải nhất quán với kiểu key/value ở source, repartition topic, state store và sink. Default SerDe chỉ là fallback; boundary quan trọng nên khai báo `Consumed.with`, `Grouped.with`, `Joined.with` hoặc `Produced.with` rõ ràng.
+
+Schema Registry/Avro/Protobuf/JSON Schema giúp quản lý evolution, nhưng compatibility policy không tự ngăn code phá invariant. Cần kiểm tra null/tombstone, version field, schema migration và lỗi deserialize; một record lỗi có thể làm task dừng tùy `default.deserialization.exception.handler`.
+
+> 💡 **Giải thích dễ hiểu:**
+> SerDe là bộ phận đóng và mở kiện hàng. Hai đầu dây chuyền phải dùng cùng nhãn và quy cách; đổi schema mà không có quy tắc tương thích giống đổi kích thước thùng giữa lúc xe đang chạy.
 
 ---
 
@@ -151,6 +179,8 @@ KTable<String, Order> latestOrderByCustomer = groupedByCustomer.reduce(
 );
 ```
 
+`KTable` phát ra cả **update** và có thể phát tombstone *(value `null` để xóa key)*. Khi materialize aggregation, state store giữ trạng thái local; nếu downstream cần mọi event thay vì trạng thái mới nhất, chuyển `KTable` qua `toStream()` và thiết kế output phù hợp.
+
 ---
 
 ## How – Windowing
@@ -191,6 +221,11 @@ ordersPerMinute.toStream()
     })
     .to("windowed-order-counts");
 ```
+
+Kafka Streams dùng record timestamp để tiến **stream-time** *(thời gian suy ra từ dữ liệu đang xử lý)*. Với window có grace, record đến muộn vẫn được nhận khi `stream_time < window_end + grace`; sau mốc đó record bị coi là late và bỏ qua. `retention` của window store phải đủ chứa toàn bộ vòng đời window (`window size + grace`, cùng phần đệm cần thiết), không chỉ thời lượng window.
+
+> 💡 **Giải thích dễ hiểu:**
+> Window là một ca tính tiền kéo dài một giờ; grace là khoảng thời gian chờ hóa đơn đến trễ. Đóng sổ quá sớm thì đúng giờ nhưng thiếu hóa đơn, chờ quá lâu thì tốn chỗ lưu và kết quả xuất hiện muộn hơn.
 
 ---
 
@@ -236,14 +271,19 @@ KStream<String, LineItem> enrichedItems = lineItems.join(
 );
 ```
 
+KStream-KStream join cần hai phía cùng key và cửa sổ thời gian; Kafka Streams thường tạo state store để giữ dữ liệu trong khoảng đó. KStream-KTable join tra trạng thái table theo stream key và không cần window, nhưng stream/table phải **co-partitioned** *(cùng quy tắc partition)*. Nếu key khác nhau, hãy đổi key/repartition trước join. GlobalKTable bỏ yêu cầu repartition cho stream vì toàn bộ table được nạp trên mỗi instance, nhưng chi phí lưu trữ và restore tăng theo kích thước table.
+
+> 💡 **Giải thích dễ hiểu:**
+> Join hai stream giống ghép hai đoàn tàu theo cùng mã vé và trong khoảng giờ cho phép. KTable là sổ tra cứu tại quầy; GlobalKTable là photo toàn bộ sổ ở mọi quầy—tra nhanh hơn nhưng mỗi quầy phải giữ cả cuốn.
+
 ---
 
 ## How – State Stores
 
 ```java
-// State stores: where KTable data lives
-// Default: RocksDB (persistent, efficient, stored on disk + in-memory cache)
-// Option: In-memory (fast, lost on restart → needs compacted topic for restore)
+// State stores: nơi giữ trạng thái cục bộ của KTable/processor
+// Persistent store thường dùng RocksDB (disk + native memory/cache)
+// Option: in-memory (nhanh nhưng mất khi restart; cần changelog để restore)
 
 // Custom state store in processor API
 builder.addStateStore(
@@ -257,9 +297,11 @@ builder.addStateStore(
 // Access state store from Processor
 class OrderCountProcessor implements Processor<String, Order, String, Long> {
     private KeyValueStore<String, Long> countStore;
+    private ProcessorContext<String, Long> context;
 
     @Override
     public void init(ProcessorContext<String, Long> context) {
+        this.context = context;
         this.countStore = context.getStateStore("my-store");
     }
 
@@ -269,7 +311,7 @@ class OrderCountProcessor implements Processor<String, Order, String, Long> {
         Long currentCount = countStore.get(customerId);
         long newCount = (currentCount == null ? 0 : currentCount) + 1;
         countStore.put(customerId, newCount);
-        context().forward(record.withValue(newCount));
+        context.forward(record.withValue(newCount));
     }
 }
 
@@ -289,32 +331,41 @@ HostInfo hostInfo = metadata.activeHost();
 // → redirect to hostInfo.host():hostInfo.port()
 ```
 
+State store là local view của task, không phải database phân tán tự động. Changelog topic ghi các thay đổi để restore khi task chuyển instance; **standby replica** *(bản sao dự phòng)* có thể rút ngắn thời gian phục hồi nhưng tốn disk, network và broker throughput. Nếu tắt logging của store, state không còn fault-tolerant và không có standby cho store đó.
+
+Interactive Queries chỉ đọc state local mà instance đang sở hữu; `activeHost()` có thể chưa sẵn sàng trong lúc rebalance/restore, và dữ liệu standby (nếu cho phép query) có thể stale. Production cần `application.server` duy nhất cho từng instance, metadata routing, health check và xử lý `NOT_AVAILABLE`/host không tồn tại.
+
+> 💡 **Giải thích dễ hiểu:**
+> State store là sổ tay của từng quầy, changelog là bản photocopy gửi về kho trung tâm, còn standby là sổ dự phòng ở quầy kế bên. Interactive Query phải tìm đúng quầy đang giữ khách hàng; hỏi nhầm quầy sẽ trả “chưa có” hoặc dữ liệu cũ.
+
 ---
 
 ## How – Configuration & Startup
 
 ```java
 Properties props = new Properties();
-props.put(StreamsConfig.APPLICATION_ID_CONFIG, "order-processor");     # consumer group ID
+props.put(StreamsConfig.APPLICATION_ID_CONFIG, "order-processor");     // consumer group ID + prefix internal topics
 props.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, "broker1:9092");
 props.put(StreamsConfig.DEFAULT_KEY_SERDE_CLASS_CONFIG, Serdes.String().getClass());
 props.put(StreamsConfig.DEFAULT_VALUE_SERDE_CLASS_CONFIG, Serdes.String().getClass());
 
 // Parallelism
-props.put(StreamsConfig.NUM_STREAM_THREADS_CONFIG, 4);    # threads per instance
-// Parallelism = threads * instances; max = num_partitions of input topic
+props.put(StreamsConfig.NUM_STREAM_THREADS_CONFIG, 4);    // threads per instance
+// Active tasks bị giới hạn bởi số partition của source; không đơn giản là threads * instances
 
 // State store
-props.put(StreamsConfig.STATE_DIR_CONFIG, "/var/kafka-streams");
-props.put(StreamsConfig.STATESTORE_CACHE_MAX_BYTES_CONFIG, 10 * 1024 * 1024L);  # 10MB
+props.put(StreamsConfig.STATE_DIR_CONFIG, "/var/kafka-streams"); // mỗi instance trên cùng host cần thư mục riêng
+props.put(StreamsConfig.STATESTORE_CACHE_MAX_BYTES_CONFIG, 10 * 1024 * 1024L);  // 10MB; cache không phải nguồn dữ liệu bền vững
+props.put(StreamsConfig.NUM_STANDBY_REPLICAS_CONFIG, 1); // state backup trên instance khác
+props.put(StreamsConfig.APPLICATION_SERVER_CONFIG, "streams-1:8080"); // unique host:port cho Interactive Queries
 
 // Reliability
 props.put(StreamsConfig.PROCESSING_GUARANTEE_CONFIG, StreamsConfig.EXACTLY_ONCE_V2);
-// EXACTLY_ONCE_V2: requires Kafka 2.5+, uses transactions, ~20% slower
+// EXACTLY_ONCE_V2: requires broker 2.5+, uses Kafka transactions; overhead tùy workload
 // AT_LEAST_ONCE: default, faster, may reprocess on failure
 
-// Commit interval (flush state stores + commit offsets)
-props.put(StreamsConfig.COMMIT_INTERVAL_MS_CONFIG, 100);  # 100ms (default)
+// Commit interval (flush state stores + commit offsets/transaction)
+props.put(StreamsConfig.COMMIT_INTERVAL_MS_CONFIG, 100);  // 100ms explicit; EOS default 100, ALOS default thường 30s
 
 // Replication for internal topics (changelog, repartition)
 props.put(StreamsConfig.REPLICATION_FACTOR_CONFIG, 3);
@@ -323,14 +374,38 @@ props.put(StreamsConfig.REPLICATION_FACTOR_CONFIG, 3);
 KafkaStreams streams = new KafkaStreams(builder.build(), props);
 
 streams.setUncaughtExceptionHandler(exception ->
-    StreamThreadExceptionResponse.REPLACE_THREAD);  # restart thread on uncaught exception
+    StreamThreadExceptionResponse.REPLACE_THREAD);  // chỉ replace lỗi có thể retry; phân loại fatal trước
 
 streams.setStateListener((newState, oldState) ->
     log.info("Streams state: {} → {}", oldState, newState));
 
 streams.start();
-Runtime.getRuntime().addShutdownHook(new Thread(streams::close));
+Runtime.getRuntime().addShutdownHook(
+    new Thread(() -> streams.close(Duration.ofSeconds(30)))
+);
 ```
+
+`REPLACE_THREAD` chỉ phù hợp lỗi có thể khôi phục và không làm mất invariant/state; deserialization schema lỗi, topology bug hoặc transaction/configuration fatal nên chuyển sang `SHUTDOWN_CLIENT`/`SHUTDOWN_APPLICATION` và alert. Graceful shutdown cần timeout đủ để commit transaction, flush state và hoàn tất rebalance handoff.
+
+### Topology Test & Deployment
+
+```java
+// Unit/integration test không cần broker thật
+try (TopologyTestDriver driver = new TopologyTestDriver(topology, props)) {
+    TestInputTopic<String, Order> input = driver.createInputTopic(
+        "orders", new StringSerializer(), new OrderSerializer());
+    TestOutputTopic<String, OrderEvent> output = driver.createOutputTopic(
+        "order-events", new StringDeserializer(), new OrderEventDeserializer());
+
+    input.pipeInput("order-1", order, Instant.parse("2026-07-22T00:00:00Z"));
+    assertThat(output.readKeyValue()).isEqualTo(/* expected event */);
+}
+```
+
+Topology test nên kiểm tra key/partition, repartition, tombstone, late event/grace, SerDe lỗi và commit/output mong đợi. Khi deploy, mọi instance của cùng application dùng cùng `application.id` để chia task; `state.dir` phải riêng trên cùng host, `application.server` phải unique nếu dùng Interactive Queries. Rolling upgrade cần kiểm tra compatibility của serialized state/changelog và protocol; rebalance/restore có thể làm instance chưa `RUNNING` ngay cả khi process đã start.
+
+> 💡 **Giải thích dễ hiểu:**
+> `TopologyTestDriver` giống mô hình thu nhỏ của dây chuyền: đưa vài kiện mẫu vào rồi kiểm tra từng đầu ra mà không cần dựng cả nhà máy Kafka. Khi triển khai thật, application ID là tên đội, còn state directory là tủ riêng của từng nhân viên—trùng tủ sẽ làm họ giẫm lên dữ liệu của nhau.
 
 ---
 
@@ -344,18 +419,23 @@ Why no separate cluster?
   → Deploy like any microservice (K8s, ECS)
 
 Why RocksDB for state stores?
-  RocksDB: embedded key-value store (LSM tree)
+  RocksDB: embedded key-value store (LSM tree), mặc định phổ biến cho persistent store
   ✅ High write throughput (LSM: sequential writes)
   ✅ Efficient range scans (sorted keys)
   ✅ Persistent (survives app restart, changelog topic for recovery)
-  ✅ Large state (off-heap, not JVM heap)
+  ✅ State lớn hơn JVM heap có thể nằm trên local disk/native memory
 
 Why changelog topics?
-  State store backup: every state store has a corresponding changelog topic
-  On restart: restore state from changelog (compact topic → latest per key)
+  State store backup: state store được logging thường có changelog topic tương ứng
+  On restart: restore state from changelog (compact topic → latest per key với store phù hợp)
   → Fast recovery without full reprocessing
   → Trade-off: replication lag → recovery time for large state stores
 ```
+
+Changelog là cơ chế phục hồi, không phải backup thay thế việc quản lý retention/replication. Window/session store còn cần giữ dữ liệu theo vòng đời window và grace; compacted topic không biến mọi state thành “chỉ còn một record mỗi key” theo cách đơn giản như KTable.
+
+> 💡 **Giải thích dễ hiểu:**
+> RocksDB là sổ cái đặt tại quầy để tra nhanh; changelog là nhật ký gửi về kho. Khi quầy hỏng, Kafka dựng lại sổ từ nhật ký. Nhật ký phải đủ lâu và đủ bản sao—nếu cắt mất phần cần cho window, khôi phục không thể tái tạo đúng lịch sử.
 
 ---
 
@@ -363,10 +443,12 @@ Why changelog topics?
 
 ```
 EXACTLY_ONCE_V2 vs AT_LEAST_ONCE:
-  EOS_V2:   ~20-30% slower, uses transactions, idempotent writes
+  EOS_V2:   dùng transactions/idempotent writes; có overhead tùy workload
   ALOS:     default, faster, may duplicate on failure (handle in downstream)
-  → Financial transactions: EOS_V2
+  → Kafka read-process-write cần atomic: EOS_V2
   → Analytics, aggregations: ALOS (with idempotent downstream)
+
+EOS_V2 chỉ bao phủ dữ liệu Kafka trong topology. Gọi REST, ghi database hoặc gửi email bên ngoài vẫn cần outbox/idempotency; không nên quảng cáo “exactly once toàn hệ thống”.
 
 KTable vs GlobalKTable:
   KTable:       partitioned, each instance has subset, co-partitioned joins
@@ -377,14 +459,21 @@ KTable vs GlobalKTable:
 Window grace period:
   No grace (ofSizeWithNoGrace): discard late records
   Grace period: allow late records, keep window open longer
-  → Higher grace = more memory, more correct
+  → Higher grace = state giữ lâu hơn, có thể đúng hơn với late event nhưng phát kết quả muộn hơn
   → Tune based on expected out-of-order latency
 
 State store size:
   Large state: more RocksDB I/O, slower recovery
   → Tune STATESTORE_CACHE_MAX_BYTES_CONFIG (more cache = fewer RocksDB reads)
-  → Consider: TTL on windowed stores to expire old state
+  → Configure window/session retention to expire state after its lifecycle
+
+Standby/cache:
+  Standby replicas: phục hồi nhanh hơn, đổi lại tốn storage/network và cần restore lag thấp
+  Record cache: gộp/collapse update trước khi flush, giảm I/O; không phải source of truth
+  Interactive Queries: chỉ local/định tuyến theo metadata; cần xử lý stale/unavailable trong rebalance
 ```
+
+Các con số throughput/overhead phải được đo với topology, SerDe, state size, broker và workload thật. Tuning cache hoặc EOS không thay thế việc quan sát processing latency, restore lag và rebalance time.
 
 ---
 
@@ -401,26 +490,34 @@ Monitoring Kafka Streams:
       commit-latency-avg:       commit overhead
       process-rate:             records/sec processed
       process-latency-avg:      processing latency
-      
+      poll-latency-avg:         time spent polling input
+
     kafka.streams:type=stream-thread-metrics
       commit-total:             total commits
       poll-records-avg:         avg records per poll
-      
+
     kafka.streams:type=stream-task-metrics
-      dropped-records-total:    serialization errors, null keys in joins
-      
+      restore-latency/rate:     state recovery progress
+      records-lag-max:          input lag of assigned tasks
+      dropped-records-total:    records dropped by configured handler/condition; inspect cause
+
   Key alerts:
     rebalancing state (REBALANCING): brief is ok, prolonged → issue
     ERROR state: topology failure → alert immediately
     process-rate dropping: slowdown → investigate
     commit-latency spike: state store performance issue
+    restore lag growing: standby/active recovery may delay readiness
 ```
+
+Metrics names and scopes vary by Kafka version and client; alert on trends and correlate lag with processing, restore, rebalance and broker metrics instead of relying on one threshold.
 
 ---
 
 ## Ghi chú – Chủ đề tiếp theo
-> `connect.md`: Kafka Connect architecture, source/sink connectors, SMTs (Single Message Transforms), Debezium CDC, MirrorMaker2 cross-cluster replication, connector management API
+> [connect.md](connect.md): Kafka Connect architecture, source/sink connectors, SMTs (Single Message Transforms), Debezium CDC, MirrorMaker2 cross-cluster replication, connector management API
+>
+> Tài liệu Apache Kafka nên đối chiếu: [Streams Developer Guide](https://kafka.apache.org/41/streams/developer-guide/), [Configuring a Streams Application](https://kafka.apache.org/41/streams/developer-guide/config-streams/) và [Kafka Streams Configs](https://kafka.apache.org/41/configuration/kafka-streams-configs/).
 
 ---
 
-*Cập nhật lần cuối: 2026-05-06*
+*Cập nhật lần cuối: 2026-07-22*

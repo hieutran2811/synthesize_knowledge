@@ -1,15 +1,23 @@
 # Spring Core – IoC & Dependency Injection
 
 > Phương pháp: What – How – Why – Components – When – Compare – Trade-offs – Real-world – Ghi chú
+>
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
 
 ---
 
 ## What – Spring Core là gì?
 
-**Spring Core** là nền tảng của toàn bộ Spring Framework, xoay quanh 2 khái niệm:
+**Spring Core** là nền tảng của toàn bộ Spring Framework *(bộ khung nền tảng để xây ứng dụng Java)*, xoay quanh 2 khái niệm:
 
-- **IoC (Inversion of Control)**: đảo ngược quyền kiểm soát — thay vì code tạo dependency, **container** tạo và inject
-- **DI (Dependency Injection)**: cách cụ thể để thực hiện IoC — inject dependency qua constructor/setter/field
+- **IoC (Inversion of Control)** *(đảo ngược quyền điều khiển)*: thay vì code tự tạo **dependency** *(thành phần phụ thuộc — object mà class cần để hoạt động)*, thì **container** *(cái "hộp" quản lý object của Spring)* tạo và **inject** *(tiêm — đưa sẵn vào)*.
+- **DI (Dependency Injection)** *(tiêm phụ thuộc)*: cách cụ thể để thực hiện IoC — inject dependency qua constructor/setter/field.
+
+> 💡 **Giải thích dễ hiểu — IoC/DI là gì?**
+> Hãy hình dung bạn mở một **nhà hàng**. Có hai cách vận hành:
+> - **Không có IoC (tự làm hết)**: đầu bếp tự đi chợ, tự trồng rau, tự nuôi gà, tự sửa bếp gas. Muốn đổi nhà cung cấp thịt thì phải viết lại toàn bộ quy trình. Đây là code tự `new` ra mọi dependency — **tight coupling** *(dính chặt vào một loại cụ thể)*.
+> - **Có IoC/DI (thuê dịch vụ)**: đầu bếp chỉ nấu ăn. Nguyên liệu do nhà cung cấp giao tận nơi mỗi sáng. Đầu bếp không cần biết rau đến từ đâu, chỉ cần "có rau để dùng". Muốn đổi nhà cung cấp? Chỉ cần báo với ban quản lý (Spring container), đầu bếp không phải sửa gì.
+> **Spring container chính là ban quản lý** đó: nó chịu trách nhiệm tạo ra và "giao tận tay" (inject) mọi thứ mà class của bạn cần. Vì thế quyền điều khiển việc "ai tạo dependency" bị **đảo ngược** từ tay bạn sang tay Spring — đó là "Inversion of Control".
 
 ```java
 // Không có IoC: code tự tạo dependency (tight coupling)
@@ -35,6 +43,9 @@ public class OrderService {
 ---
 
 ## How – IoC Container
+
+> 💡 **Giải thích dễ hiểu — Container là gì?**
+> **IoC Container** là một cái "kho" lớn giữ tất cả object mà ứng dụng cần (Spring gọi mỗi object này là một **bean**). Khi khởi động, Spring đọc cấu hình, tạo sẵn các bean, tự nối chúng lại với nhau (bean A cần bean B thì Spring tự đưa B cho A), rồi giữ trong kho. Khi bạn cần dùng, chỉ việc "lấy ra" (`getBean`) — giống như **kho vật tư của công ty**: bạn không tự mua bàn ghế, chỉ cần điền phiếu và kho đưa cho bạn đúng món đã chuẩn bị sẵn.
 
 ### ApplicationContext vs BeanFactory
 
@@ -69,6 +80,16 @@ public class App { public static void main(String[] args) { SpringApplication.ru
 ---
 
 ## How – Bean Lifecycle
+
+> 💡 **Giải thích dễ hiểu — vòng đời của một bean:**
+> Một **bean** *(object do Spring quản lý)* không đơn giản là `new` ra rồi dùng ngay. Nó đi qua một dây chuyền giống như **quy trình tuyển và onboard nhân viên mới**:
+> 1. **Instantiation** *(tạo object)* — tuyển người vào (chạy constructor).
+> 2. **Property Population** *(bơm phụ thuộc)* — cấp trang thiết bị, giới thiệu đồng nghiệp (inject các dependency).
+> 3. **Aware Callbacks** — cho nhân viên biết tên phòng ban, biết mình đang ở công ty nào.
+> 4-6. **BeanPostProcessor + Init** — huấn luyện, ký cam kết, sẵn sàng làm việc (`@PostConstruct`). Đặc biệt ở bước 6, Spring "khoác áo proxy" cho bean nếu nó cần AOP (transaction, cache...).
+> 7. **Ready** — nhân viên chính thức làm việc.
+> 8. **Destroy** — thủ tục nghỉ việc, bàn giao tài sản (`@PreDestroy`, đóng connection pool...) khi container tắt.
+> Điểm quan trọng cần nhớ: **AOP proxy được tạo ở bước 6** — đây là lý do vì sao các annotation như `@Transactional` chỉ hoạt động khi gọi qua proxy (xem "self-invocation" ở Spring AOP).
 
 ```
 1. Instantiation       → Spring tạo object (constructor)
@@ -172,6 +193,14 @@ public class AppConfig {
 
 ## How – Bean Scopes
 
+> 💡 **Giải thích dễ hiểu — Scope quyết định "có bao nhiêu bản":**
+> **Scope** *(phạm vi sống của bean)* trả lời câu hỏi: mỗi lần cần bean này, Spring đưa cho tôi **cùng một bản** hay **một bản mới**?
+> - **singleton** *(một bản duy nhất)*: giống **cái máy pha cà phê chung của văn phòng** — ai cũng dùng chung một cái. Mặc định của Spring. Phù hợp với service không giữ trạng thái riêng (stateless).
+> - **prototype** *(bản mới mỗi lần)*: giống **cốc giấy dùng một lần** — mỗi lần cần là lấy cốc mới. Dùng cho object có trạng thái riêng cần cô lập.
+> - **request/session**: một bản cho mỗi HTTP request / mỗi phiên đăng nhập của người dùng (chỉ trong web).
+>
+> ⚠️ **Bẫy kinh điển**: khi bạn inject một bean `prototype` vào một bean `singleton`, Spring chỉ inject **một lần lúc tạo singleton** → về sau singleton luôn dùng lại đúng một bản prototype đó, mất ý nghĩa "bản mới mỗi lần". Giải pháp là dùng `proxyMode` hoặc `ObjectProvider` để mỗi lần gọi mới thực sự lấy bản mới.
+
 | Scope | Mô tả | Dùng khi |
 |-------|-------|---------|
 | `singleton` | 1 instance/ApplicationContext (default) | Stateless services, repositories |
@@ -212,6 +241,12 @@ public class ReportBuilder { ... }
 ---
 
 ## How – Dependency Injection (3 loại)
+
+> 💡 **Giải thích dễ hiểu — 3 kiểu "giao hàng" dependency:**
+> Có 3 cách để Spring đưa dependency vào một bean, ví như 3 cách nhận đồ giao:
+> - **Constructor Injection** *(qua hàm khởi tạo)* — bắt buộc phải có đủ đồ mới cho vào cửa. Vì phải đủ ngay lúc tạo, bạn có thể để field là `final` (không đổi được) → an toàn, dễ test. **Đây là cách được khuyến nghị.**
+> - **Setter Injection** *(qua hàm set)* — giao sau, có thể thiếu. Hợp với dependency **tùy chọn** (có cũng được, không có vẫn chạy).
+> - **Field Injection** *(gán thẳng vào field qua `@Autowired`)* — trông gọn nhưng là **anti-pattern**: không đặt `final` được, không test được nếu không có Spring, và giấu đi việc class thực sự phụ thuộc vào những gì.
 
 ### Constructor Injection (Recommended)
 ```java
@@ -338,6 +373,10 @@ public FileWatcher fileWatcher() { return new InotifyFileWatcher(); }
 
 ## How – Circular Dependency
 
+> 💡 **Giải thích dễ hiểu — vòng lặp phụ thuộc:**
+> **Circular dependency** *(phụ thuộc vòng)* xảy ra khi A cần B để được tạo, mà B lại cần A để được tạo. Giống bài toán **"con gà và quả trứng"**: muốn có gà phải có trứng trước, muốn có trứng phải có gà trước — Spring bị kẹt không biết tạo ai trước.
+> Với constructor injection, Spring phát hiện ngay lúc khởi động và báo lỗi. Cách chữa tốt nhất **không phải** là `@Lazy` hay chuyển sang setter, mà là **tách phần logic chung ra một service C** để A và B cùng phụ thuộc vào C — phụ thuộc vòng thường là dấu hiệu thiết kế đang có vấn đề (design smell).
+
 ```java
 // A cần B, B cần A → circular!
 @Service class A {
@@ -369,6 +408,10 @@ public FileWatcher fileWatcher() { return new InotifyFileWatcher(); }
 ---
 
 ## How – ApplicationEvent (Observer Pattern)
+
+> 💡 **Giải thích dễ hiểu — sự kiện và người lắng nghe:**
+> **ApplicationEvent** cho phép một phần code "thông báo có chuyện xảy ra" mà không cần biết ai quan tâm. Bên phát (**publisher**) chỉ hô lên "User vừa được tạo!", còn các bên **listener** *(người lắng nghe)* tự đăng ký nghe và làm việc của mình (gửi mail chào mừng, ghi log, đánh index tìm kiếm...).
+> Ví von: giống **loa phát thanh của tòa nhà**. Ban quản lý thông báo "hết nước lúc 3h chiều" mà không cần gọi điện cho từng hộ; ai quan tâm thì tự chuẩn bị. Nhờ vậy, muốn thêm một hành động mới (ví dụ gửi SMS) chỉ cần thêm một listener mới, không phải sửa code của `UserService`. Đặc biệt `@TransactionalEventListener(AFTER_COMMIT)` chỉ chạy sau khi giao dịch DB đã commit thành công — tránh cảnh "đã gửi mail chào mừng nhưng user lại chưa được lưu vào DB".
 
 ```java
 // Custom event

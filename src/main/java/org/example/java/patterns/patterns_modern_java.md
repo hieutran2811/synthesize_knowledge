@@ -1,8 +1,15 @@
 # Design Patterns với Modern Java (Java 16–21)
 
+> Phương pháp: What – How – Why – Components – When – Compare – Trade-offs – Real-world – Ghi chú
+>
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
+
 ## Tại sao cần reimagine GoF với Modern Java?
 
 GoF được viết năm 1994 — trước Lambda, Stream, Records, Sealed Classes. Nhiều pattern từng "boilerplate-heavy" nay có thể viết ngắn gọn, type-safe, và expressive hơn nhiều.
+
+> 💡 **Giải thích dễ hiểu — hiện đại hóa cách viết, không xóa mục đích pattern:**
+> Pattern gọi tên một vấn đề và trade-off, không bắt buộc một sơ đồ class cố định. Lambda có thể thay một Strategy class nhỏ, sealed switch có thể thay Visitor trong hierarchy đóng, nhưng class truyền thống vẫn hợp lý khi implementation cần state, lifecycle, dependency hoặc được mở rộng từ bên ngoài. Hãy giữ “ý định” của pattern rồi chọn công cụ Java ngắn và rõ nhất.
 
 ---
 
@@ -56,6 +63,9 @@ SortStrategy loggedSort = arr -> {
 };
 ```
 
+> 💡 **Giải thích dễ hiểu — lambda phù hợp khi strategy chỉ là một hành vi:**
+> Nếu biến thể chỉ cần “nhận input, trả output”, lambda giống tờ công thức đưa thẳng cho `Sorter`, không cần tạo cả class. Khi strategy có cấu hình phức tạp, metrics, nhiều method hoặc vòng đời riêng, named class vẫn dễ đọc, inject và test hơn. Functional interface giảm nghi thức chứ không làm biến mất Strategy Pattern.
+
 ---
 
 ## 2. Command Pattern → Records + Sealed Classes
@@ -108,6 +118,9 @@ class CommandExecutor {
 - Records đảm bảo immutability — command history an toàn
 - Sealed ensures exhaustive switch — compiler báo lỗi khi thêm command mới mà quên handle
 - Deconstruction patterns trực tiếp destructure fields
+
+> 💡 **Giải thích dễ hiểu — command trở thành dữ liệu có thể lưu và phát lại:**
+> Record mô tả “đã yêu cầu việc gì” như một phiếu lệnh bất biến, còn executor diễn giải phiếu đó. Sealed hierarchy giúp compiler kiểm tra mọi loại lệnh. Tuy nhiên undo thực tế thường phải lưu **state trước khi thực thi** hoặc một compensating command; chỉ đảo dấu `dx` hay `angle` không đủ cho mọi thao tác như xóa dữ liệu.
 
 ---
 
@@ -168,6 +181,9 @@ static double perimeter(Shape s) {
 
 **Trade-off:** Closed hierarchy (phải dùng `permits`). Thêm shape mới = compile error ở tất cả switch → đây là **feature**, không phải bug.
 
+> 💡 **Giải thích dễ hiểu — sealed switch đổi trục mở rộng:**
+> Cách này làm việc thêm operation mới rất rẻ: chỉ thêm một function `area`, `print`, `serialize`. Nhưng thêm subtype mới buộc sửa mọi exhaustive switch. Visitor cổ điển có trade-off tương tự theo cách tổ chức khác và vẫn hữu ích khi hierarchy không thể sửa hoặc operation cần object/lifecycle riêng.
+
 ---
 
 ## 4. Builder Pattern → Records + wither methods
@@ -194,6 +210,7 @@ record ServerConfig(
     ServerConfig withPort(int port) { return new ServerConfig(host, port, timeoutMs, ssl, maxConnections); }
     ServerConfig withSsl(boolean ssl) { return new ServerConfig(host, port, timeoutMs, ssl, maxConnections); }
     ServerConfig withTimeout(int ms) { return new ServerConfig(host, port, ms, ssl, maxConnections); }
+    ServerConfig withMaxConnections(int max) { return new ServerConfig(host, port, timeoutMs, ssl, max); }
 
     // Factory for defaults
     static ServerConfig defaultConfig() {
@@ -216,11 +233,17 @@ ServerConfig prod = ServerConfig.defaultConfig()
 - Gradual construction across multiple steps
 - Public API cần stability khi thêm fields
 
+> 💡 **Giải thích dễ hiểu — wither tốt cho vài nút, Builder tốt cho bảng điều khiển lớn:**
+> Wither tạo bản record mới bằng cách đổi một component, gọn với value object nhỏ và immutable. Khi có nhiều field tùy chọn, thứ tự xây dựng nhiều bước hoặc quy tắc phụ thuộc chéo, Builder giúp đặt tên từng lựa chọn và chỉ validate một lần ở `build()`. Chuỗi wither dài tạo nhiều object trung gian và dễ quên cung cấp method cho component mới.
+
 ---
 
 ## 5. State Pattern → Sealed Classes
 
 ### Modern Java FSM
+
+> 💡 **Giải thích dễ hiểu — state là một giá trị có kiểu, không phải chuỗi:**
+> `"SHIPPED"` chỉ cho biết tên trạng thái; record `Shipped(shippedAt, trackingCode)` còn buộc dữ liệu hợp lệ đi kèm trạng thái đó. Sealed switch biến bảng chuyển trạng thái thành code được compiler kiểm tra, làm các trạng thái bất khả thi như “Pending nhưng có tracking code” khó biểu diễn hơn.
 ```java
 sealed interface OrderState permits Pending, Paid, Shipped, Delivered, Cancelled {}
 
@@ -336,7 +359,7 @@ class PriceAlert implements Flow.Subscriber<BigDecimal> {
 
     @Override public void onSubscribe(Flow.Subscription s) {
         this.subscription = s;
-        s.request(Long.MAX_VALUE);  // eager
+        s.request(1);  // yêu cầu từng phần tử để minh họa backpressure
     }
 
     @Override public void onNext(BigDecimal price) {
@@ -351,14 +374,21 @@ class PriceAlert implements Flow.Subscriber<BigDecimal> {
 }
 ```
 
+> 💡 **Giải thích dễ hiểu — callback ngắn chưa đồng nghĩa reactive:**
+> Event bus dùng `Consumer<T>` giúp đăng ký handler gọn, nhưng ví dụ `publish()` vẫn gọi handler đồng bộ trên thread của publisher. Flow API bổ sung protocol `request(n)` để subscriber báo sức chứa (*backpressure*). Muốn production-ready còn phải quyết định scheduler, xử lý handler lỗi, thứ tự sự kiện và chính sách khi consumer chậm.
+
 ---
 
-## 7. Prototype Pattern → Records (deep copy by default)
+## 7. Prototype Pattern → Records và phương thức tạo bản sao
 
-Records có structural equality và immutability — thay thế Prototype trong nhiều trường hợp:
+Records có structural equality và component `final`, nên có thể thay Prototype trong nhiều trường hợp value object; record **không tự deep-copy** object graph:
+
+> 💡 **Giải thích dễ hiểu — record sao chép chiếc hộp, không nhân bản mọi thứ trong hộp:**
+> `withSubject()` tạo record mới nhưng component không đổi như `List<String> cc` có thể vẫn là cùng reference. Muốn snapshot độc lập, canonical constructor phải dùng `List.copyOf`, hoặc code phải deep-copy từng phần tử mutable. Record hỗ trợ bất biến nông và value semantics; nó không biến clone nông thành clone sâu tự động.
 
 ```java
-// Không cần clone() — records are already immutable value objects
+// Không cần clone() cho các component value bất biến;
+// nested mutable object vẫn phải được copy tường minh.
 record Point(double x, double y) {
     Point translate(double dx, double dy) { return new Point(x + dx, y + dy); }
     Point scale(double factor) { return new Point(x * factor, y * factor); }
@@ -386,6 +416,9 @@ EmailTemplate trial = base.withSubject("Trial Welcome");
 ## 8. Decorator Pattern → Functional Composition
 
 ### Traditional Decorator (I/O streams style)
+
+> 💡 **Giải thích dễ hiểu — function composition là decorator không cần lớp vỏ:**
+> Mỗi `Function<String, String>` nhận và trả cùng một contract, nên `andThen` có thể xếp trim → remove HTML → uppercase như chuỗi decorator. Cách này hợp với phép biến đổi thuần, không state. Nếu decorator cần identity, nhiều method, resource lifecycle hoặc framework proxying, object decorator truyền thống vẫn rõ hơn.
 ```java
 interface TextProcessor { String process(String text); }
 
@@ -525,6 +558,9 @@ DataPipeline.run(
 ## Pattern Combinations trong Modern Java
 
 ### Result<T> Monad (Sealed + Records)
+
+> 💡 **Giải thích dễ hiểu — lỗi trở thành một nhánh dữ liệu phải xử lý:**
+> Thay vì exception nhảy khỏi luồng điều khiển, `Result<T>` biểu diễn rõ `Ok` hoặc `Err`. `map` chỉ biến đổi giá trị thành công và cho lỗi đi xuyên qua; `flatMap` nối operation cũng có thể thất bại. Cách này phù hợp với lỗi nghiệp vụ dự kiến, nhưng không nên nuốt lỗi lập trình nghiêm trọng hoặc mất stack trace cần chẩn đoán.
 ```java
 sealed interface Result<T> permits Result.Ok, Result.Err {
     record Ok<T>(T value) implements Result<T> {}
@@ -608,7 +644,7 @@ AccountState state = events.stream()
 
 **Tóm tắt hiệu quả Modern Java vs GoF classic:**
 
-| GoF Pattern | Modern Java Replacement |
+| GoF Pattern | Cách thể hiện Modern Java thường gặp |
 |-------------|------------------------|
 | Strategy | `@FunctionalInterface` + Lambda |
 | Command | `sealed interface` + `record` |

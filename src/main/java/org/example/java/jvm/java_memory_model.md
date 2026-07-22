@@ -1,12 +1,17 @@
 # Java Memory Model (JMM)
 
 > Phương pháp: What – How – Why – Components – When – Compare – Trade-offs – Real-world – Ghi chú
+>
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
 
 ---
 
 ## What – Java Memory Model là gì?
 
-**Java Memory Model (JMM)** định nghĩa **quy tắc** về cách JVM và CPU có thể **sắp xếp lại** (reorder) các thao tác đọc/ghi bộ nhớ, và đảm bảo **visibility** (khả năng nhìn thấy thay đổi) giữa các threads.
+**Java Memory Model (JMM)** *(mô hình bộ nhớ Java)* định nghĩa **quy tắc** về cách JVM và CPU có thể **sắp xếp lại** (*reorder*) các thao tác đọc/ghi bộ nhớ, và khi nào bảo đảm **visibility** *(luồng này nhìn thấy thay đổi của luồng khác)* giữa các thread *(luồng)*.
+
+> 💡 **Giải thích dễ hiểu — JMM là “luật giao thông” giữa các thread:**
+> JMM không mô tả RAM được chia thành những ô vật lý nào. Nó là bản hợp đồng nói rằng: khi thread A ghi dữ liệu, trong điều kiện nào thread B chắc chắn đọc được giá trị mới và các thao tác xuất hiện theo đúng thứ tự. Không có hợp đồng này, mỗi lõi CPU có thể giữ một “bản photocopy” trong cache và hai thread nhìn thấy hai phiên bản khác nhau của cùng biến.
 
 **Vấn đề cốt lõi**: CPU hiện đại có nhiều levels of cache (L1/L2/L3). Mỗi core có cache riêng. Write của một thread có thể nằm trong cache và **chưa visible** với thread khác trên core khác.
 
@@ -28,6 +33,9 @@ Thread A (Core 1)          Thread B (Core 2)
 ## How – Happens-Before (HB) Relationship
 
 **Happens-before** là mối quan hệ đảm bảo: nếu action A happens-before action B, thì **tất cả effects của A visible với B**.
+
+> 💡 **Giải thích dễ hiểu — happens-before không chỉ là “xảy ra sớm hơn”:**
+> Đây là quan hệ **bảo đảm quan sát**, không đơn thuần là thứ tự trên đồng hồ. Nếu A *happens-before* B, mọi thay đổi bộ nhớ của A phải được B nhìn thấy. Hãy coi nó như biên nhận chuyển khoản: A có biên nhận trước B thì B được bảo đảm thấy số dư mới; chỉ “bấm nút sớm hơn” nhưng không có biên nhận thì chưa đủ.
 
 ### Happens-Before Rules (JSR-133)
 
@@ -122,6 +130,9 @@ public class VolatileDemo {
 
 ### volatile KHÔNG đảm bảo atomicity
 
+> 💡 **Giải thích dễ hiểu — thấy mới không có nghĩa là sửa an toàn:**
+> `volatile` giống bảng điểm điện tử: mọi người luôn thấy con số mới nhất. Nhưng phép `counter++` gồm ba việc đọc–cộng–ghi; hai người có thể cùng đọc 0 rồi cùng ghi 1, làm mất một lượt tăng. Muốn một cụm thao tác không bị chen ngang, dùng `AtomicInteger` hoặc khóa `synchronized`.
+
 ```java
 volatile int counter = 0;
 
@@ -165,6 +176,9 @@ while (!shutdownRequested) {
 `synchronized` đảm bảo:
 1. **Mutual exclusion**: chỉ 1 thread trong block tại một thời điểm
 2. **Visibility**: khi thread release lock, tất cả writes **flush về main memory**; khi acquire lock, đọc lại từ main memory
+
+> 💡 **Giải thích dễ hiểu — một chìa khóa, hai tác dụng:**
+> `synchronized` vừa là **chìa khóa phòng** (mỗi lúc chỉ một thread vào vùng code), vừa là **bàn giao sổ sách** (thread ra phải công bố thay đổi để thread vào sau nhìn thấy). Vì vậy các block muốn phối hợp phải khóa trên **cùng một monitor object**; dùng hai ổ khóa khác nhau thì không tạo ra quan hệ happens-before với nhau.
 
 ```java
 public class Counter {
@@ -236,6 +250,9 @@ VarHandle.releaseFence(); // StoreStore + LoadStore
 
 **Safe publication**: làm cho object được chia sẻ với thread khác một cách an toàn (không thấy partially-constructed state).
 
+> 💡 **Giải thích dễ hiểu — đừng trưng sản phẩm khi còn đang lắp:**
+> Tạo object và gán reference cho biến chia sẻ có thể bị CPU/JIT quan sát theo thứ tự khác dự kiến. Thread khác có thể thấy “đã có object” nhưng một số field vẫn mang giá trị mặc định. **Safe publication** *(công bố an toàn)* giống tem “đã kiểm định”: chỉ đưa sản phẩm lên kệ qua `volatile`, `synchronized`, static initializer, atomic reference hoặc collection đồng thời sau khi lắp xong hoàn toàn.
+
 ```java
 // UNSAFE publication: thread có thể thấy object chưa hoàn toàn khởi tạo
 public class UnsafePublication {
@@ -291,6 +308,9 @@ map.put("key", new Object()); // safe publication via concurrent collection
 ## How – Double-Checked Locking (DCL)
 
 Classic Singleton với DCL — **cần `volatile`**:
+
+> 💡 **Giải thích dễ hiểu — vì sao kiểm tra hai lần vẫn cần `volatile`:**
+> Hai lần `if (instance == null)` chỉ giảm số lần phải lấy khóa; chúng không ngăn CPU công bố reference trước khi constructor hoàn tất. `volatile` tạo hàng rào thứ tự, bảo đảm khách khác chỉ nhìn thấy biển “đã mở cửa” sau khi cửa hàng đã bày xong hàng.
 
 ```java
 // BROKEN (trước Java 5 / không có volatile)

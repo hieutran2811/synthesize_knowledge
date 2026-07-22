@@ -1,12 +1,17 @@
 # JVM ClassLoader (Deep Dive)
 
 > Phương pháp: What – How – Why – Components – When – Compare – Trade-offs – Real-world – Ghi chú
+>
+> 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
 
 ---
 
 ## What – ClassLoader là gì?
 
-**ClassLoader** là thành phần của JVM chịu trách nhiệm **tìm kiếm, load, và link** class files (.class bytecode) vào JVM runtime. Mỗi class trong JVM được identify bởi cả **class name** lẫn **ClassLoader** load nó.
+**ClassLoader** *(bộ nạp lớp)* là thành phần của JVM chịu trách nhiệm **tìm kiếm, load (nạp), và link (liên kết)** class file *(tệp `.class` chứa bytecode)* vào JVM lúc chương trình chạy. Danh tính đầy đủ của một class gồm cả **tên class** lẫn **ClassLoader đã nạp nó**.
+
+> 💡 **Giải thích dễ hiểu — ClassLoader là “thủ thư” của JVM:**
+> Code đã biên dịch nằm trong nhiều “kệ” khác nhau: JDK, classpath, file JAR, plugin hoặc máy chủ. Khi chương trình cần `com.example.User`, ClassLoader đi tìm đúng tệp `.class`, kiểm tra rồi đưa nó vào JVM. Hai thủ thư khác nhau cùng lấy hai cuốn sách có bìa giống hệt nhau thì JVM vẫn xem đó là **hai bản riêng**; vì vậy cùng tên class chưa chắc đã cùng kiểu dữ liệu.
 
 ---
 
@@ -21,6 +26,9 @@ Class Loading Pipeline:
    2c. Resolution    → Resolve symbolic references → direct references
 3. Initialization → Chạy static initializer (<clinit>)
 ```
+
+> 💡 **Giải thích dễ hiểu — nạp, liên kết rồi mới khởi tạo:**
+> Hãy hình dung JVM mở một thiết bị mới. **Loading** là mang thiết bị vào phòng; **linking** là kiểm tra an toàn, cấp chỗ và nối đúng dây; **initialization** mới là bật nguồn, chạy các lệnh `static`. Vì ba bước tách biệt, JVM có thể biết một class tồn tại mà chưa cần chạy khối `static` của nó.
 
 ### Giai đoạn 1: Loading
 - Tìm `.class` file từ classpath, JAR, network...
@@ -129,6 +137,9 @@ ClassLoader.getSystemClassLoader();    // AppClassLoader
 7. Application tìm → thấy trong classpath → load!
 ```
 
+> 💡 **Giải thích dễ hiểu — parent delegation:**
+> Đây giống quy trình xác minh giấy tờ từ cấp trung ương xuống địa phương: bộ nạp con luôn hỏi bộ nạp cha trước, chỉ tự tìm khi cấp trên không có. Nhờ đó code ứng dụng không thể lén đặt một `java.lang.String` giả để thay class chuẩn của JDK, đồng thời các class nền tảng chỉ được nạp một lần và dùng thống nhất.
+
 ```java
 // Implementation concept
 public Class<?> loadClass(String name) throws ClassNotFoundException {
@@ -207,6 +218,9 @@ Object handler = clazz.getDeclaredConstructor().newInstance();
 ## How – ClassLoader Isolation (ClassLoader Hell)
 
 **Quan trọng**: 2 class cùng tên nhưng load bởi 2 ClassLoader khác nhau = 2 class **khác nhau** hoàn toàn!
+
+> 💡 **Giải thích dễ hiểu — vì sao có `ClassCastException` dù tên giống nhau:**
+> JVM nhận diện kiểu bằng cặp **(tên class, ClassLoader)**, tương tự số căn hộ phải đi cùng tên tòa nhà. “Căn 101” ở tòa A không phải “căn 101” ở tòa B. Cơ chế này giúp Tomcat và hệ thống plugin cô lập các phiên bản thư viện, nhưng cũng tạo ra *ClassLoader hell* khi một object đi nhầm qua ranh giới giữa hai loader.
 
 ```java
 ClassLoader cl1 = new URLClassLoader(urls, null); // parent = bootstrap only!
