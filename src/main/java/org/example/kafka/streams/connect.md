@@ -3,6 +3,8 @@
 > Phương pháp: What – How – Why – Components – Compare – Trade-offs – Real-world – Ghi chú
 >
 > 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
+>
+> Phạm vi phiên bản: Apache Kafka Connect 4.3 và Debezium stable tại thời điểm cập nhật. Cấu hình riêng của connector/vendor vẫn phải đối chiếu đúng version đang triển khai.
 
 ---
 
@@ -109,6 +111,8 @@ rest.advertised.port=8083
 
 # Plugin path
 plugin.path=/opt/kafka/plugins
+# Mặc định tương thích rộng; kiểm tra plugin trước khi chuyển sang service_load
+plugin.discovery=hybrid_warn
 
 # Start worker
 bin/connect-distributed.sh config/worker.properties
@@ -118,8 +122,31 @@ bin/connect-distributed.sh config/worker.properties
 
 `offset.flush.interval.ms` là checkpoint, không phải transaction boundary. Source task có thể đã ghi record vào Kafka nhưng chưa flush source offset khi worker crash, dẫn tới replay; sink task cũng phụ thuộc connector để commit offset sau khi đích xác nhận.
 
+`exactly.once.source.support=enabled` phù hợp khi tạo Connect cluster mới. Với cluster đang chạy, Kafka yêu cầu hai vòng rolling update: trước hết đặt `preparing` trên mọi worker, sau đó mới chuyển mọi worker sang `enabled`. Ngay cả khi worker đã bật, connector vẫn phải hỗ trợ; có thể đặt `exactly.once.support=required` trong source connector để yêu cầu bước kiểm tra trước khi chạy.
+
 > 💡 **Giải thích dễ hiểu — converter là nhân viên phiên dịch, Schema Registry là từ điển chung:**
 > Connector nói bằng `Struct` của Connect, còn Kafka lưu bytes. Converter dịch qua lại; Avro/Protobuf kèm mã schema giúp các đội khác hiểu cùng một hợp đồng. Nếu worker ngã trước khi ghi bookmark, lần làm ca sau sẽ đọc lại phần chưa được đánh dấu — đó là lý do cần idempotent sink.
+
+---
+
+## How – Plugin isolation, discovery và upgrade
+
+Connect nạp connector, converter và SMT từ `plugin.path`. Nên đặt mỗi plugin cùng toàn bộ dependency của nó trong một thư mục con riêng, không chép dependency tùy tiện vào classpath của worker. Classloader isolation giúp hai connector có thể dùng dependency khác version, nhưng không chữa được plugin đóng gói thiếu hoặc xung đột thư viện nằm ngoài vùng cô lập.
+
+`plugin.discovery=hybrid_warn` là mặc định của Kafka 4.3 và tương thích với plugin cũ; worker vừa scan vừa dùng `ServiceLoader`, đồng thời cảnh báo plugin chưa tương thích. `service_load` khởi động nhanh hơn nhưng chỉ nên bật sau khi CI hoặc môi trường thử nghiệm xác nhận toàn bộ plugin hỗ trợ cơ chế này; `hybrid_fail` hữu ích để biến plugin không tương thích thành lỗi kiểm tra rõ ràng.
+
+Quy trình nâng cấp plugin an toàn:
+
+1. Pin artifact, checksum và version; thử với đúng Kafka/Java và hệ thống nguồn/đích.
+2. Cài cùng bộ plugin vào **mọi worker** rồi rolling restart từng worker.
+3. Kiểm tra startup log và gọi `GET /connector-plugins` trực tiếp trên từng worker.
+4. Xác nhận connector/task trở lại `RUNNING`, record rate và error rate bình thường trước khi sang worker tiếp theo.
+5. Chỉ xóa version cũ sau khi đã qua cửa sổ rollback.
+
+`GET /connector-plugins` chỉ quét worker xử lý request, không chứng minh cả cluster có cùng artifact. Nếu load balancer chuyển request giữa các worker trong lúc rolling upgrade, kết quả có thể lúc có lúc không; vì vậy inventory plugin phải được kiểm tra theo từng node.
+
+> 💡 **Giải thích dễ hiểu — mỗi plugin là một hộp dụng cụ niêm phong:**
+> Mỗi thợ cần nhận đúng cùng một hộp. Nếu worker A có driver mới còn worker B không có, task chuyển ca sang B sẽ thất bại dù API qua load balancer từng báo rằng plugin “đã cài”.
 
 ---
 
@@ -316,17 +343,19 @@ POST http://localhost:8083/connectors
     # → mydb.public.orders, mydb.public.payments
 
     "slot.name": "debezium_orders_slot", # unique replication slot per connector
-    "plugin.name": "pgoutput",           # pgoutput (PG 10+) | decoderbufs | wal2json
+    "plugin.name": "pgoutput",           # supported: pgoutput | decoderbufs
+    "publication.name": "dbz_orders_publication",
+    "publication.autocreate.mode": "filtered",
 
     # Tables to capture
     "table.include.list": "public.orders,public.payments,public.customers",
 
     # Initial snapshot
-    "snapshot.mode": "initial",          # initial | always | never | when_needed
+    "snapshot.mode": "initial",          # initial | initial_only | no_data | always | when_needed
     "snapshot.isolation.mode": "repeatable_read",
 
     # Output format
-    "decimal.handling.mode": "double",
+    "decimal.handling.mode": "precise",  # giữ chính xác DECIMAL/NUMERIC; double có thể làm tròn
     "time.precision.mode": "connect",
     "tombstones.on.delete": "true",      # send tombstone after delete for compaction
 
@@ -363,7 +392,13 @@ After ExtractNewRecordState (unwrap):
 
 Debezium thường dùng primary key làm Kafka key, giúp các thay đổi của cùng row đi cùng partition và giữ thứ tự trong partition đó. Không có ordering toàn cục giữa các table/topic; transaction metadata/LSN cần được dùng nếu downstream cần tái dựng thứ tự commit.
 
-Replication slot giữ WAL cho tới khi connector xác nhận LSN đã xử lý. Connector dừng lâu hoặc database ít traffic có thể làm WAL phình lớn; phải theo dõi slot lag và không xóa slot tùy tiện. Khi source offset chưa flush, restart có thể phát duplicate nhưng không nên bỏ event để “tránh trùng”.
+Với `pgoutput`, mỗi connector cần `slot.name` riêng và nên có `publication.name` riêng. `publication.autocreate.mode=filtered` tạo/cập nhật publication theo include/exclude list nếu account đủ quyền; production thường để DBA tạo publication tối thiểu trước rồi dùng mode `disabled` để giảm quyền runtime. Thay đổi `table.include.list` không tự đảm bảo publication do DBA quản lý đã chứa bảng mới.
+
+Replication slot giữ WAL cho tới khi connector xác nhận LSN đã xử lý. Connector dừng lâu hoặc database ít traffic có thể làm WAL phình lớn; phải theo dõi slot lag và không xóa slot tùy tiện. `slot.drop.on.stop` nên giữ mặc định `false` ở production: slot và source offset là một cặp checkpoint, tạo slot mới không phục hồi được WAL lịch sử đã bị database xóa. Khi source offset chưa flush, restart có thể phát duplicate nhưng không nên bỏ event để “tránh trùng”.
+
+Các mode snapshot cần hiểu theo mục đích: `initial` chụp khi chưa có offset; `initial_only` chụp xong rồi dừng; `no_data` không chụp dữ liệu và chỉ an toàn khi WAL còn đủ lịch sử; `when_needed` chụp khi thiếu offset hoặc vị trí log không còn; `always` chụp mỗi lần khởi động. Giá trị cũ `never` không còn nằm trong tập mode stable hiện tại, nên tránh sao chép cấu hình từ tutorial cũ.
+
+`decimal.handling.mode=precise` giữ `DECIMAL`/`NUMERIC` theo logical type và là lựa chọn an toàn cho tiền. `double` dễ dùng hơn nhưng có thể mất độ chính xác; chỉ đổi khi consumer contract chấp nhận rõ trade-off này.
 
 Exactly-once của source chỉ khả thi khi worker bật `exactly.once.source.support=enabled`, connector tuyên bố hỗ trợ transaction boundaries và pipeline downstream đọc/ghi với semantics tương ứng. Debezium mặc định cần được thiết kế như at-least-once và idempotent; Kafka transaction không làm side effect ngoài Kafka exactly-once.
 
@@ -432,7 +467,7 @@ Offset sync giúp consumer tiếp tục gần vị trí cũ khi failover, không
 
 ## How – Connect REST API *(giao diện HTTP điều khiển Connect)*
 
-REST API là mặt điều khiển vòng đời connector: tạo, đọc, cập nhật, pause/resume, restart task và xóa. Trong distributed mode, request có thể được chuyển tới worker đang giữ connector; `rest.advertised.*`/listener phải truy cập được giữa các worker. Bảo vệ endpoint bằng TLS và cơ chế xác thực/ủy quyền của môi trường; các ví dụ dưới đây chỉ minh họa, không phải lệnh shell hoàn chỉnh.
+REST API là mặt điều khiển vòng đời connector: tạo, đọc, cập nhật, pause/stop/resume, restart task, quản lý offset và xóa. Trong distributed mode, request có thể được chuyển tới worker đang giữ connector; `rest.advertised.*`/listener phải truy cập được giữa các worker. REST mặc định không tự có authentication, trong khi plugin có thể chạy code tùy ý; chỉ mở endpoint cho principal tin cậy và bảo vệ bằng TLS, authentication/authorization hoặc gateway của môi trường. Các ví dụ dưới đây chỉ minh họa, không phải lệnh shell hoàn chỉnh.
 
 ```bash
 # List connectors
@@ -442,17 +477,23 @@ GET http://localhost:8083/connectors?expand=status&expand=info
 # Get connector status
 GET http://localhost:8083/connectors/orders-jdbc-source/status
 
-# Pause/resume connector
+# Pause giữ resource của task để resume nhanh; stop giải phóng task/resource
 PUT http://localhost:8083/connectors/orders-jdbc-source/pause
+PUT http://localhost:8083/connectors/orders-jdbc-source/stop
 PUT http://localhost:8083/connectors/orders-jdbc-source/resume
 
 # Restart connector or task
 POST http://localhost:8083/connectors/orders-jdbc-source/restart?includeTasks=true&onlyFailed=true
 POST http://localhost:8083/connectors/orders-jdbc-source/tasks/0/restart
 
-# Update config
+# PUT thay toàn bộ config; PATCH chỉ cập nhật key gửi lên, null là xóa key
 PUT http://localhost:8083/connectors/orders-jdbc-source/config
 { ... new config ... }
+PATCH http://localhost:8083/connectors/orders-jdbc-source/config
+{ "poll.interval.ms": "10000" }
+
+# Read current connector offsets
+GET http://localhost:8083/connectors/orders-jdbc-source/offsets
 
 # Delete connector
 DELETE http://localhost:8083/connectors/orders-jdbc-source
@@ -466,13 +507,45 @@ PUT http://localhost:8083/connector-plugins/JdbcSourceConnector/config/validate
 
 # Worker info
 GET http://localhost:8083/
-GET http://localhost:8083/worker-id
 ```
 
-`PUT /config` thay toàn bộ cấu hình connector nên nên gửi đầy đủ thuộc tính cần giữ. Restart riêng task chỉ xử lý task đó; restart connector có thể khởi tạo lại cả connector và các task. Endpoint validate chỉ kiểm tra plugin/worker nhận request, không thay thế kiểm thử quyền database, schema, throughput hay tương thích đích.
+`PUT /config` thay toàn bộ cấu hình connector nên phải gửi đầy đủ thuộc tính cần giữ; `PATCH /config` phù hợp cho thay đổi nhỏ nhưng vẫn có thể làm connector/task restart. Restart riêng task chỉ xử lý task đó; restart connector có thể khởi tạo lại cả connector và các task. Endpoint validate chỉ kiểm tra plugin/worker nhận request, không thay thế kiểm thử quyền database, schema, throughput hay tương thích đích.
+
+### Sửa hoặc reset offset an toàn
+
+Offset là checkpoint quyết định dữ liệu nào sẽ được đọc lại hoặc bỏ qua. Luôn lấy bản chụp `GET /offsets`, ghi rõ lý do/owner và kiểm tra retention của nguồn trước khi thay đổi.
+
+```bash
+# 1. Stop connector; PAUSED chưa đủ điều kiện để sửa offset
+PUT http://localhost:8083/connectors/orders-jdbc-source/stop
+
+# 2. Chờ connector và mọi task chuyển sang STOPPED, rồi lưu response để audit
+GET http://localhost:8083/connectors/orders-jdbc-source/status
+GET http://localhost:8083/connectors/orders-jdbc-source/offsets
+
+# 3a. PATCH một source offset — partition/offset là contract riêng của connector
+PATCH http://localhost:8083/connectors/orders-jdbc-source/offsets
+{
+  "offsets": [
+    {
+      "partition": { "... source partition fields ...": "..." },
+      "offset": { "... source position fields ...": "..." }
+    }
+  ]
+}
+
+# 3b. Hoặc reset toàn bộ offset; đây là thao tác có blast radius lớn
+DELETE http://localhost:8083/connectors/orders-jdbc-source/offsets
+
+# 4. Đọc lại offset, rồi mới resume và theo dõi duplicate/gap/error
+GET http://localhost:8083/connectors/orders-jdbc-source/offsets
+PUT http://localhost:8083/connectors/orders-jdbc-source/resume
+```
+
+`PATCH` và `DELETE /offsets` yêu cầu connector tồn tại và ở trạng thái `STOPPED`. Với source connector, cấu trúc `partition`/`offset` do chính connector định nghĩa; không tự đoán LSN, timestamp hay ID từ connector khác. Đưa checkpoint lùi tạo replay/duplicate; đưa tiến có thể bỏ qua dữ liệu; reset toàn bộ có thể kích hoạt snapshot hoặc đọc lại từ đầu tùy connector. Với Debezium, còn phải xác nhận LSN tương ứng vẫn tồn tại trong replication slot/WAL trước khi resume.
 
 > 💡 **Giải thích dễ hiểu — REST là bảng điều khiển của nhà máy:**
-> Pause là tạm dừng băng chuyền, restart task là thay một ca làm, còn update config là thay cả phiếu công việc. Bảng điều khiển phải đặt ở phòng mà mọi worker nhìn thấy; nếu không, lệnh có thể không được chuyển tới đúng worker.
+> Pause là giữ nguyên máy nhưng ngừng băng chuyền; stop là tắt máy và trả resource. Offset là số thứ tự kiện hàng: kéo số lùi sẽ giao lại, đẩy số tiến có thể bỏ kiện. Vì vậy phải chụp trạng thái và kiểm tra nguồn trước khi đổi.
 
 ---
 
@@ -590,9 +663,17 @@ Theo dõi tối thiểu: trạng thái connector/task và thời điểm chuyể
 
 ---
 
+## Nguồn tham khảo chính thức
+
+- [Apache Kafka 4.3 – Kafka Connect User Guide](https://kafka.apache.org/43/kafka-connect/user-guide/): distributed mode, REST API, offset management, exactly-once source, plugin discovery và security.
+- [Apache Kafka 4.3 – Kafka Connect Configs](https://kafka.apache.org/43/configuration/kafka-connect-configs/): worker/connector properties như `plugin.discovery`, `plugin.path` và `exactly.once.source.support`.
+- [Debezium stable – PostgreSQL connector](https://debezium.io/documentation/reference/stable/connectors/postgresql.html): snapshot modes, WAL/LSN, replication slot, publication và kiểu dữ liệu.
+
+---
+
 ## Ghi chú – Chủ đề tiếp theo
 > Tiếp theo: [production.md](../operations/production.md) — Kafka production operations: JVM/OS tuning, broker configs for throughput/latency, JMX/Prometheus monitoring, consumer-lag alerting, security (SASL/TLS/ACL) và MirrorMaker2 DR.
 
 ---
 
-*Cập nhật lần cuối: 2026-07-22*
+*Cập nhật lần cuối: 2026-07-27*

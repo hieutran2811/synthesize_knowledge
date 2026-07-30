@@ -1,712 +1,962 @@
 # RabbitMQ Reliability & Guarantees
 
-## 1. Message Durability
+> Phạm vi chính: RabbitMQ 4.3, AMQP 0-9-1 và Java client.
+>
+> Mục tiêu: biết chính xác mỗi acknowledgement bảo vệ chặng nào, thiết kế at-least-once không mất message ngoài ý muốn và xử lý duplicate đúng cách.
 
-### 1.1 Ba cấp độ Durability
+## 1. Reliability là trách nhiệm của cả chuỗi
 
-```
-Để message không mất khi broker restart, cần đủ CẢ BA:
+RabbitMQ không thể một mình bảo đảm nghiệp vụ đầu cuối. Mỗi lần dữ liệu chuyển quyền sở hữu cần một cơ chế xác nhận riêng:
 
-Level 1: Durable Exchange
-channel.exchange_declare(exchange='my_exchange', durable=True)
-↑ Exchange tồn tại sau restart
-
-Level 2: Durable Queue
-channel.queue_declare(queue='my_queue', durable=True)
-↑ Queue tồn tại sau restart (với messages pending)
-
-Level 3: Persistent Message
-properties=pika.BasicProperties(delivery_mode=2)  # 1=transient, 2=persistent
-↑ Message ghi xuống disk (không chỉ RAM)
-
-Nếu thiếu bất kỳ cấp nào → messages sẽ mất!
-```
-
-```python
-# Full durability setup
-channel.exchange_declare(
-    exchange='orders',
-    exchange_type='topic',
-    durable=True,           # ✓ Level 1
-    auto_delete=False,
-)
-
-channel.queue_declare(
-    queue='order_processing',
-    durable=True,           # ✓ Level 2
-    auto_delete=False,
-    arguments={
-        'x-dead-letter-exchange': 'orders.dlx',
-        'x-message-ttl': 86400000,  # 24h TTL
-    }
-)
-
-channel.basic_publish(
-    exchange='orders',
-    routing_key='order.created',
-    body=json.dumps(order),
-    properties=pika.BasicProperties(
-        delivery_mode=2,    # ✓ Level 3: persistent
-        content_type='application/json',
-    )
-)
+```text
+Business DB
+    │ cùng DB transaction
+    ▼
+Outbox
+    │ publish + mandatory + publisher confirm
+    ▼
+RabbitMQ queue
+    │ durable/quorum replication
+    ▼
+Consumer
+    │ business transaction commit rồi manual ack
+    ▼
+Target DB / external system
 ```
 
-### 1.2 Performance Impact of Persistence
+| Chặng | Cơ chế chính | Cửa sổ lỗi còn lại |
+|---|---|---|
+| Business DB → Outbox | Cùng một database transaction | Worker có thể publish lặp sau crash |
+| Publisher → Exchange/Queue | `mandatory`, return handler, publisher confirms | Confirm có thể thất lạc, phải gửi lại |
+| Broker → Storage/Replica | Durable topology, persistent message, quorum queue | Mất quorum làm queue tạm không khả dụng |
+| Queue → Consumer | Manual acknowledgement, prefetch, timeout | Consumer có thể xử lý xong nhưng chưa ack |
+| Consumer → Target DB | Inbox/idempotency trong cùng transaction | External side effect cần idempotency riêng |
 
-```
-Persistent messages → fsync to disk → slower than transient
-Trade-off:
-  Persistent: ~10,000-30,000 msg/s (depends on disk)
-  Transient:  ~100,000+ msg/s (memory only)
-
-Optimization options:
-1. Lazy Queues (Classic): always store on disk, reduce RAM usage
-   arguments={'x-queue-mode': 'lazy'}  # deprecated 3.12, use quorum
-
-2. Quorum Queues: replicated on disk across nodes (better durability + HA)
-   arguments={'x-queue-type': 'quorum'}
-
-3. Publisher Confirms batch: batch ACKs instead of per-message
-   (see Publisher Confirms section)
-```
+> 💡 **Quy tắc cốt lõi**
+>
+> Khi sender chưa nhận được xác nhận, nó không thể phân biệt “receiver chưa làm” với “receiver đã làm nhưng xác nhận bị mất”. Muốn tránh mất dữ liệu, sender phải thử lại; thử lại đồng nghĩa receiver có thể thấy duplicate.
 
 ---
 
-## 2. Publisher Confirms
+## 2. At-most-once, At-least-once và Exactly-once
 
-### 2.1 What & Why
+### 2.1 Ba semantics
 
-**Publisher Confirms** = broker xác nhận đã nhận và xử lý message (ghi vào queue/disk). Thay thế AMQP transactions (nhẹ hơn nhiều).
+| Semantics | Khi gặp trạng thái không chắc chắn | Hệ quả |
+|---|---|---|
+| **At-most-once** | Không gửi/xử lý lại | Có thể mất, không chủ động tạo duplicate |
+| **At-least-once** | Gửi/xử lý lại | Không mất nếu các giả định đúng, nhưng có thể duplicate |
+| **Exactly-once** | Một business effect duy nhất | Cần phạm vi transaction/idempotency rõ ràng; RabbitMQ không cung cấp end-to-end tự động |
 
-```
-Without Confirms:
-  Producer → basic_publish() → returns immediately
-  → Producer không biết broker có nhận được không
-  → Network failure → message lost silently
+Ví dụ:
 
-With Confirms:
-  Producer → basic_publish() → broker processes → ack/nack
-  → Producer knows message was accepted (or should retry)
-```
-
-```python
-# Python: Publisher Confirms (pika)
-import pika, json, threading
-from collections import deque
-
-connection = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
-channel = connection.channel()
-
-# Enable confirms mode (per channel)
-channel.confirm_delivery()
-
-# Method 1: Synchronous confirm (simple but slow)
-channel.queue_declare(queue='orders', durable=True)
-
-for i in range(100):
-    try:
-        channel.basic_publish(
-            exchange='',
-            routing_key='orders',
-            body=json.dumps({'order_id': i}),
-            properties=pika.BasicProperties(delivery_mode=2),
-            mandatory=True,  # return if unroutable
-        )
-        # Waits for broker ack — BLOCKS until confirmed
-        print(f"Message {i} confirmed")
-    except pika.exceptions.UnroutableError:
-        print(f"Message {i} was returned (unroutable)!")
-    except pika.exceptions.NackError:
-        print(f"Message {i} was NACKed (broker internal error)")
-
-# Method 2: Async batch confirms (much faster)
-class PublisherWithConfirms:
-    def __init__(self, channel):
-        self.channel = channel
-        self.channel.confirm_delivery()
-        self.pending = {}  # delivery_tag → message
-        self.lock = threading.Lock()
-        
-        # Set up ACK/NACK callbacks
-        self.channel.add_on_return_callback(self._on_return)
-    
-    def publish(self, exchange, routing_key, body, properties=None):
-        with self.lock:
-            self.channel.basic_publish(
-                exchange=exchange,
-                routing_key=routing_key,
-                body=body,
-                properties=properties or pika.BasicProperties(delivery_mode=2),
-                mandatory=True,
-            )
-            # Track by next_publish_seq_no
-            seq = self.channel.get_next_publish_seq_no() - 1
-            self.pending[seq] = {'body': body, 'routing_key': routing_key}
-    
-    def _on_ack(self, method_frame):
-        delivery_tag = method_frame.method.delivery_tag
-        multiple = method_frame.method.multiple
-        with self.lock:
-            if multiple:
-                # Ack all up to delivery_tag
-                to_remove = [tag for tag in self.pending if tag <= delivery_tag]
-                for tag in to_remove:
-                    del self.pending[tag]
-            else:
-                self.pending.pop(delivery_tag, None)
-    
-    def _on_nack(self, method_frame):
-        delivery_tag = method_frame.method.delivery_tag
-        with self.lock:
-            msg = self.pending.pop(delivery_tag, None)
-            if msg:
-                print(f"NACK received, republishing: {msg['routing_key']}")
-                self._republish(msg)
-    
-    def _on_return(self, channel, method, properties, body):
-        print(f"Message RETURNED: {method.reply_text}")
-        # Handle unroutable message (no matching queue)
-    
-    def _republish(self, msg):
-        # Retry logic
-        pass
+```text
+Consumer cập nhật DB thành công
+        │
+        ├── ack tới broker thành công → xong
+        │
+        └── process chết trước ack
+                    ↓
+             broker redeliver
+                    ↓
+          cùng nghiệp vụ chạy lần hai
 ```
 
-### 2.2 Java: Publisher Confirms (Spring AMQP)
+Manual ack tạo nền tảng **at-least-once delivery**, không tự tạo exactly-once business processing.
+
+### 2.2 “Exactly-once” phải nói rõ phạm vi
+
+Có thể đạt “mỗi message chỉ tạo một lần thay đổi trong database X” bằng:
+
+- message có ID ổn định;
+- bảng inbox có unique constraint;
+- ghi inbox và thay đổi nghiệp vụ trong cùng database transaction.
+
+Không thể suy rộng điều đó thành “email, payment, HTTP call và mọi database đều chạy đúng một lần” nếu các hệ thống không cùng transaction hoặc không hỗ trợ idempotency key.
+
+---
+
+## 3. Durability – message có sống qua restart không?
+
+### 3.1 Bốn mảnh ghép
+
+```text
+1. Durable exchange
+2. Durable queue/binding
+3. Persistent message
+4. Publisher confirm
+```
+
+| Mảnh ghép | Bảo vệ điều gì? | Không bảo vệ điều gì? |
+|---|---|---|
+| Durable exchange | Định nghĩa exchange qua restart | Message body |
+| Durable queue | Định nghĩa queue qua restart | HA nếu đó là classic queue một replica |
+| Persistent message (`delivery_mode=2`) | Yêu cầu lưu message bền vững | Publisher biết lúc nào broker đã hoàn tất |
+| Publisher confirm | Broker báo đã nhận trách nhiệm | Consumer đã xử lý nghiệp vụ |
+
+Java:
 
 ```java
-// Spring AMQP: Publisher Confirms via CorrelationData
-@Configuration
-public class RabbitConfig {
-    
-    @Bean
-    public RabbitTemplate rabbitTemplate(ConnectionFactory connectionFactory) {
-        RabbitTemplate template = new RabbitTemplate(connectionFactory);
-        
-        // Enable publisher confirms
-        template.setConfirmCallback((correlationData, ack, cause) -> {
-            String messageId = correlationData != null ? correlationData.getId() : "unknown";
-            if (ack) {
-                log.info("Message {} confirmed by broker", messageId);
-                // Mark message as confirmed in DB
-            } else {
-                log.error("Message {} NACKED by broker: {}", messageId, cause);
-                // Retry or alert
-            }
-        });
-        
-        // Enable returns for unroutable messages
-        template.setReturnsCallback(returned -> {
-            log.error("Message returned! Exchange: {}, RoutingKey: {}, Reply: {}",
-                returned.getExchange(), returned.getRoutingKey(), returned.getReplyText());
-            // Handle unroutable: re-route or alert
-        });
-        
-        template.setMandatory(true);  // enable returns
-        return template;
+channel.exchangeDeclare(
+    "orders.events",
+    com.rabbitmq.client.BuiltinExchangeType.TOPIC,
+    true
+);
+
+channel.queueDeclare(
+    "billing.order-events",
+    true,
+    false,
+    false,
+    Map.of("x-queue-type", "quorum")
+);
+
+channel.queueBind(
+    "billing.order-events",
+    "orders.events",
+    "order.#"
+);
+
+AMQP.BasicProperties properties = new AMQP.BasicProperties.Builder()
+    .deliveryMode(2)
+    .contentType("application/json")
+    .messageId(eventId)
+    .build();
+```
+
+### 3.2 Classic queue và Quorum queue
+
+| Queue type | Replication | Confirm của persistent message |
+|---|---|---|
+| Classic | Không replicated trong RabbitMQ 4.x | Sau khi queue chấp nhận/persist theo semantics của queue |
+| Quorum | Raft, nhiều replica | Sau khi đa số replica chấp nhận và xác nhận với leader |
+
+Quorum queue là lựa chọn mặc định khi message quan trọng cần HA/data safety. Nếu queue mất đa số replica, nó dừng phục vụ thay vì chấp nhận state không an toàn.
+
+RabbitMQ có thể gom nhiều disk write để giảm `fsync`; confirm latency vì vậy không cố định. Đừng suy ra throughput bằng một con số chung hoặc chờ confirm riêng từng message nếu cần lưu lượng cao.
+
+---
+
+## 4. Publisher Confirms
+
+### 4.1 Confirm thực sự chứng minh gì?
+
+Sau `confirmSelect()`, mỗi publish trên channel có sequence number. Broker trả:
+
+- `basic.ack`: broker đã nhận trách nhiệm;
+- `basic.nack`: broker gặp lỗi nội bộ và publisher phải xem publish đó chưa thành công.
+
+Với message routable:
+
+- broker chỉ confirm sau khi mọi target queue đã chấp nhận message;
+- persistent message tới durable queue được confirm sau khi persistence condition hoàn tất;
+- với quorum queue, đa số replica phải chấp nhận.
+
+Với message **không route được**, broker vẫn có thể gửi confirm `ack`: exchange đã xử lý publish thành công nhưng tìm thấy zero queue. Vì vậy confirm không thay thế `mandatory`.
+
+```text
+Publisher ── publish mandatory=true ──► Exchange
+                                            │
+                                      không có route
+                                            │
+Publisher ◄── basic.return ─────────────────┤
+Publisher ◄── confirm ack ──────────────────┘
+
+return luôn được gửi trước confirm cho publish đó
+```
+
+### 4.2 Ba chiến lược confirm
+
+| Cách | Ưu điểm | Nhược điểm |
+|---|---|---|
+| Publish rồi chờ từng confirm | Code đơn giản | Serialization round-trip, throughput thấp |
+| Publish một batch rồi chờ | Đơn giản hơn async, throughput khá | Lỗi batch khó xác định từng message |
+| Streaming async confirms | Throughput tốt, biết từng sequence | Cần quản lý pending state, timeout và concurrency |
+
+Production publisher lưu lượng cao thường dùng streaming async confirms với số lượng pending bị giới hạn.
+
+### 4.3 Java async confirms an toàn hơn
+
+```java
+import com.rabbitmq.client.ConfirmCallback;
+import com.rabbitmq.client.Return;
+import java.util.List;
+import java.util.Map;
+import java.util.NavigableMap;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentNavigableMap;
+import java.util.concurrent.ConcurrentSkipListMap;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+enum PublishStatus {
+    CONFIRMED,
+    NACKED,
+    UNROUTABLE
+}
+
+record PublishOutcome(
+    String messageId,
+    PublishStatus status,
+    String reason
+) {
+    static PublishOutcome confirmed(String id) {
+        return new PublishOutcome(id, PublishStatus.CONFIRMED, null);
+    }
+
+    static PublishOutcome nacked(String id) {
+        return new PublishOutcome(id, PublishStatus.NACKED, null);
+    }
+
+    static PublishOutcome unroutable(String id, String reason) {
+        return new PublishOutcome(id, PublishStatus.UNROUTABLE, reason);
     }
 }
 
-// application.yml
-// spring:
-//   rabbitmq:
-//     publisher-confirm-type: correlated  # NONE, SIMPLE, CORRELATED
-//     publisher-returns: true
+final class PendingMessage {
+    final String messageId;
+    final String routingKey;
+    final byte[] body;
+    final AtomicBoolean returned = new AtomicBoolean(false);
 
-@Service
-public class OrderPublisher {
-    
-    @Autowired
-    private RabbitTemplate rabbitTemplate;
-    
-    public void publishOrder(Order order) {
-        // CorrelationData links confirm callback to this publish
-        CorrelationData correlationData = new CorrelationData(order.getId().toString());
-        
-        // Store message for potential retry
-        correlationData.setFuture(new CompletableFuture<>());
-        
-        rabbitTemplate.convertAndSend(
-            "orders",
-            "order.created",
-            order,
-            correlationData
+    PendingMessage(String messageId, String routingKey, byte[] body) {
+        this.messageId = messageId;
+        this.routingKey = routingKey;
+        this.body = body;
+    }
+}
+
+ConcurrentNavigableMap<Long, PendingMessage> pendingBySequence =
+    new ConcurrentSkipListMap<>();
+Map<String, PendingMessage> pendingById =
+    new ConcurrentHashMap<>();
+BlockingQueue<PublishOutcome> outcomes =
+    new LinkedBlockingQueue<>();
+
+channel.confirmSelect();
+
+ConfirmCallback onAck = (sequence, multiple) -> {
+    NavigableMap<Long, PendingMessage> confirmed =
+        multiple
+            ? pendingBySequence.headMap(sequence, true)
+            : pendingBySequence.subMap(sequence, true, sequence, true);
+
+    List<PendingMessage> completed = List.copyOf(confirmed.values());
+    confirmed.clear();
+
+    for (PendingMessage message : completed) {
+        pendingById.remove(message.messageId);
+        if (!message.returned.get()) {
+            outcomes.offer(PublishOutcome.confirmed(message.messageId));
+        }
+    }
+};
+
+ConfirmCallback onNack = (sequence, multiple) -> {
+    NavigableMap<Long, PendingMessage> failed =
+        multiple
+            ? pendingBySequence.headMap(sequence, true)
+            : pendingBySequence.subMap(sequence, true, sequence, true);
+
+    List<PendingMessage> messages = List.copyOf(failed.values());
+    failed.clear();
+
+    for (PendingMessage message : messages) {
+        pendingById.remove(message.messageId);
+        outcomes.offer(PublishOutcome.nacked(message.messageId));
+    }
+};
+
+channel.addConfirmListener(onAck, onNack);
+
+channel.addReturnListener((Return returned) -> {
+    String messageId = returned.getProperties().getMessageId();
+    PendingMessage message = pendingById.get(messageId);
+    if (message != null) {
+        message.returned.set(true);
+        outcomes.offer(PublishOutcome.unroutable(
+            messageId,
+            returned.getReplyText()
+        ));
+    }
+});
+```
+
+Publishing phải do một thread sở hữu channel hoặc được tuần tự hóa:
+
+```java
+long sequence = channel.getNextPublishSeqNo();
+PendingMessage pending = new PendingMessage(
+    eventId,
+    "order.created",
+    body
+);
+
+pendingBySequence.put(sequence, pending);
+pendingById.put(eventId, pending);
+
+try {
+    channel.basicPublish(
+        "orders.events",
+        pending.routingKey,
+        true,
+        new AMQP.BasicProperties.Builder()
+            .deliveryMode(2)
+            .messageId(eventId)
+            .contentType("application/json")
+            .build(),
+        body
+    );
+} catch (Exception publishFailure) {
+    pendingBySequence.remove(sequence);
+    pendingById.remove(eventId);
+    throw publishFailure;
+}
+```
+
+Các callback chỉ cập nhật state/enqueue outcome nhanh; không query database, chờ network hoặc republish trực tiếp trong callback thread.
+
+### 4.4 Pending window và confirm timeout
+
+Publisher phải đặt giới hạn:
+
+```text
+max pending messages
+max pending bytes
+max confirm age
+```
+
+Nếu connection mất hoặc confirm quá hạn:
+
+1. Xem mọi publish chưa confirm là **unknown**, không phải chắc chắn thất bại.
+2. Retry từ nguồn bền vững như Outbox.
+3. Giữ nguyên `message_id`.
+4. Consumer xử lý idempotent vì broker có thể đã giữ bản đầu.
+
+Không buffer vô hạn message chưa confirm trong heap; khi broker chậm, hãy backpressure upstream hoặc để backlog nằm trong database/outbox.
+
+---
+
+## 5. `mandatory`, Return và Alternate Exchange
+
+| Tình huống | Confirm | Return khi `mandatory=true` |
+|---|---|---|
+| Route vào queue thành công | Ack sau khi queue chấp nhận | Không |
+| Không binding nào khớp | Vẫn có thể Ack | Có |
+| Exchange không tồn tại | Channel error | Không phải cơ chế xử lý |
+| Broker internal error | Nack hoặc channel/connection failure | Tùy giai đoạn |
+
+Một publish chỉ được xem thành công nghiệp vụ khi:
+
+```text
+confirmed == true
+AND returned == false
+```
+
+Nếu dùng alternate exchange và nó route được message, publisher không nhận return. Khi đó đội vận hành phải theo dõi queue “unrouted” như một error channel.
+
+---
+
+## 6. Transactional Outbox
+
+### 6.1 Vấn đề dual write
+
+```java
+orderRepository.save(order);   // commit thành công
+rabbitPublisher.publish(event); // process chết ở đây
+```
+
+Database có order nhưng event không tồn tại. Đổi thứ tự publish trước cũng không giải quyết: event có thể phát ra nhưng database rollback.
+
+### 6.2 Ghi business data và outbox cùng transaction
+
+```sql
+BEGIN;
+
+INSERT INTO orders(id, customer_id, status)
+VALUES (:order_id, :customer_id, 'CREATED');
+
+INSERT INTO outbox(
+    id,
+    aggregate_id,
+    event_type,
+    exchange_name,
+    routing_key,
+    payload,
+    status,
+    created_at
+) VALUES (
+    :event_id,
+    :order_id,
+    'order.created.v2',
+    'orders.events',
+    'order.created',
+    :payload,
+    'PENDING',
+    CURRENT_TIMESTAMP
+);
+
+COMMIT;
+```
+
+Hoặc cả hai cùng tồn tại, hoặc không có cái nào.
+
+### 6.3 Outbox relay đúng failure semantics
+
+```text
+1. Claim batch PENDING bằng lease/row lock
+2. Publish với message_id = outbox.id
+3. Theo dõi mandatory return + publisher confirm
+4. Confirmed và không returned → đánh dấu SENT
+5. Nack/return → PENDING hoặc FAILED theo policy
+6. Timeout/relay crash → lease hết hạn, publish lại
+```
+
+Không đánh dấu `SENT` ngay sau `basicPublish()` vì lệnh này bất đồng bộ.
+
+```text
+publish tới broker thành công
+        │
+        ├── relay nhận confirm, chưa update DB rồi crash
+        │
+        └── row vẫn PENDING → publish lại → duplicate
+```
+
+Outbox bảo vệ khỏi mất event, nhưng không loại duplicate. Đó là trade-off đúng của at-least-once.
+
+Các chi tiết production:
+
+- claim bằng `SELECT ... FOR UPDATE SKIP LOCKED` hoặc lease có expiry;
+- giới hạn batch và pending confirms;
+- retry có backoff/jitter;
+- index theo `(status, next_attempt_at)`;
+- metric oldest pending age, retry count và failed rows;
+- archive/delete row `SENT` theo retention;
+- payload/schema version bất biến sau khi tạo.
+
+---
+
+## 7. Consumer Acknowledgements
+
+### 7.1 Ack là chuyển quyền sở hữu
+
+```text
+Ready ── deliver ──► Unacknowledged
+                         ├── ack ───────────────► broker có thể xóa
+                         ├── reject no-requeue ─► DLX/drop
+                         ├── reject requeue ────► queue/delayed retry
+                         └── connection mất ────► tự requeue
+```
+
+Java:
+
+```java
+DeliverCallback callback = (consumerTag, delivery) -> {
+    long tag = delivery.getEnvelope().getDeliveryTag();
+
+    try {
+        applicationService.handleInTransaction(
+            delivery.getProperties().getMessageId(),
+            delivery.getBody()
         );
-        
-        // Optionally wait for confirm
-        try {
-            CorrelationData.Confirm confirm = correlationData.getFuture().get(5, TimeUnit.SECONDS);
-            if (!confirm.isAck()) {
-                throw new RuntimeException("Broker NACKed: " + confirm.getReason());
-            }
-        } catch (TimeoutException e) {
-            throw new RuntimeException("Confirm timeout - broker may be down");
-        }
+
+        // Chỉ ack sau khi transaction nghiệp vụ commit.
+        channel.basicAck(tag, false);
+    } catch (NonRetryableException e) {
+        channel.basicReject(tag, false);
+    } catch (RetryableException e) {
+        channel.basicReject(tag, true);
     }
-}
+};
+
+channel.basicConsume(queueName, false, callback, cancelCallback);
 ```
 
-### 2.3 Outbox Pattern (Guaranteed Publishing)
+### 7.2 Ack/Nack phải đúng channel
+
+Delivery tag chỉ có ý nghĩa trong channel nhận delivery. Ack tag đó trên channel khác gây `unknown delivery tag` và đóng channel.
+
+| Method | Phạm vi | Hành vi |
+|---|---|---|
+| `basicAck(tag, false)` | Một delivery | Thành công |
+| `basicAck(tag, true)` | Mọi outstanding tag ≤ tag | Batch success |
+| `basicReject(tag, true/false)` | Một delivery | Requeue hoặc dead-letter/drop |
+| `basicNack(tag, multiple, requeue)` | Một hoặc nhiều delivery | RabbitMQ extension |
+
+Batch ack chỉ an toàn khi application biết mọi delivery trước tag đó đã hoàn tất. Nếu callback chuyển việc sang thread pool và hoàn tất lệch thứ tự, `multiple=true` có thể ack nhầm task chưa xong. Khi xử lý song song, ack từng delivery hoặc có bộ điều phối contiguous completion cẩn thận.
+
+### 7.3 Auto ack
+
+`autoAck=true` làm broker coi delivery hoàn tất ngay khi gửi ra socket:
+
+- process chết trước business logic → message mất;
+- không có cửa sổ prefetch manual-ack để giới hạn unacked;
+- client dễ bị quá tải nếu callback không theo kịp.
+
+Chỉ dùng khi mất message chấp nhận được và consumer xử lý cực nhanh, ổn định.
+
+### 7.4 `redelivered` là hint
+
+RabbitMQ đặt `redelivered=true` khi biết delivery đã được giao lại. Đây là tín hiệu hữu ích để quan sát/deduplicate, nhưng không thay thế `message_id`:
+
+- `true`: message có thể đã được consumer thấy;
+- `false`: broker bảo đảm delivery chưa được thấy trước đó theo knowledge của broker.
+
+Business idempotency vẫn nên dùng ID ổn định do publisher tạo.
+
+---
+
+## 8. Inbox Pattern và Idempotent Consumer
+
+### 8.1 Cách làm sai phổ biến
+
+```text
+SET processed:<messageId> NX
+        │
+        └── process chết trước business update
+
+Lần retry thấy key tồn tại → bỏ qua → nghiệp vụ bị mất
+```
+
+Một distributed cache flag tách khỏi business database không tạo atomicity.
+
+### 8.2 Inbox và business update cùng transaction
+
+```sql
+CREATE TABLE consumed_message (
+    subscriber_id VARCHAR(100) NOT NULL,
+    message_id    VARCHAR(100) NOT NULL,
+    consumed_at   TIMESTAMP NOT NULL,
+    PRIMARY KEY (subscriber_id, message_id)
+);
+```
+
+Luồng:
+
+```text
+BEGIN
+  INSERT consumed_message(subscriber_id, message_id)
+  nếu duplicate key:
+      COMMIT/ROLLBACK và coi là đã xử lý
+  nếu insert thành công:
+      UPDATE business tables
+COMMIT
+ACK RabbitMQ
+```
+
+Nếu process chết:
+
+| Thời điểm crash | Kết quả khi redelivery |
+|---|---|
+| Trước DB commit | Transaction rollback, xử lý lại |
+| Sau DB commit nhưng trước ack | Inbox unique conflict, bỏ qua business update rồi ack |
+| Sau ack | Message đã hoàn tất |
+
+Ví dụ Spring:
 
 ```java
-// Problem: Publish message + update DB atomically
-// Anti-pattern:
-//   db.save(order);          // succeeds
-//   rabbit.publish(order);   // fails → message lost, DB has order but no event
-
-// Solution: Transactional Outbox Pattern
-@Entity
-@Table(name = "outbox_messages")
-public class OutboxMessage {
-    @Id UUID id;
-    String exchange;
-    String routingKey;
-    String payload;
-    String status; // PENDING, SENT, FAILED
-    LocalDateTime createdAt;
-    LocalDateTime sentAt;
-    int retryCount;
-}
-
-@Service
 @Transactional
-public class OrderService {
-    
-    @Autowired private OrderRepository orderRepo;
-    @Autowired private OutboxRepository outboxRepo;
-    
-    public Order createOrder(CreateOrderRequest req) {
-        // Same DB transaction: save order + outbox message
-        Order order = orderRepo.save(new Order(req));
-        
-        outboxRepo.save(OutboxMessage.builder()
-            .id(UUID.randomUUID())
-            .exchange("orders")
-            .routingKey("order.created")
-            .payload(objectMapper.writeValueAsString(order))
-            .status("PENDING")
-            .build());
-        
-        return order;  // commit both atomically
-    }
-}
+public ProcessingResult handleInTransaction(
+    String messageId,
+    byte[] payload
+) {
+    int inserted = inboxRepository.insertIfAbsent(
+        "billing-service",
+        messageId
+    );
 
-// Background publisher: reads outbox, publishes, marks SENT
-@Scheduled(fixedDelay = 1000)
-@Transactional
-public void publishOutboxMessages() {
-    List<OutboxMessage> pending = outboxRepo.findByStatusOrderByCreatedAt("PENDING", limit=100);
-    
-    for (OutboxMessage msg : pending) {
-        try {
-            rabbitTemplate.convertAndSend(msg.getExchange(), msg.getRoutingKey(), msg.getPayload());
-            msg.setStatus("SENT");
-            msg.setSentAt(LocalDateTime.now());
-        } catch (Exception e) {
-            msg.setRetryCount(msg.getRetryCount() + 1);
-            if (msg.getRetryCount() >= 5) {
-                msg.setStatus("FAILED");
-            }
-        }
-        outboxRepo.save(msg);
+    if (inserted == 0) {
+        return ProcessingResult.DUPLICATE;
     }
+
+    InvoiceCreated event = decoder.decode(payload);
+    invoiceRepository.apply(event);
+    return ProcessingResult.APPLIED;
 }
 ```
+
+Ack phải xảy ra sau khi method transaction đã return/commit.
+
+### 8.3 External side effects
+
+Nếu consumer gọi payment/email/HTTP API:
+
+- truyền `message_id` hoặc business operation ID làm idempotency key nếu downstream hỗ trợ;
+- lưu state `PENDING/SUCCEEDED/FAILED` và response để retry;
+- không giả định timeout nghĩa là downstream chưa thực thi;
+- thiết kế compensation/manual reconciliation nếu không thể deduplicate.
 
 ---
 
-## 3. Consumer Acknowledgements
+## 9. Prefetch và số message in-flight
 
-### 3.1 Ack / Nack / Reject
+RabbitMQ áp prefetch riêng cho mỗi consumer theo mặc định:
 
-```python
-# auto_ack=True: broker removes message immediately on delivery (UNSAFE)
-# Risk: consumer crashes before processing → message lost
-
-# auto_ack=False: manual acknowledgement
-
-def on_message(ch, method, properties, body):
-    delivery_tag = method.delivery_tag
-    
-    try:
-        data = json.loads(body)
-        result = process(data)
-        
-        # ACK: message successfully processed
-        ch.basic_ack(delivery_tag=delivery_tag)
-        # multiple=True: ack all messages up to delivery_tag (batch ack)
-        # ch.basic_ack(delivery_tag=delivery_tag, multiple=True)
-    
-    except TemporaryError as e:
-        # NACK with requeue=True: put back in queue (at HEAD, not tail!)
-        # Warning: can cause infinite loop if error is permanent!
-        ch.basic_nack(delivery_tag=delivery_tag, requeue=True)
-    
-    except PermanentError as e:
-        # NACK with requeue=False: dead letter or discard
-        ch.basic_nack(delivery_tag=delivery_tag, requeue=False)
-        # If DLX configured → message goes to DLQ
-    
-    # REJECT = same as NACK but only single message (no multiple flag)
-    # ch.basic_reject(delivery_tag=delivery_tag, requeue=False)
+```java
+channel.basicQos(20);
 ```
 
-### 3.2 Ack States & "Unacked" Messages
+Tổng số delivery tối đa đang giữ phía consumer:
 
-```
-Queue states:
-├── Ready: available to be delivered
-├── Unacked: delivered to consumer, awaiting ack
-└── Total = Ready + Unacked
+```text
+instances × consumers mỗi instance × prefetch
 
-Unacked leak:
-  - Consumer receives messages but never acks
-  - Messages stay "Unacked" forever (held in memory)
-  - When consumer disconnects → messages requeue to "Ready"
-  - Check: rabbitmqctl list_queues name messages_ready messages_unacknowledged
-
-Monitoring:
-rabbitmqctl list_queues name messages messages_ready messages_unacknowledged consumers
+5 instances × 4 consumers × 20 = 400 unacknowledged
 ```
 
-### 3.3 Consumer Timeout
+Prefetch ảnh hưởng đồng thời:
+
+- throughput và network utilization;
+- memory client/broker;
+- độ công bằng giữa consumer;
+- số message phải redeliver khi process chết;
+- ordering và thời gian message priority cao phải chờ.
+
+Quy trình tune:
+
+1. Bắt đầu gần mức concurrency xử lý thực.
+2. Đo consumer utilization và processing latency.
+3. Tăng dần nếu worker rảnh do chờ delivery.
+4. Giảm nếu unacked/memory/redelivery spike hoặc phân phối lệch.
+5. Load test với message size và downstream latency giống production.
+
+Không dùng các bảng “task nhanh = prefetch 500” như quy luật chung.
+
+---
+
+## 10. Consumer Timeout trong RabbitMQ 4.3
+
+RabbitMQ 4.3 chuyển consumer timeout vào quorum queue. Classic queue và stream không còn đánh giá timeout này như cơ chế cũ.
 
 ```bash
-# RabbitMQ 3.8.15+: consumer_timeout
-# If consumer holds ack for > timeout → channel closed with error
-
-# rabbitmq.conf
-consumer_timeout = 1800000  # 30 minutes (milliseconds)
-
-# Disable per queue
-rabbitmqctl set_policy consumer-timeout "^long_running_queue$" \
-    '{"consumer-timeout": false}' --apply-to queues
-
-# Or set custom timeout per queue
-channel.queue_declare(queue='long_tasks', durable=True,
-    arguments={'x-consumer-timeout': 7200000})  # 2 hours
+rabbitmqctl set_policy \
+  --vhost production \
+  order-consumer-timeout \
+  '^orders\.process$' \
+  '{"consumer-timeout":300000}' \
+  --apply-to quorum_queues
 ```
+
+Thứ tự ưu tiên cấu hình:
+
+1. Consumer argument `x-consumer-timeout`.
+2. Queue argument `x-consumer-timeout`.
+3. Policy `consumer-timeout`.
+4. Global `consumer_timeout` trong `rabbitmq.conf` (mặc định 30 phút).
+
+Khi quorum consumer giữ delivery quá hạn:
+
+- outstanding message được trả về queue để redeliver;
+- AMQP 0-9-1 client có `consumer_cancel_notify` nhận `basic.cancel` cho consumer đó;
+- client cũ không hỗ trợ capability có thể bị đóng channel.
+
+Timeout phải lớn hơn thời gian xử lý hợp lệ ở percentile cao, gồm cả pause GC/downstream tail latency. Nếu task có thể chạy hàng giờ, nên tách task thành checkpoint nhỏ hoặc dùng hệ thống workflow thay vì giữ delivery unacked quá lâu.
 
 ---
 
-## 4. QoS & Prefetch
+## 11. Poison Message và At-least-once Dead-lettering
 
-### 4.1 Prefetch Count
+Quorum queue RabbitMQ 4.x có delivery limit; mặc định từ 4.0 là 20 failed deliveries. RabbitMQ 4.3 phân biệt message được trả lại với delivery thực sự failed.
 
-```python
-# prefetch_count: max number of unacknowledged messages per consumer
-# Without prefetch: consumer can receive thousands of messages before processing
-
-# prefetch_count=1: strictest fair dispatch
-# - Consumer gets 1 message at a time
-# - Gets next only after ack
-# - Best for: variable processing time, fair load distribution
-
-# prefetch_count=10-100: good balance
-# - Consumer buffers N messages (reduces round-trips)
-# - Better throughput than prefetch=1
-# - Risk: one slow consumer holds more messages
-
-# prefetch_count=0: unlimited (DANGEROUS - disable entirely)
-# - Consumer gets all available messages
-# - Good only for: pure in-memory, very fast processing
-
-channel.basic_qos(
-    prefetch_size=0,    # size in bytes (0 = unlimited, most brokers ignore)
-    prefetch_count=10,  # messages count
-    global_qos=False,   # False = per consumer, True = per channel (avoid)
-)
+```bash
+rabbitmqctl set_policy \
+  --vhost production \
+  order-safety \
+  '^orders\.process$' \
+  '{
+    "delivery-limit":5,
+    "dead-letter-exchange":"orders.dlx",
+    "dead-letter-routing-key":"orders.failed"
+  }' \
+  --apply-to quorum_queues
 ```
 
-### 4.2 Prefetch Tuning
+Không tắt limit bằng `-1` nếu không có lý do migration rõ ràng; poison message có thể tạo vòng lặp và làm Raft log tăng.
 
-```python
-# Optimal prefetch depends on:
-# - Message processing time
-# - Number of consumers
-# - Network latency
+### 11.1 DLX mặc định vẫn có failure window
 
-# Rule of thumb:
-# - Fast consumers (< 1ms): prefetch = 100-500
-# - Normal consumers (1-100ms): prefetch = 10-50
-# - Slow consumers (> 100ms): prefetch = 1-5
+Dead-lettering là một lần publish nội bộ. Mặc định RabbitMQ có thể xóa message khỏi source queue sau khi publish sang DLX mà không dùng publisher confirms nội bộ; nếu target queue không sẵn sàng, message có thể mất.
 
-# Real-world tuning example for Java batch processing:
-# @RabbitListener(queues = "orders", concurrency = "3-10", containerFactory = "batchFactory")
-# + batch size 10, prefetch 20 → 200 messages in-flight per consumer instance
+Quorum queue hỗ trợ **at-least-once dead-lettering**, dùng confirms nội bộ để chỉ xóa khỏi source sau khi target chấp nhận. Tính năng này tăng data safety nhưng cần cấu hình và capacity cho dead-letter worker/internal backlog.
 
-# Spring AMQP
-@Bean
-public SimpleRabbitListenerContainerFactory listenerFactory(ConnectionFactory cf) {
-    SimpleRabbitListenerContainerFactory factory = new SimpleRabbitListenerContainerFactory();
-    factory.setConnectionFactory(cf);
-    factory.setPrefetchCount(10);           // prefetch per consumer
-    factory.setConcurrentConsumers(3);      // min 3 consumer threads
-    factory.setMaxConcurrentConsumers(10);  // scale up to 10
-    factory.setAcknowledgeMode(AcknowledgeMode.MANUAL);
-    factory.setDefaultRequeueRejected(false); // nack goes to DLX
-    return factory;
+```bash
+rabbitmqctl set_policy \
+  --vhost production \
+  order-at-least-once-dlx \
+  '^orders\.process$' \
+  '{
+    "dead-letter-strategy":"at-least-once",
+    "overflow":"reject-publish",
+    "dead-letter-exchange":"orders.dlx",
+    "dead-letter-routing-key":"orders.failed",
+    "max-length":100000
+  }' \
+  --priority 20 \
+  --apply-to quorum_queues
+```
+
+Điều kiện quan trọng:
+
+- source phải là quorum queue;
+- `dead-letter-strategy=at-least-once`;
+- overflow phải là `reject-publish`, không phải `drop-head`;
+- DLX và ít nhất một target route hợp lệ phải tồn tại;
+- feature flag `stream_queue` phải enabled nếu cluster cũ chưa bật;
+- message gốc nên persistent và target queue durable nếu dead letter phải sống qua restart.
+
+Internal worker có thể retry publish sang target và tạo duplicate nếu confirm thất lạc, nên DLQ consumer vẫn phải idempotent. Khi target không khả dụng lâu, dead-lettered message tiếp tục chiếm capacity ở source queue.
+
+Luôn:
+
+- khai báo DLX/target queue trước khi cần;
+- theo dõi dead-lettered message rate và DLQ depth;
+- giới hạn retry;
+- kiểm thử khi target queue mất quorum hoặc đầy;
+- có runbook replay DLQ idempotent.
+
+---
+
+## 12. AMQP Transactions
+
+```java
+channel.txSelect();
+try {
+    channel.basicPublish(
+        "",
+        "results",
+        properties,
+        body
+    );
+    channel.basicAck(deliveryTag, false);
+    channel.txCommit();
+} catch (Exception e) {
+    channel.txRollback();
+    throw e;
 }
 ```
 
----
+Transactions có thể nhóm AMQP operations trên **cùng channel**, nhưng:
 
-## 5. Transactions (AMQP tx)
+- không bao gồm transaction của application database;
+- không tạo end-to-end exactly-once;
+- mỗi commit là synchronous coordination và giảm throughput;
+- channel transaction mode và publisher confirm mode loại trừ nhau.
 
-```python
-# AMQP Transactions: heavyweight, avoid in production
-# tx.select → publish/ack → tx.commit
-# → Throughput: ~1/10 of confirms approach
+Phần lớn hệ thống nên dùng:
 
-# Only use when: need to consume AND publish atomically in same transaction
+- publisher confirms cho publish safety;
+- manual ack cho consume safety;
+- Outbox cho DB → RabbitMQ;
+- Inbox/idempotency cho RabbitMQ → DB.
 
-channel.tx_select()  # start transaction
-try:
-    # Consume a message (ack)
-    channel.basic_ack(delivery_tag)
-    # Publish a new message
-    channel.basic_publish(exchange='', routing_key='result_queue', body='result')
-    channel.tx_commit()  # atomic commit
-except Exception:
-    channel.tx_rollback()  # rollback both ack and publish
-
-# RECOMMENDATION: Use Publisher Confirms instead of transactions for publishing
-# Use careful ack/nack logic instead of transactions for consuming
-```
+Chỉ dùng AMQP transaction khi thật sự cần atomicity giữa AMQP operations trên cùng broker/channel và đã benchmark workload.
 
 ---
 
-## 6. Flow Control
+## 13. Connection Recovery không phải Message Recovery
 
-### 6.1 Credit-Based Flow Control (Internal)
+Java client có thể tự:
 
-```
-RabbitMQ credit-based flow:
-- Each connection/channel has a credit limit
-- Publisher sends messages → credits decrease
-- Broker drains (processes) messages → credits replenish
-- Credit = 0 → publisher is blocked (back-pressure)
+- reconnect;
+- mở lại channel;
+- restore QoS/confirm mode;
+- redeclare exchanges, queues, bindings;
+- register lại consumers.
 
-Blocked connections:
-rabbitmqctl list_connections name state blocked_by
-# state: running, blocked, blocking
+Nhưng automatic recovery **không buffer hoặc gửi lại publish trong lúc connection down**.
 
-# Connection.Blocked / Connection.Unblocked notifications
-# pika: channel._connection.params.blocked_connection_timeout
+```text
+Topology recovery = khôi phục đường ống
+Publisher state   = ứng dụng tự khôi phục hàng hóa chưa được xác nhận
 ```
 
-### 6.2 Memory and Disk Alarms
+Publisher phải giữ unconfirmed message trong Outbox/bộ nhớ có giới hạn và gửi lại sau recovery. Channel bị đóng vì protocol/application error như khai báo queue sai thuộc tính cũng không nên tự động phục hồi mù; cần sửa nguyên nhân.
 
-```bash
-# Memory alarm: when memory usage > vm_memory_high_watermark
-# rabbitmq.conf
-vm_memory_high_watermark.relative = 0.4    # 40% of available RAM
-vm_memory_high_watermark.absolute = 2GB    # or absolute value
-
-# Disk alarm: when free disk < disk_free_limit
-disk_free_limit.relative = 1.0   # min free disk = 1x RAM size
-disk_free_limit.absolute = 2GB
-
-# When alarm triggers:
-# - All publishing connections blocked
-# - Consuming continues (to drain messages)
-# - LOG: "alarm is set for memory"
-
-# Monitor alarms
-rabbitmq-diagnostics alarms
-curl -u guest:guest http://localhost:15672/api/alarms
-```
+Consumer cũng phải chấp nhận delivery đang xử lý bị requeue khi connection mất.
 
 ---
 
-## 7. Poison Message Handling
+## 14. Flow Control và Resource Alarms
 
-### 7.1 Detecting Poison Messages
+### 14.1 Hai loại tín hiệu
 
-```python
-# Poison message: message that consistently fails processing
-# Without handling: NACK + requeue → infinite loop → CPU spike
+| Tín hiệu | Nguyên nhân | Quan sát |
+|---|---|---|
+| `flow` | Publisher nhanh hơn queue/storage/replication | Connection thường xuyên bị throttle |
+| `blocked` / `blocking` | Memory hoặc disk alarm | Publisher bị dừng cho đến khi alarm clear |
 
-# Strategy 1: Track retry count in headers
-def on_message(ch, method, properties, body):
-    headers = properties.headers or {}
-    retry_count = headers.get('x-retry-count', 0)
-    
-    try:
-        process(body)
-        ch.basic_ack(delivery_tag=method.delivery_tag)
-    
-    except Exception as e:
-        if retry_count < 3:
-            # Re-publish with incremented counter (with delay)
-            new_headers = dict(headers)
-            new_headers['x-retry-count'] = retry_count + 1
-            new_headers['x-last-error'] = str(e)
-            
-            # Use delayed exchange for backoff
-            delay_ms = (2 ** retry_count) * 1000  # 1s, 2s, 4s
-            ch.basic_publish(
-                exchange='delayed',
-                routing_key='task_queue',
-                body=body,
-                properties=pika.BasicProperties(
-                    delivery_mode=2,
-                    headers={**new_headers, 'x-delay': delay_ms},
-                )
-            )
-            ch.basic_ack(delivery_tag=method.delivery_tag)  # ack original
-        else:
-            # Dead letter
-            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+Flow control là backpressure bình thường, không phải lỗi cần reconnect liên tục.
 
-# Strategy 2: x-death header (auto-added by broker on dead-lettering)
-def check_death_count(properties) -> int:
-    headers = properties.headers or {}
-    x_death = headers.get('x-death', [])
-    if x_death:
-        return x_death[0].get('count', 0)  # how many times dead-lettered
-    return 0
+### 14.2 Alarm phạm vi cluster
+
+Khi một node vượt memory watermark hoặc thiếu disk, alarm có thể block publishing connections trên toàn cluster. Consumer-only connection vẫn có thể drain queue.
+
+Với AMQP 0-9-1, nên tách connection publish và consume nếu muốn consumer tiếp tục hoạt động ổn định khi publish connection bị block.
+
+Java blocked listener:
+
+```java
+connection.addBlockedListener(
+    reason -> metrics.publisherBlocked(reason),
+    () -> metrics.publisherUnblocked()
+);
 ```
 
-### 7.2 Idempotency
+Khi bị block:
 
-```python
-# Ensure same message processed only once (at-least-once delivery → exactly-once behavior)
-
-import redis
-
-r = redis.Redis()
-
-def idempotent_process(message_id: str, body: bytes, process_fn) -> bool:
-    """Returns True if processed, False if duplicate"""
-    key = f"processed:{message_id}"
-    
-    # Atomic check-and-set
-    # SET key 1 NX EX 86400 → only succeeds if key doesn't exist
-    if not r.set(key, '1', nx=True, ex=86400):
-        return False  # Already processed (duplicate)
-    
-    try:
-        process_fn(body)
-        return True
-    except Exception:
-        # Processing failed → remove idempotency key so it can be retried
-        r.delete(key)
-        raise
-
-def on_message(ch, method, properties, body):
-    message_id = properties.message_id or str(method.delivery_tag)
-    
-    try:
-        processed = idempotent_process(
-            message_id=message_id,
-            body=body,
-            process_fn=lambda b: handle_order(json.loads(b))
-        )
-        if not processed:
-            print(f"Duplicate message {message_id}, skipping")
-        ch.basic_ack(delivery_tag=method.delivery_tag)
-    
-    except Exception as e:
-        ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
-```
+- không đẩy message vô hạn vào heap của publisher;
+- tăng outbox backlog có giới hạn và backpressure request ingress;
+- alert theo blocked duration, disk/memory alarm;
+- không coi I/O timeout là chắc chắn publish thất bại;
+- tiếp tục giải phóng backlog qua consumer path.
 
 ---
 
-## 8. Message Ordering Guarantees
+## 15. Ordering Guarantees
 
-```
-RabbitMQ ordering guarantees:
+RabbitMQ cố giữ thứ tự enqueue:
 
-1. Per queue, per channel:
-   - Messages published on SAME channel → delivered in order
-   - Messages from DIFFERENT channels → no order guarantee
+- publish trên một channel được enqueue theo publication order trong từng target queue;
+- nhiều channel/connection publish đồng thời có thể interleave;
+- queue deliver theo enqueue order trước các yếu tố làm thay đổi.
 
-2. With multiple consumers:
-   - No ordering across consumers
-   - Each consumer sees messages in queue order, but processes independently
+Thứ tự quan sát/hoàn tất có thể đổi do:
 
-3. Requeue breaks ordering:
-   - NACK + requeue=True → message goes to HEAD of queue
-   - Can arrive before other pending messages
+- nhiều active consumers;
+- consumer xử lý song song;
+- priority;
+- reject/nack/requeue hoặc connection mất;
+- delayed retry;
+- message TTL/dead-letter;
+- side effect có latency khác nhau.
 
-Patterns for strict ordering:
-1. Single consumer per queue (no parallelism)
-2. Consistent hashing exchange + single consumer per queue
-3. Message sequence numbers + resequencing buffer in consumer
-4. Partitioned queues (one per entity, e.g., user_id % N)
-```
+Publisher confirms cũng bất đồng bộ và có thể xác nhận một hoặc nhiều sequence; application không nên dựa vào thứ tự confirm.
 
-```python
-# Strict ordering: dedicated queue per entity
-class OrderedProcessor:
-    def __init__(self, channel, entity_count: int = 10):
-        self.channel = channel
-        self.entity_count = entity_count
-        
-        # Create N queues, each handles 1/N of entities
-        for i in range(entity_count):
-            channel.queue_declare(queue=f'orders_shard_{i}', durable=True)
-            channel.basic_qos(prefetch_count=1)  # single consumer per shard
-    
-    def publish(self, order: dict):
-        # Route to shard based on entity ID
-        shard = hash(order['user_id']) % self.entity_count
-        queue = f'orders_shard_{shard}'
-        
-        self.channel.basic_publish(
-            exchange='',
-            routing_key=queue,
-            body=json.dumps(order),
-            properties=pika.BasicProperties(delivery_mode=2)
-        )
-    
-    def start_consumers(self):
-        for i in range(self.entity_count):
-            self.channel.basic_consume(
-                queue=f'orders_shard_{i}',
-                on_message_callback=self.process_ordered,
-            )
-        self.channel.start_consuming()
-```
+Nếu cần ordering theo entity:
+
+1. Hash stable entity ID vào queue shard.
+2. Single Active Consumer hoặc một processing lane mỗi shard.
+3. Sequence number trong event.
+4. Idempotency và xử lý gap/duplicate.
+5. Không đổi shard count mà không có migration/repartition plan.
 
 ---
 
-## 9. Reliability Checklist
+## 16. Observability cho Reliability
 
-```
-Publisher side:
-□ Exchange declared durable=True
-□ Queue declared durable=True
-□ Messages published with delivery_mode=2 (persistent)
-□ Publisher Confirms enabled
-□ Return handler for unroutable messages (mandatory=True)
-□ Outbox pattern for DB+publish atomicity
+### Publisher
 
-Consumer side:
-□ auto_ack=False (manual acknowledgement)
-□ prefetch_count set appropriately (not 0)
-□ NACK with requeue=False for permanent errors
-□ DLX configured for failed messages
-□ Retry logic with exponential backoff
-□ Idempotency check for at-least-once delivery
+- pending confirm count/bytes;
+- confirm latency p50/p95/p99;
+- nack, return và confirm timeout rate;
+- publish exception/recovery count;
+- blocked/flow duration;
+- outbox pending count và oldest age.
 
-Infrastructure:
-□ Durable queues with persistent messages
-□ Quorum queues for HA (not classic mirrored)
-□ Multiple nodes (cluster)
-□ Disk alarm thresholds configured
-□ Memory alarm thresholds configured
-□ Connection heartbeat enabled
-□ Consumer timeout configured
-```
+### Broker
 
-## Ghi chú – Topics tiếp theo
+- messages ready/unacknowledged;
+- publish, confirm, deliver, ack, redelivery rate;
+- quorum availability/leader election;
+- disk/memory alarms;
+- unroutable dropped/returned;
+- DLQ depth và dead-letter rate.
 
-- **Clustering**: Erlang cluster setup → `rabbitmq_production.md`
-- **Quorum Queues**: Raft consensus, leader election → `rabbitmq_production.md`
-- **Policies**: HA policy, TTL policy via rabbitmqctl → `rabbitmq_production.md`
-- **Federation & Shovel**: cross-datacenter messaging → `rabbitmq_production.md`
-- **Spring AMQP deep dive**: @RabbitListener, error handlers, batch → `rabbitmq_production.md`
-- **Monitoring**: Prometheus metrics, Grafana dashboards → `rabbitmq_production.md`
+### Consumer
+
+- processing latency và error class;
+- ack/reject/requeue rate;
+- duplicate/inbox conflict rate;
+- consumer cancellation/timeout;
+- prefetch, concurrency và in-flight;
+- downstream timeout/circuit state.
+
+Alert theo xu hướng và SLO, không chỉ một threshold queue depth cố định. Ví dụ backlog 10.000 message có thể bình thường nếu drain trong 30 giây, nhưng nghiêm trọng nếu oldest message đã 20 phút.
+
+---
+
+## 17. Failure Matrix
+
+| Failure | Message có thể ở đâu? | Hành động |
+|---|---|---|
+| Publisher chết trước publish | Chỉ Outbox | Relay publish sau |
+| Publisher chết sau publish, trước confirm | Broker có thể đã nhận | Retry cùng message ID |
+| Confirm ack nhưng message unroutable | Return đã tới trước ack | Đánh dấu routing failure |
+| Broker node chết trước quorum confirm | Chưa chắc được commit | Retry sau recovery |
+| Consumer chết trước DB commit | Queue sẽ redeliver | Transaction rollback, xử lý lại |
+| Consumer chết sau DB commit, trước ack | DB đã đổi, queue redeliver | Inbox nhận duplicate rồi ack |
+| Downstream timeout | Có thể đã thực thi | Idempotency key/reconciliation |
+| DLQ target không khả dụng | Default DLX có thể mất transfer | At-least-once DLX hoặc runbook/capacity |
+| Memory/disk alarm | Publisher bị block | Drain, backpressure, xử lý resource |
+| Consumer giữ message quá timeout | Quorum queue trả lại message | Xử lý cancel, tune timeout |
+
+---
+
+## 18. Checklist production
+
+### Publisher
+
+- [ ] Business write và Outbox cùng database transaction.
+- [ ] Message ID ổn định, không tạo ID mới khi retry.
+- [ ] Publisher confirms bật trước publish.
+- [ ] `mandatory=true` hoặc alternate exchange có giám sát.
+- [ ] Pending confirm bị giới hạn theo count, bytes và age.
+- [ ] Nack/return/timeout đều có state transition rõ ràng.
+- [ ] Không làm I/O chậm trong confirm callback.
+
+### Broker/topology
+
+- [ ] Exchange/queue/binding durable.
+- [ ] Message quan trọng persistent.
+- [ ] Quorum queue dùng khi cần replication/HA.
+- [ ] Delivery limit, delayed retry và DLQ được cấu hình.
+- [ ] Kiểm thử mất node, mất quorum, queue đầy và DLQ unavailable.
+- [ ] Memory/disk alarm và blocked connection có alert.
+
+### Consumer
+
+- [ ] Manual ack sau business commit.
+- [ ] Inbox unique constraint hoặc idempotency tương đương.
+- [ ] Không dùng delivery tag làm business message ID.
+- [ ] Retryable/non-retryable được phân loại.
+- [ ] Prefetch/concurrency được load test.
+- [ ] Consumer timeout phù hợp tail latency.
+- [ ] External side effect dùng idempotency key/reconciliation.
+
+---
+
+## 19. Chủ đề tiếp theo
+
+Tiếp theo: [RabbitMQ Production & Operations](rabbitmq_production.md)
+
+- Cluster và quorum queue membership.
+- Policies/operator policies.
+- Monitoring với Prometheus/Grafana.
+- Capacity, memory/disk alarm và flow control.
+- Upgrade, backup/restore và disaster recovery.
+- Federation/Shovel và Spring AMQP production.
+
+Liên quan:
+
+- [RabbitMQ Fundamentals](rabbitmq_fundamentals.md)
+- [RabbitMQ Messaging Patterns](rabbitmq_patterns.md)
+- [RabbitMQ Glossary](glossary.md)
+- [Spring Boot Messaging](../springboot/springboot_messaging.md)
+- [Kafka Delivery Semantics](../kafka/fundamentals/consumers.md)
+
+## Tài liệu chính thức
+
+- [RabbitMQ Reliability Guide](https://www.rabbitmq.com/docs/reliability)
+- [Consumer Acknowledgements and Publisher Confirms](https://www.rabbitmq.com/docs/confirms)
+- [Reliable Publishing with Java Publisher Confirms](https://www.rabbitmq.com/tutorials/tutorial-seven-java)
+- [Java Client API Guide](https://www.rabbitmq.com/client-libraries/java-api-guide)
+- [Queues and Message Ordering](https://www.rabbitmq.com/docs/queues#message-ordering)
+- [Quorum Queues](https://www.rabbitmq.com/docs/quorum-queues)
+- [Dead Letter Exchanges](https://www.rabbitmq.com/docs/dlx)
+- [Consumer Prefetch](https://www.rabbitmq.com/docs/consumer-prefetch)
+- [Flow Control](https://www.rabbitmq.com/docs/flow-control)
+- [Memory and Disk Alarms](https://www.rabbitmq.com/docs/alarms)
+- [RabbitMQ 4.3 Release Highlights](https://www.rabbitmq.com/blog/2026/04/23/rabbitmq-4.3-release)
+
+*Cập nhật lần cuối: 2026-07-29*

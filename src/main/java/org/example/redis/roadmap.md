@@ -1,10 +1,15 @@
 # Roadmap Tổng Hợp Kiến Thức Redis
 
+> 📖 Tra cứu nhanh thuật ngữ: [Redis Glossary](glossary.md)
+>
+> Learning path đã được chuẩn hóa theo Redis Open Source 8.8: từ mental model và HA đến performance, failure semantics và các design pattern production.
+
 ## Cấu trúc thư mục
 ```
 redis/
 ├── roadmap.md                    ← file này
-├── redis_fundamentals.md        ← What/Why, Data Types, Commands, Persistence
+├── glossary.md                   ← thuật ngữ Redis tra cứu nhanh
+├── redis_fundamentals.md        ← Mental model, Data Types Redis 8.8, TTL, Atomicity, Persistence
 ├── redis_ha.md                  ← Replication, Sentinel, Cluster
 ├── redis_performance.md         ← Memory, Eviction, Pipelining, Lua, Monitoring
 └── redis_patterns.md            ← Design Patterns: caching, pub/sub, streams, rate limiting
@@ -16,15 +21,16 @@ redis/
 
 | STT | Chủ đề | File | Trạng thái |
 |-----|--------|------|-----------|
-| 1 | Redis Fundamentals – What/Why, kiến trúc single-thread, data types (String/List/Hash/Set/ZSet/Stream/HLL/Bitmap/Geo), commands, TTL/expiry, Persistence (RDB/AOF) | redis_fundamentals.md | ✅ |
-| 2 | Redis High Availability – Master-Replica replication, Redis Sentinel (auto-failover), Redis Cluster (hash slots, sharding, gossip protocol) | redis_ha.md | ✅ |
-| 3 | Redis Performance & Internals – Memory model, eviction policies, pipelining, Lua scripting, MULTI/EXEC transactions, RESP3 protocol, keyspace notifications, monitoring | redis_performance.md | ✅ |
-| 4 | Redis Design Patterns – Caching strategies (Cache-Aside/Write-Through/Write-Behind), Pub/Sub, Streams (consumer groups), Rate Limiting, Session store, Distributed locks (Redlock), Leaderboard, Job Queue | redis_patterns.md | ✅ |
+| 1 | Redis Fundamentals – mental model, execution/atomicity, key design, core và Redis 8 data types, TTL/expiration, RDB/AOF, command safety | [redis_fundamentals.md](redis_fundamentals.md) | ✅ Redis 8.8 |
+| 2 | Redis High Availability – replication, Sentinel, Cluster, failure mode và failover | [redis_ha.md](redis_ha.md) | ✅ Redis 8.8 |
+| 3 | Redis Performance & Internals – memory, eviction, pipeline, scripting, transaction, protocol và monitoring | [redis_performance.md](redis_performance.md) | ✅ Redis 8.8 |
+| 4 | Redis Design Patterns – caching, Pub/Sub, Streams, rate limit, session, distributed lock, leaderboard và job queue | [redis_patterns.md](redis_patterns.md) | ✅ Redis 8.8 |
 
 ---
 
 ## Chú thích trạng thái
-- ✅ Hoàn thành – đã có nội dung
+- ✅ Hoàn thành – đã refactor theo phiên bản mục tiêu
+- 🟡 Đã có nội dung nhưng cần rà soát/version hóa
 - 🔄 Đang làm
 - ⬜ Chưa làm
 
@@ -34,14 +40,18 @@ redis/
 |---------|---------|--------------|
 | Session Store | Key-Value với TTL | String + EXPIRE |
 | Caching | Cache-Aside / Write-Through | String / Hash |
-| Rate Limiting | Sliding window / Token bucket | INCR + EXPIRE / Sorted Set |
-| Pub/Sub Messaging | Fan-out messages | PUBLISH/SUBSCRIBE |
-| Event Streaming | Durable, consumer groups | XADD/XREAD/XACK |
+| Rate Limiting | Fixed/sliding window hoặc token bucket | INCREX 8.8 / Sorted Set / Function |
+| Pub/Sub Messaging | At-most-once fan-out cho subscriber online | PUBLISH/SUBSCRIBE, SPUBLISH/SSUBSCRIBE |
+| Event Streaming | At-least-once, replay, consumer groups | XADD/XREADGROUP/XACK/XAUTOCLAIM/XNACK |
 | Leaderboard | Sorted by score | Sorted Set (ZADD/ZRANK) |
-| Distributed Lock | Mutual exclusion | SET NX PX / Redlock |
-| Job Queue | FIFO, reliable | List (LPUSH/BRPOP) |
-| Full-text Search | Index + query | RediSearch (Redis Stack) |
+| Distributed Coordination | Lease có ownership/fencing khi phù hợp | SET NX PX + DELEX / library đã review |
+| Job Queue | At-least-once, retry, DLQ | Streams hoặc List với BLMOVE |
+| Full-text Search | Index + query | Redis Search |
 | Bloom Filter | Probabilistic membership | RedisBloom |
 | Time Series | Metrics storage | RedisTimeSeries |
 | Geo Index | Proximity search | GEO commands |
 | Analytics | Unique count | HyperLogLog |
+
+> Bảng trên chỉ là gợi ý bắt đầu. Việc chọn Redis còn phụ thuộc consistency, durability, memory budget, hot key, command complexity và failure mode.
+
+*Cập nhật lần cuối: 2026-07-29*

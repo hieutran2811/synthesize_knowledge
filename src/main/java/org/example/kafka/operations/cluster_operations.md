@@ -3,6 +3,8 @@
 > Phương pháp: What – How – Why – Components – Compare – Trade-offs – Real-world – Ghi chú
 >
 > Tra cứu nhanh thuật ngữ tại [Kafka Glossary](../glossary.md). Bổ trợ cho [Kafka Production](production.md), nơi trình bày JVM/OS tuning, monitoring, security và DR.
+>
+> Phạm vi phiên bản: Apache Kafka 4.3/KRaft. Lệnh Linux dùng hậu tố `.sh`; trên Windows dùng script `.bat` tương ứng. Managed Kafka có control plane riêng nên phải ưu tiên runbook của nhà cung cấp.
 
 ---
 
@@ -73,19 +75,20 @@ Reassignment cũng được dùng để:
 
 ```bash
 # 1. Sinh kế hoạch đề xuất cho danh sách topic
-kafka-reassign-partitions --bootstrap-server b1:9092 \
+bin/kafka-reassign-partitions.sh --bootstrap-server b1:9092 \
   --topics-to-move-json-file topics.json \
   --broker-list "1,2,3,4" \
   --generate
 
 # 2. Review plan.json rồi thực thi với replication throttle 50 MB/s
-kafka-reassign-partitions --bootstrap-server b1:9092 \
+bin/kafka-reassign-partitions.sh --bootstrap-server b1:9092 \
   --reassignment-json-file plan.json \
   --execute \
-  --throttle 50000000
+  --throttle 50000000 \
+  --replica-alter-log-dirs-throttle 100000000
 
 # 3. Kiểm tra tiến độ; khi hoàn tất tool sẽ gỡ throttle liên quan
-kafka-reassign-partitions --bootstrap-server b1:9092 \
+bin/kafka-reassign-partitions.sh --bootstrap-server b1:9092 \
   --reassignment-json-file plan.json \
   --verify
 ```
@@ -95,9 +98,12 @@ kafka-reassign-partitions --bootstrap-server b1:9092 \
 ```properties
 leader.replication.throttled.rate=50000000
 follower.replication.throttled.rate=50000000
+replica.alter.log.dirs.io.max.bytes.per.second=100000000
 leader.replication.throttled.replicas=...
 follower.replication.throttled.replicas=...
 ```
+
+`--throttle` giới hạn copy liên broker; `--replica-alter-log-dirs-throttle` giới hạn copy giữa disk/log directory trên cùng broker. Muốn điều chỉnh rate khi job đang chạy, chạy lại `--execute` với cùng plan, giá trị mới và `--additional` theo cú pháp đúng version. Không sửa tay một nửa bộ config throttle nếu tool có thể quản lý trọn vòng đời.
 
 Throttle không phải “càng thấp càng an toàn”. Nếu tốc độ copy thấp hơn tốc độ dữ liệu mới tiếp tục ghi vào partition, lag có thể không bao giờ giảm. Chọn rate bằng thử nghiệm, theo dõi replica lag, latency, disk/network headroom rồi tăng hoặc giảm từng bước.
 
@@ -134,7 +140,7 @@ Sau khi chạy:
 5. Cân bằng leader nếu distribution lệch; ưu tiên preferred replica bằng công cụ leader election phù hợp.
 
 ```bash
-kafka-leader-election --bootstrap-server b1:9092 \
+bin/kafka-leader-election.sh --bootstrap-server b1:9092 \
   --election-type PREFERRED \
   --all-topic-partitions
 ```
@@ -143,30 +149,78 @@ Preferred leader election chỉ đổi leader trong replica set; nó không chuy
 
 ### Gỡ broker
 
-1. Chặn broker nhận assignment mới nếu phiên bản Kafka/công cụ vận hành hỗ trợ **cordon** *(đánh dấu không nhận thêm dữ liệu)*.
+1. Dùng **cordon** *(đánh dấu log directory không nhận assignment mới)* trên Kafka 4.3.
 2. Reassign toàn bộ replica khỏi broker, kể cả internal topic cần thiết.
 3. Chờ reassignment hoàn tất và ISR ổn định.
 4. Xác nhận không còn replica/leader trên broker.
 5. Shutdown có kiểm soát; với Kafka mới có thể unregister broker sau khi drain theo tài liệu đúng phiên bản.
 
 ```bash
-# Ví dụ ở Kafka mới: cordon toàn bộ log directory của broker 1
-kafka-configs --bootstrap-server b1:9092 --alter \
+# Kafka 4.3: cordon toàn bộ log directory của broker 1
+bin/kafka-configs.sh --bootstrap-server b1:9092 --alter \
+  --command-config admin.properties \
   --entity-type brokers --entity-name 1 \
   --add-config 'cordoned.log.dirs=*'
 
 # Chỉ unregister sau khi broker đã drain và shutdown
-kafka-cluster unregister --bootstrap-server b1:9092 --id 1
+bin/kafka-cluster.sh unregister --bootstrap-server b1:9092 --id 1
 ```
 
-Tên lệnh/khả năng cordon thay đổi theo release; không copy runbook của Kafka 4.x cho cluster cũ mà chưa kiểm tra upgrade guide.
+`cordoned.log.dirs=*` không tự chuyển replica hiện có. Công cụ `--generate` cũng chưa tự tạo plan decommission broker bằng cách loại broker đó khỏi target; operator phải tạo/review assignment đích hoặc dùng balancer phù hợp. Chỉ unregister sau khi inventory xác nhận broker không còn replica/leader và controlled shutdown đã hoàn tất.
 
 > 💡 **Giải thích dễ hiểu:**
 > Gỡ broker giống đóng một chi nhánh kho. Cordon là ngừng gửi hàng mới tới đó; drain là chuyển hết hàng cũ đi; shutdown chỉ được làm sau khi sổ kho xác nhận không còn món nào bị bỏ lại.
 
 ### Scale controller KRaft là bài toán khác
 
-Broker chứa data partition; **controller quorum** *(nhóm controller quyết định metadata)* duy trì control plane. Thêm broker không đồng nghĩa phải thêm controller. Khi thay đổi controller, phải giữ quorum majority, đợi controller mới bắt kịp metadata log và dùng quy trình dynamic/static voter đúng phiên bản Kafka. Không restart quá nửa controller cùng lúc.
+Broker chứa data partition; **controller quorum** *(nhóm controller quyết định metadata)* duy trì control plane. Thêm broker không đồng nghĩa phải thêm controller. Kafka 4.3 có hai kiểu quorum:
+
+- **Static quorum:** `kraft.version` bằng `0` hoặc không có; membership nằm trong `controller.quorum.voters` và không thể add/remove trực tiếp.
+- **Dynamic quorum:** `kraft.version >= 1`; dùng `controller.quorum.bootstrap.servers`, membership được lưu trong metadata log và có lệnh add/remove controller.
+
+```bash
+# Xác định feature level và kiểu quorum
+bin/kafka-features.sh --bootstrap-controller c1:9093 \
+  --command-config admin.properties describe
+
+# Quan sát leader, voter/observer, high watermark và lag
+bin/kafka-metadata-quorum.sh --bootstrap-controller c1:9093 \
+  --command-config admin.properties describe --status
+bin/kafka-metadata-quorum.sh --bootstrap-controller c1:9093 \
+  --command-config admin.properties describe --replication
+```
+
+Runbook thêm controller vào **dynamic quorum**:
+
+1. Chuẩn bị controller mới với `node.id` và storage/directory ID duy nhất, đúng `cluster.id`; format bằng `--no-initial-controllers`.
+2. Cấu hình `controller.quorum.bootstrap.servers`, listener/security rồi khởi động node mới như observer.
+3. Dùng `describe --replication` chờ node bắt kịp active controller; không add voter còn lag lớn.
+4. Chạy `add-controller`, sau đó xác nhận node xuất hiện trong `CurrentVoters` và quorum vẫn commit.
+
+```bash
+bin/kafka-storage.sh format --cluster-id <cluster-id> \
+  --config config/controller-new.properties \
+  --no-initial-controllers
+
+bin/kafka-metadata-quorum.sh --bootstrap-controller c1:9093 \
+  --command-config config/controller-new.properties add-controller
+```
+
+Khi gỡ controller, thứ tự ngược lại: lấy đúng `controller-id` và `controller-directory-id` từ trạng thái quorum, **remove khỏi voter set trước**, xác nhận majority/commit khỏe rồi mới shutdown node.
+
+```bash
+bin/kafka-metadata-quorum.sh --bootstrap-controller c1:9093 \
+  --command-config admin.properties remove-controller \
+  --controller-id <id> \
+  --controller-directory-id <directory-id>
+```
+
+Không thay membership khi quorum đang mất majority hoặc có voter chưa bắt kịp. Với static quorum, phải theo quy trình migrate sang dynamic quorum của đúng version; chỉ đổi file `controller.quorum.voters` trên vài node không tạo một membership change an toàn.
+
+Giữ số voter ổn định ở số lẻ, thường là 3 hoặc 5, và phân tán qua failure domain. Khi thay controller, trạng thái chẵn chỉ nên là giai đoạn chuyển tiếp add-new → verify → remove-old; thêm voter không tự động tăng khả năng chịu lỗi nếu majority requirement cũng tăng.
+
+> 💡 **Giải thích dễ hiểu — controller mới ban đầu là người dự thính:**
+> Cho người mới đọc hết sổ biên bản trước, rồi mới trao quyền biểu quyết. Khi một người rời hội đồng, phải xóa quyền biểu quyết trước khi họ tắt máy; nếu tắt trước, số phiếu cần cho đa số có thể vẫn tính cả người đã biến mất.
 
 ---
 
@@ -232,19 +286,21 @@ Không lấy số broker làm tiêu chí duy nhất. Tần suất thay đổi, m
 
 ```bash
 # Quota theo user principal
-kafka-configs --bootstrap-server b1:9092 --alter \
+bin/kafka-configs.sh --bootstrap-server b1:9092 --alter \
+  --command-config admin.properties \
   --entity-type users --entity-name analytics \
   --add-config 'producer_byte_rate=10485760,consumer_byte_rate=10485760'
 
 # Quota request theo client-id
-kafka-configs --bootstrap-server b1:9092 --alter \
+bin/kafka-configs.sh --bootstrap-server b1:9092 --alter \
+  --command-config admin.properties \
   --entity-type clients --entity-name analytics-app \
   --add-config 'request_percentage=50'
 ```
 
 Kafka có thể áp quota theo user, client-id, cặp user/client-id hoặc default; rule cụ thể hơn có độ ưu tiên cao hơn. Byte-rate quota là **per broker**, không phải hard limit toàn cluster. Client kết nối nhiều broker có tổng throughput lớn hơn một rate đơn lẻ.
 
-Khi vượt quota, broker tính delay, trả `throttle_time_ms` và tạm ngừng xử lý channel thay vì coi mỗi lần vượt là lỗi vĩnh viễn. Theo dõi throttle time phía client/broker; quota quá thấp thường biểu hiện thành latency tăng trước khi application timeout.
+`request_percentage=50` là tỷ lệ quota đối với thời gian network + I/O thread của **mỗi broker**, không phải “client được dùng đúng 50% tổng CPU cluster”. Khi vượt quota, broker tính delay, trả `throttle_time_ms` và tạm ngừng xử lý channel thay vì coi mỗi lần vượt là lỗi vĩnh viễn. Theo dõi throttle time phía client/broker; quota quá thấp thường biểu hiện thành latency tăng trước khi application timeout.
 
 > 💡 **Giải thích dễ hiểu:**
 > Quota giống làn thu phí có giới hạn số xe mỗi phút. Xe vượt định mức không bị phá hủy; nó phải chờ lâu hơn để đường cao tốc còn chỗ cho các đoàn xe khác.
@@ -294,10 +350,12 @@ Follower fetching giảm cross-AZ egress/latency cho read, nhưng không loại 
 ### Trước khi nâng cấp
 
 1. Đọc upgrade guide cho **chính xác** source version → target version; không nhảy qua bước trung gian bị cấm.
-2. Kiểm tra Java/client/plugin/Connect/Streams compatibility và breaking changes.
+2. Kiểm tra Java/client/plugin/Connect/Streams compatibility và breaking changes. Broker, Connect và CLI Kafka 4.x cần Java 17.
 3. Xác nhận cluster khỏe: không offline partition, URP về 0, disk có headroom, controller quorum ổn định.
 4. Backup config/metadata cần thiết, kiểm thử downgrade path và đặt rollback criteria.
 5. Canary trên môi trường giống production hoặc một broker ít rủi ro trước.
+
+Riêng target Kafka 4.3: source phải ở KRaft, software/metadata version tối thiểu 3.3.x; tài liệu chính thức khuyến nghị cluster KRaft cũ hơn 3.3 đi qua 3.9.x. Cluster ZooKeeper phải migrate sang KRaft trước, không thể nâng thẳng broker lên 4.3.
 
 ### Trong khi nâng cấp
 
@@ -312,12 +370,13 @@ Follower fetching giảm cross-AZ egress/latency cho read, nhưng không loại 
 Sau khi tất cả server chạy target binary và cluster đã soak ổn định, mới finalize **metadata version/feature level** bằng `kafka-features` nếu upgrade guide yêu cầu. Finalize có thể bật protocol/metadata feature mới và làm downgrade khó hoặc không thể; không chạy nó ngay khi broker cuối vừa lên.
 
 ```bash
-# Ví dụ hình thức lệnh; release-version phải theo target release thực tế
-kafka-features --bootstrap-server b1:9092 \
-  upgrade --release-version <target-version>
+# Kafka 4.3: chỉ chạy sau khi toàn cluster đã ở binary 4.3 và qua soak/health gate
+bin/kafka-features.sh --bootstrap-server b1:9092 \
+  --command-config admin.properties \
+  upgrade --release-version 4.3
 ```
 
-Các hướng dẫn cũ dùng `inter.broker.protocol.version` hoặc `log.message.format.version` chỉ áp dụng cho release còn hỗ trợ chúng. Kafka 4.x chỉ hỗ trợ KRaft; cluster ZooKeeper phải có lộ trình migrate trước khi nâng lên 4.x. Không trộn metadata migration với version upgrade trong cùng change nếu tài liệu không cho phép.
+Kafka 4.3 có metadata changes nên **không hỗ trợ metadata downgrade sau bước finalize này**. Trước finalize còn có thể rollback binary theo compatibility/upgrade guide; sau finalize phải xem đây là ranh giới thay đổi khó đảo ngược. Các hướng dẫn cũ dùng `inter.broker.protocol.version` hoặc `log.message.format.version` không áp dụng cho Kafka 4.x; hai config format cũ đã bị loại bỏ. Không trộn ZooKeeper migration, dynamic-quorum migration và version upgrade trong cùng change nếu tài liệu không chỉ định.
 
 > 💡 **Giải thích dễ hiểu:**
 > Rolling upgrade giống thay từng bánh xe khi xe đang được nâng trên nhiều trụ. Chỉ tháo một bánh khi các trụ còn lại chắc chắn; “finalize feature” giống khóa bộ phụ tùng cũ sau khi đã chạy thử đủ lâu, nên làm quá sớm sẽ mất đường quay lại.
@@ -339,9 +398,14 @@ Dung lượng cluster
 
 Dung lượng trung bình mỗi broker
   ≈ dung lượng cluster / số broker chứa data
+
+Thời gian rebuild một lượng replica
+  ≈ bytes cần copy / replication throughput hiệu dụng
 ```
 
 `retained_bytes_per_second` nên lấy từ dữ liệu sau compression đo thực tế. `overhead_factor` bao gồm index, segment, compaction headroom, skew và tăng trưởng. Với compacted topic, retention không đủ để dự đoán kích thước: cần đo tỷ lệ key update và hiệu quả cleaner.
+
+`replication throughput hiệu dụng` phải đo khi cluster vẫn phục vụ peak client traffic và chịu throttle, không lấy tốc độ tuần tự tối đa của disk từ datasheet. Nếu thời gian rebuild dài hơn RTO hoặc dài đến mức broker thứ hai có thể hỏng trước khi replica hồi phục, cluster chưa có đủ recovery bandwidth dù dung lượng đĩa còn nhiều.
 
 ### Các chiều capacity
 
@@ -356,6 +420,12 @@ Dung lượng trung bình mỗi broker
 | Failure reserve | tải khi mất broker/AZ và thời gian rebuild replica |
 
 Không có con số heap hoặc “disk đầy tối đa” đúng cho mọi cluster. Đặt target headroom dựa trên thời gian bổ sung capacity và RTO. Ví dụ, nếu provision broker mới mất hai giờ thì mức cảnh báo phải đủ sớm để cluster vẫn chịu được peak + một broker hỏng trong hai giờ đó.
+
+Capacity review nên chạy ít nhất ba kịch bản thay vì chỉ chia trung bình:
+
+1. **Steady state peak:** traffic cao nhất dự kiến, compaction và replication bình thường.
+2. **N-1 broker/AZ:** tải và leader của failure domain bị mất dồn sang phần còn lại nhưng vẫn đạt SLO/minISR.
+3. **Recovery:** vừa phục vụ peak vừa rebuild/reassign trong thời gian RTO, không đầy disk đích hoặc làm controller quá tải.
 
 > 💡 **Giải thích dễ hiểu:**
 > Thiết kế thang máy không chỉ theo số người trung bình lúc trưa mà còn theo giờ cao điểm và lúc một thang hỏng. Kafka cũng cần chỗ trống để vừa phục vụ khách vừa chuyển dữ liệu khi một broker biến mất.
@@ -380,11 +450,11 @@ Page cache và sequential I/O là nền tảng hiệu năng Kafka; cấp toàn b
 
 ### MirrorMaker 2
 
-MM2 có source connector để mirror data, checkpoint connector để ánh xạ/sync consumer offset và heartbeat connector để quan sát connectivity. Failover không tự động chỉ vì record đã được copy; phải test topic filter, ACL/config sync, consumer offset, lag và DNS/client cutover.
+MM2 có source connector để mirror data, checkpoint connector để ánh xạ/sync consumer offset và heartbeat connector để quan sát connectivity. `sync.group.offsets.enabled` mặc định là `false`; khi bật, checkpoint connector chỉ ghi translated offset vào target nếu group tương ứng không active ở target. Failover không tự động chỉ vì record đã được copy; phải test topic filter, ACL/config sync, consumer offset, lag và DNS/client cutover.
 
 ### Cluster Linking
 
-Cluster Linking tạo mirror topic read-only ở destination. Record được copy bất đồng bộ, byte-for-byte và giữ offset; consumer group offset/ACL/config có cơ chế sync riêng và cần bật/cấu hình đúng. Khi DR, `promote` hoặc `failover` biến mirror thành topic writable theo runbook của Confluent. Cluster Linking không mirror mọi internal topic như `_schemas` hoặc transaction state, nên Schema Registry và transactional workload cần kế hoạch riêng.
+Cluster Linking tạo mirror topic read-only ở destination. Record được copy bất đồng bộ, byte-for-byte và giữ offset; consumer group offset/ACL/config có cơ chế sync riêng và cần bật/cấu hình đúng. `promote` dành cho planned migration, yêu cầu mirror lag bằng 0 và thực hiện lần sync metadata cuối; `failover` dành cho DR khẩn cấp và chuyển ngay. Cả hai biến mirror thành topic writable, vì vậy vẫn phải fence producer nguồn để tránh hai phía phân kỳ. Cluster Linking không mirror mọi internal topic như `_schemas` hoặc `__transaction_state`, nên Schema Registry và transactional workload cần kế hoạch riêng.
 
 ### Stretch Cluster
 
@@ -455,13 +525,13 @@ Mỗi runbook cần owner, approval, health gate, abort condition, dashboard và
 
 ---
 
-## Nguồn chính thức
+## Nguồn chính thức và upstream
 
 - [Apache Kafka – Basic Kafka Operations](https://kafka.apache.org/43/operations/basic-kafka-operations/)
 - [Apache Kafka – Upgrading](https://kafka.apache.org/43/getting-started/upgrade/)
-- [Apache Kafka – KRaft Operations](https://kafka.apache.org/41/operations/kraft/)
-- [Apache Kafka – Quotas](https://kafka.apache.org/41/design/design/#design_quotas)
-- [Apache Kafka – MirrorMaker 2 Configuration](https://kafka.apache.org/41/configuration/mirrormaker-configs/)
+- [Apache Kafka – KRaft Operations](https://kafka.apache.org/43/operations/kraft/)
+- [Apache Kafka – Quotas](https://kafka.apache.org/43/design/design/#design_quotas)
+- [Apache Kafka – MirrorMaker 2 Configuration](https://kafka.apache.org/43/configuration/mirrormaker-configs/)
 - [LinkedIn – Cruise Control](https://github.com/linkedin/cruise-control)
 - [Confluent – Self-Balancing Clusters](https://docs.confluent.io/platform/current/clusters/sbc/index.html)
 - [Confluent – Cluster Linking mirror topics](https://docs.confluent.io/platform/current/multi-dc-deployments/cluster-linking/mirror-topics-cp.html)
@@ -471,10 +541,12 @@ Mỗi runbook cần owner, approval, health gate, abort condition, dashboard và
 
 ## Ghi chú – Chủ đề tiếp theo
 
+> Chủ đề này hoàn tất learning path Kafka hiện tại. Quay lại [Kafka Roadmap](../roadmap.md) để ôn theo lớp cơ bản → trung cấp → nâng cao, hoặc dùng các liên kết liên quan dưới đây để đào sâu theo incident/runbook.
+
 > Liên quan: [Kafka Production](production.md), [Architecture/KRaft](../fundamentals/architecture.md), [Replication/ISR](../internals/replication.md), [Storage](../internals/storage.md), [Kafka Connect/MM2](../streams/connect.md), [Event-driven architecture](../patterns/event_driven_architecture.md).
 
 > Keywords: `kafka-reassign-partitions`, `leader.replication.throttled.rate`, `follower.replication.throttled.rate`, Cruise Control goals, Self-Balancing Cluster, `kafka-configs`, client quotas, `broker.rack`, `client.rack`, `replica.selector.class`, preferred leader election, metadata version, `kafka-features`, KRaft quorum, MirrorMaker 2, checkpoint/heartbeat connector, Cluster Linking, mirror topic, RPO/RTO.
 
 ---
 
-*Cập nhật lần cuối: 2026-07-22*
+*Cập nhật lần cuối: 2026-07-27*

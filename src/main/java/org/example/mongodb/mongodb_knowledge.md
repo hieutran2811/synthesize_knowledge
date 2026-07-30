@@ -1,6 +1,6 @@
 # Tổng Hợp Kiến Thức MongoDB – Thực Chiến
 
-> Phương pháp: What – How – Why – Components – Compare – Trade-offs – Real-world – Ghi chú
+> Learning path đã được chuẩn hóa theo MongoDB 8.2. Xem [roadmap](roadmap.md) và [glossary](glossary.md) để tra cứu chủ đề/thuật ngữ.
 
 ---
 
@@ -25,22 +25,22 @@ mongod (primary)
 ### Fundamentals
 | # | Topic | File | Status |
 |---|-------|------|--------|
-| 1 | Data Model & BSON | `fundamentals/data_model.md` | ✅ |
-| 2 | CRUD & Aggregation Pipeline | `fundamentals/crud_aggregation.md` | ✅ |
-| 3 | Indexing | `fundamentals/indexing.md` | ✅ |
-| 4 | Transactions | `fundamentals/transactions.md` | ✅ |
+| 1 | Data Model & BSON | [fundamentals/data_model.md](fundamentals/data_model.md) | ✅ MongoDB 8.2 |
+| 2 | CRUD & Aggregation Pipeline | [fundamentals/crud_aggregation.md](fundamentals/crud_aggregation.md) | ✅ MongoDB 8.2 |
+| 3 | Indexing | [fundamentals/indexing.md](fundamentals/indexing.md) | ✅ MongoDB 8.2 |
+| 4 | Transactions | [fundamentals/transactions.md](fundamentals/transactions.md) | ✅ MongoDB 8.2 |
 
 ### Performance & Design
 | # | Topic | File | Status |
 |---|-------|------|--------|
-| 5 | Schema Design Patterns | `performance/schema_design.md` | ✅ |
+| 5 | Schema Design Patterns | [performance/schema_design.md](performance/schema_design.md) | ✅ MongoDB 8.2 |
 
 ### Operations
 | # | Topic | File | Status |
 |---|-------|------|--------|
-| 6 | Replica Set | `operations/replication.md` | ✅ |
-| 7 | Sharding | `operations/sharding.md` | ✅ |
-| 8 | Backup & Security | `operations/backup_security.md` | ✅ |
+| 6 | Replica Set | [operations/replication.md](operations/replication.md) | ✅ MongoDB 8.2 |
+| 7 | Sharding | [operations/sharding.md](operations/sharding.md) | ✅ MongoDB 8.2 |
+| 8 | Backup & Security | [operations/backup_security.md](operations/backup_security.md) | ✅ MongoDB 8.2 |
 
 ---
 
@@ -54,4 +54,4 @@ Nâng cao:  sharding → backup_security
 
 ---
 
-*Cập nhật lần cuối: 2026-05-06*
+*Cập nhật lần cuối: 2026-07-29*

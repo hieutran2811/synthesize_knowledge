@@ -1,701 +1,798 @@
 # RabbitMQ Messaging Patterns
 
-## 1. Work Queue (Task Queue)
+> Phạm vi chính: RabbitMQ 4.3, AMQP 0-9-1 và Java client.
+>
+> Mục tiêu: chọn đúng topology theo yêu cầu giao việc, broadcast, routing, retry, ordering và request/reply; đồng thời hiểu message sẽ đi đâu khi một thành phần gặp lỗi.
 
-### 1.1 What & How
+## 1. Bản đồ chọn pattern
 
-**Work Queue** = nhiều consumer cùng nhận từ 1 queue để xử lý song song. Mỗi message chỉ đến 1 consumer (round-robin mặc định, hoặc fair dispatch với prefetch).
+| Bài toán | Pattern phù hợp | Điểm cần quyết định |
+|---|---|---|
+| N worker chia nhau công việc | Work Queue / Competing Consumers | Prefetch, idempotency, retry |
+| Mỗi service nhận một bản sao event | Publish/Subscribe | Queue tạm hay durable theo từng service |
+| Chọn subscriber theo loại event | Topic/Direct Routing | Quy ước routing key và version |
+| Chỉ một consumer xử lý nhưng có standby | Single Active Consumer | Ordering, failover, prefetch |
+| Lỗi tạm thời cần chờ rồi thử lại | Quorum Delayed Retry | Backoff, delivery limit, DLQ |
+| Giao cùng entity vào cùng shard | Modulus/Consistent Hash | Số shard, rebalance, ordering |
+| Cần kết quả phản hồi qua broker | Request/Reply (RPC) | Timeout, duplicate, reply durability |
+| Bắt message không có route | Alternate Exchange hoặc `mandatory` | Xử lý tại broker hay publisher |
 
-```
-Producer → [task_queue] → Consumer 1 (message 1, 3, 5, ...)
-                        → Consumer 2 (message 2, 4, 6, ...)
-```
-
-```python
-# producer.py — gửi nhiều tasks
-import pika, json, time
-
-connection = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
-channel = connection.channel()
-channel.queue_declare(queue='task_queue', durable=True)
-
-tasks = [
-    {'id': 1, 'type': 'resize_image', 'url': 'https://example.com/img1.jpg'},
-    {'id': 2, 'type': 'send_email',   'to': 'user@example.com'},
-    {'id': 3, 'type': 'resize_image', 'url': 'https://example.com/img2.jpg'},
-]
-
-for task in tasks:
-    channel.basic_publish(
-        exchange='',
-        routing_key='task_queue',
-        body=json.dumps(task),
-        properties=pika.BasicProperties(delivery_mode=2),  # persistent
-    )
-    print(f"[x] Sent task {task['id']}")
-
-connection.close()
-```
-
-```python
-# worker.py — múltiple workers compete for tasks
-import pika, json, time
-
-connection = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
-channel = connection.channel()
-channel.queue_declare(queue='task_queue', durable=True)
-
-# CRITICAL: prefetch=1 → worker nhận task mới chỉ khi ack task cũ
-# Without this: round-robin assigns tasks even to busy workers
-channel.basic_qos(prefetch_count=1)
-
-def process_task(ch, method, properties, body):
-    task = json.loads(body)
-    print(f"[x] Processing task {task['id']}: {task['type']}")
-    
-    try:
-        if task['type'] == 'resize_image':
-            time.sleep(2)  # simulate heavy work
-        elif task['type'] == 'send_email':
-            time.sleep(0.5)
-        
-        # Manual ACK: confirm message processed
-        ch.basic_ack(delivery_tag=method.delivery_tag)
-        print(f"[✓] Done task {task['id']}")
-    
-    except Exception as e:
-        # NACK + requeue=False → send to DLX if configured
-        ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
-        print(f"[✗] Failed task {task['id']}: {e}")
-
-channel.basic_consume(queue='task_queue', on_message_callback=process_task, auto_ack=False)
-channel.start_consuming()
-```
-
-### 1.2 Fair Dispatch vs Round-Robin
-
-```
-Round-Robin (default, no prefetch):
-  Task 1 → Worker 1 (even if Worker 1 is busy with heavy task)
-  Task 2 → Worker 2
-  Task 3 → Worker 1 (still busy!)
-  Problem: load imbalance
-
-Fair Dispatch (prefetch_count=1):
-  Task 1 → Worker 1 (starts processing)
-  Task 2 → Worker 2 (starts processing)
-  Task 3 → Worker 2 (Worker 2 finished first → gets next task)
-  Result: even load based on capacity
-```
+> 💡 **Giải thích dễ hiểu**
+>
+> Exchange quyết định **message được nhân bản hay phân loại**. Queue quyết định **những consumer nào cạnh tranh cùng một bản message**.
+>
+> - Hai consumer cùng đọc **một queue**: chia việc, mỗi message thường chỉ tới một consumer.
+> - Hai consumer đọc **hai queue khác nhau** cùng bind vào exchange: mỗi queue nhận một bản, tạo pub/sub.
 
 ---
 
-## 2. Publish/Subscribe (Fanout)
+## 2. Work Queue – nhiều worker chia việc
 
-```python
-# publisher.py — broadcast events
-connection = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
-channel = connection.channel()
-channel.exchange_declare(exchange='events', exchange_type='fanout', durable=True)
+### 2.1 Luồng cơ bản
 
-event = {'type': 'user.registered', 'user_id': 123, 'email': 'alice@example.com'}
-channel.basic_publish(
-    exchange='events',
-    routing_key='',     # fanout ignores routing_key
-    body=json.dumps(event),
-    properties=pika.BasicProperties(
-        delivery_mode=2,
-        content_type='application/json',
-    )
-)
+```text
+Publisher ──► [orders.process]
+                    ├──► Worker A
+                    ├──► Worker B
+                    └──► Worker C
 ```
 
-```python
-# subscriber_email.py — one of many subscribers
-connection = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
-channel = connection.channel()
-channel.exchange_declare(exchange='events', exchange_type='fanout', durable=True)
-
-# Exclusive queue: auto-name, deleted when connection closes
-# Each subscriber gets its OWN queue bound to exchange
-result = channel.queue_declare(queue='', exclusive=True)
-queue_name = result.method.queue  # e.g., 'amq.gen-XNpRDt1f...'
-
-channel.queue_bind(exchange='events', queue=queue_name)
-
-def on_event(ch, method, properties, body):
-    event = json.loads(body)
-    print(f"[Email] Send welcome email to {event['email']}")
-    ch.basic_ack(delivery_tag=method.delivery_tag)
-
-channel.basic_consume(queue=queue_name, on_message_callback=on_event)
-channel.start_consuming()
-
-# subscriber_analytics.py — another subscriber, same exchange
-# ... same setup but different queue_name
-# → Both receive ALL events from the exchange
-```
-
----
-
-## 3. Topic Routing
-
-```python
-# Microservice event routing with topic exchange
-
-EXCHANGE = 'microservices'
-
-# Setup
-channel.exchange_declare(exchange=EXCHANGE, exchange_type='topic', durable=True)
-
-# Service: Order Service — interested in all order events
-channel.queue_declare(queue='order-service', durable=True)
-channel.queue_bind(exchange=EXCHANGE, queue='order-service', routing_key='order.#')
-
-# Service: Payment Service — interested in payment events
-channel.queue_declare(queue='payment-service', durable=True)
-channel.queue_bind(exchange=EXCHANGE, queue='payment-service', routing_key='order.payment.*')
-
-# Service: Notification Service — all critical events
-channel.queue_declare(queue='notification-service', durable=True)
-channel.queue_bind(exchange=EXCHANGE, queue='notification-service', routing_key='*.critical')
-channel.queue_bind(exchange=EXCHANGE, queue='notification-service', routing_key='user.*')
-
-# Service: Audit Log — everything
-channel.queue_declare(queue='audit-log', durable=True)
-channel.queue_bind(exchange=EXCHANGE, queue='audit-log', routing_key='#')
-
-# Events published by various services:
-events = [
-    ('order.created',           {'order_id': 1}),       # → order-service, audit-log
-    ('order.payment.completed', {'order_id': 1}),       # → order-service, payment-service, audit-log
-    ('order.payment.failed',    {'order_id': 1}),       # → order-service, payment-service, audit-log
-    ('order.critical',          {'order_id': 1}),       # → order-service, notification-service, audit-log
-    ('user.registered',         {'user_id': 2}),        # → notification-service, audit-log
-    ('inventory.updated',       {'product_id': 5}),     # → audit-log only
-]
-
-for routing_key, payload in events:
-    channel.basic_publish(
-        exchange=EXCHANGE,
-        routing_key=routing_key,
-        body=json.dumps(payload),
-        properties=pika.BasicProperties(delivery_mode=2)
-    )
-```
-
----
-
-## 4. Dead Letter Exchange (DLX)
-
-### 4.1 What & Why
-
-**Dead Letter** = message không thể xử lý thành công vì:
-- Consumer reject/nack với `requeue=False`
-- Message vượt quá TTL trong queue
-- Queue đạt `x-max-length` → message bị drop (nếu `x-overflow=reject-publish-dlx`)
-
-**DLX** = exchange nhận dead letters → route đến dead letter queue để:
-- Inspect failed messages
-- Manual retry / alert
-- Không mất message
-
-```
-Normal Flow:
-Producer → [task_queue] → Consumer (fails) → nack(requeue=False)
-                                            ↓
-                               Dead Letter Exchange
-                                            ↓
-                              [task_queue.dlq] → Admin/Retry Worker
-```
-
-### 4.2 Implementation
-
-```python
-import pika, json
-
-connection = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
-channel = connection.channel()
-
-# Step 1: Setup Dead Letter Exchange
-channel.exchange_declare(
-    exchange='dlx',
-    exchange_type='direct',
-    durable=True,
-)
-
-# Step 2: Setup Dead Letter Queue
-channel.queue_declare(
-    queue='task_queue.dlq',
-    durable=True,
-    arguments={
-        # DLQ messages can also expire/be re-dead-lettered
-        'x-message-ttl': 86400000,  # keep for 24 hours
-    }
-)
-channel.queue_bind(
-    exchange='dlx',
-    queue='task_queue.dlq',
-    routing_key='task_queue.failed'  # routing key for DLX
-)
-
-# Step 3: Main queue with DLX configured
-channel.queue_declare(
-    queue='task_queue',
-    durable=True,
-    arguments={
-        'x-dead-letter-exchange': 'dlx',
-        'x-dead-letter-routing-key': 'task_queue.failed',
-        'x-message-ttl': 30000,   # messages expire after 30s → also dead-lettered
-        'x-max-length': 10000,
-    }
-)
-
-# Consumer — NACK moves message to DLX
-def on_message(ch, method, properties, body):
-    task = json.loads(body)
-    
-    # Track retry count using custom header
-    headers = properties.headers or {}
-    retry_count = headers.get('x-retry-count', 0)
-    
-    try:
-        process_task(task)
-        ch.basic_ack(delivery_tag=method.delivery_tag)
-    
-    except TemporaryError as e:
-        if retry_count < 3:
-            # Requeue with incremented retry count
-            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
-            # Re-publish with updated header (simple retry logic)
-            channel.basic_publish(
-                exchange='',
-                routing_key='task_queue',
-                body=body,
-                properties=pika.BasicProperties(
-                    delivery_mode=2,
-                    headers={'x-retry-count': retry_count + 1},
-                )
-            )
-        else:
-            # Max retries → dead letter (nack without requeue)
-            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
-    
-    except PermanentError:
-        # Immediately dead letter
-        ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
-
-# DLQ Consumer — manual inspection / alerting
-def on_dead_letter(ch, method, properties, body):
-    headers = properties.headers or {}
-    print(f"[DLQ] Dead message received:")
-    print(f"  Original routing key: {headers.get('x-first-death-routing-key')}")
-    print(f"  Reason: {headers.get('x-first-death-reason')}")  # expired/rejected/maxlen
-    print(f"  Queue: {headers.get('x-first-death-queue')}")
-    print(f"  Body: {body}")
-    # Send alert, store in database, etc.
-    ch.basic_ack(delivery_tag=method.delivery_tag)
-```
-
-### 4.3 Retry Pattern với Delay (Using DLX + TTL)
-
-```python
-# Delayed retry: requeue after N seconds using DLX trick
-# Queue A (main) → NACK → DLX → Wait Queue (x-message-ttl=5000) → DLX → Queue A
-
-def setup_retry_queues(channel, queue_name, retry_delays_ms: list):
-    """
-    Create retry queues with exponential backoff:
-    retry_delays_ms = [5000, 30000, 300000] = 5s, 30s, 5min
-    """
-    main_exchange = f"{queue_name}.retry.fanout"
-    channel.exchange_declare(exchange=main_exchange, exchange_type='fanout', durable=True)
-    
-    for i, delay_ms in enumerate(retry_delays_ms):
-        wait_queue = f"{queue_name}.retry.{i}"
-        channel.queue_declare(
-            queue=wait_queue,
-            durable=True,
-            arguments={
-                'x-message-ttl': delay_ms,              # expire after delay
-                'x-dead-letter-exchange': main_exchange, # expired → back to main
-                'x-dead-letter-routing-key': queue_name,
-            }
-        )
-    
-    # Main queue receives from the retry exchange too
-    channel.queue_bind(exchange=main_exchange, queue=queue_name)
-
-def publish_with_retry(channel, queue_name, body, retry_count=0, max_retries=3):
-    retry_delays = [5000, 30000, 300000]  # 5s, 30s, 5min
-    
-    if retry_count < max_retries:
-        wait_queue = f"{queue_name}.retry.{retry_count}"
-        channel.basic_publish(
-            exchange='',
-            routing_key=wait_queue,
-            body=body,
-            properties=pika.BasicProperties(
-                delivery_mode=2,
-                headers={'x-retry-count': retry_count + 1},
-            )
-        )
-    else:
-        # Send to DLQ
-        channel.basic_publish(exchange='dlx', routing_key=f"{queue_name}.failed", body=body)
-```
-
----
-
-## 5. RPC Pattern
-
-### 5.1 What & How
-
-**RPC over RabbitMQ** = request/response pattern. Client gửi request → Server xử lý → trả response về client queue.
-
-```
-Client                        Server
-  │                             │
-  │── request ──────────────>   │
-  │   (reply_to=callback_queue) │
-  │   (correlation_id=123)      │
-  │                             │ process
-  │<── response ──────────────  │
-  │   (correlation_id=123)      │
-  │
-  │ Match correlation_id to pending request
-```
-
-```python
-# rpc_server.py
-import pika, json
-
-connection = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
-channel = connection.channel()
-channel.queue_declare(queue='rpc_queue', durable=True)
-channel.basic_qos(prefetch_count=1)
-
-def fibonacci(n):
-    if n < 0:
-        raise ValueError("Fibonacci must be non-negative")
-    if n == 0: return 0
-    if n == 1: return 1
-    return fibonacci(n-1) + fibonacci(n-2)
-
-def on_request(ch, method, props, body):
-    request = json.loads(body)
-    print(f"[RPC] Request: {request}")
-    
-    try:
-        result = fibonacci(request['n'])
-        response = {'result': result, 'error': None}
-    except Exception as e:
-        response = {'result': None, 'error': str(e)}
-    
-    # Send response to reply_to queue with matching correlation_id
-    ch.basic_publish(
-        exchange='',
-        routing_key=props.reply_to,          # client's callback queue
-        body=json.dumps(response),
-        properties=pika.BasicProperties(
-            correlation_id=props.correlation_id,  # echo back for matching
-        )
-    )
-    ch.basic_ack(delivery_tag=method.delivery_tag)
-
-channel.basic_consume(queue='rpc_queue', on_message_callback=on_request)
-channel.start_consuming()
-```
-
-```python
-# rpc_client.py
-import pika, json, uuid, threading
-
-class RpcClient:
-    def __init__(self):
-        self.connection = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
-        self.channel = self.connection.channel()
-        
-        # Exclusive callback queue for this client
-        result = self.channel.queue_declare(queue='', exclusive=True)
-        self.callback_queue = result.method.queue
-        
-        self.pending = {}  # correlation_id → threading.Event + result
-        
-        # Start consuming responses
-        self.channel.basic_consume(
-            queue=self.callback_queue,
-            on_message_callback=self._on_response,
-            auto_ack=True,
-        )
-        
-        # Non-blocking consume in background thread
-        self._thread = threading.Thread(target=self._consume_loop, daemon=True)
-        self._thread.start()
-    
-    def _consume_loop(self):
-        self.connection.process_data_events(time_limit=None)
-    
-    def _on_response(self, ch, method, props, body):
-        corr_id = props.correlation_id
-        if corr_id in self.pending:
-            event, container = self.pending[corr_id]
-            container['response'] = json.loads(body)
-            event.set()
-    
-    def call(self, payload: dict, timeout: float = 30.0) -> dict:
-        corr_id = str(uuid.uuid4())
-        event = threading.Event()
-        container = {}
-        self.pending[corr_id] = (event, container)
-        
-        self.channel.basic_publish(
-            exchange='',
-            routing_key='rpc_queue',
-            body=json.dumps(payload),
-            properties=pika.BasicProperties(
-                reply_to=self.callback_queue,
-                correlation_id=corr_id,
-                expiration='30000',  # request TTL
-            )
-        )
-        
-        if not event.wait(timeout):
-            del self.pending[corr_id]
-            raise TimeoutError(f"RPC timeout after {timeout}s")
-        
-        del self.pending[corr_id]
-        return container['response']
-
-# Usage
-client = RpcClient()
-response = client.call({'n': 30})
-print(f"Fibonacci(30) = {response['result']}")  # 832040
-```
-
-### 5.2 Java RPC (Spring AMQP)
+Các worker là **competing consumers**: RabbitMQ giao mỗi delivery cho một consumer. Khi một worker ack, message đó hoàn tất; các worker còn lại không nhận lại cùng delivery.
 
 ```java
-// RPC Server
-@Component
-public class FibonacciServer {
-    
-    @RabbitListener(queues = "rpc_queue")
-    public String fibonacci(@Payload String requestJson,
-                             @Header(AmqpHeaders.CORRELATION_ID) String correlationId,
-                             @Header(AmqpHeaders.REPLY_TO) String replyTo) {
-        
-        Map<String, Object> request = objectMapper.readValue(requestJson, Map.class);
-        int n = (Integer) request.get("n");
-        
-        Map<String, Object> response = new HashMap<>();
-        response.put("result", fib(n));
-        response.put("correlationId", correlationId);
-        
-        return objectMapper.writeValueAsString(response);
-    }
-    
-    private long fib(int n) {
-        if (n <= 1) return n;
-        return fib(n-1) + fib(n-2);
-    }
-}
+import com.rabbitmq.client.Channel;
+import com.rabbitmq.client.DeliverCallback;
 
-// RPC Client
-@Service
-public class FibonacciClient {
-    
-    @Autowired
-    private RabbitTemplate rabbitTemplate;
-    
-    public Long fibonacci(int n) {
-        Map<String, Object> request = Map.of("n", n);
-        
-        // RabbitTemplate.convertSendAndReceive = publish + wait for reply
-        Object result = rabbitTemplate.convertSendAndReceive(
-            "rpc_queue",
-            objectMapper.writeValueAsString(request)
-        );  // blocks up to replyTimeout (default 5s)
-        
-        Map<String, Object> response = objectMapper.readValue(
-            (String) result, Map.class
-        );
-        return Long.valueOf(response.get("result").toString());
+Channel channel = connection.createChannel();
+
+channel.queueDeclare(
+    "orders.process",
+    true,
+    false,
+    false,
+    Map.of("x-queue-type", "quorum")
+);
+
+// RabbitMQ áp giới hạn này riêng cho mỗi consumer mới trên channel.
+channel.basicQos(16);
+
+DeliverCallback callback = (consumerTag, delivery) -> {
+    long tag = delivery.getEnvelope().getDeliveryTag();
+    String body = new String(
+        delivery.getBody(),
+        java.nio.charset.StandardCharsets.UTF_8
+    );
+
+    try {
+        orderHandler.processIdempotently(body);
+        channel.basicAck(tag, false);
+    } catch (NonRetryableException e) {
+        channel.basicReject(tag, false);
+    } catch (Exception e) {
+        channel.basicReject(tag, true);
     }
+};
+
+channel.basicConsume(
+    "orders.process",
+    false,
+    callback,
+    consumerTag -> System.err.println("Consumer bị hủy: " + consumerTag)
+);
+```
+
+### 2.2 Prefetch không đồng nghĩa với số thread
+
+Prefetch là số delivery chưa ack tối đa broker có thể đẩy trước cho **mỗi consumer**.
+
+```text
+prefetch = 1
+Worker A: [đang xử lý 1]
+Worker B: [đang xử lý 1]
+
+prefetch = 16
+Worker A: [1 đang xử lý + tối đa 15 đang chờ trong client]
+Worker B: [1 đang xử lý + tối đa 15 đang chờ trong client]
+```
+
+- `1` thường công bằng hơn với task có thời gian chênh lệch lớn, nhưng có thể giảm throughput.
+- Giá trị gần mức concurrency thực tế cộng một cửa sổ nhỏ thường là điểm bắt đầu tốt.
+- `0` nghĩa là không giới hạn, dễ làm client tích backlog trong memory.
+- Prefetch cao làm message rời trạng thái `ready` để sang `unacknowledged`, nên broker khó chuyển chúng cho worker khác.
+
+Không có một con số đúng cho mọi hệ thống. Hãy đo processing latency, message size, network round-trip và mức lệch tải giữa worker.
+
+### 2.3 Khi cần giữ thứ tự: Single Active Consumer
+
+Competing consumers làm tăng throughput nhưng không bảo đảm side effect hoàn tất theo đúng thứ tự. Nếu một queue chỉ được xử lý bởi một consumer tại một thời điểm và vẫn cần standby tự động:
+
+```java
+Map<String, Object> arguments = new HashMap<>();
+arguments.put("x-queue-type", "quorum");
+arguments.put("x-single-active-consumer", true);
+
+channel.queueDeclare(
+    "accounting.entries",
+    true,
+    false,
+    false,
+    arguments
+);
+```
+
+Nhiều consumer vẫn đăng ký, nhưng broker chỉ giao cho một consumer active. Khi nó mất kết nối, một consumer chờ sẽ tiếp quản.
+
+SAC giúp giữ thứ tự delivery trên một queue, nhưng không tự bảo đảm thứ tự nghiệp vụ nếu:
+
+- consumer xử lý song song bên trong;
+- message bị retry/redelivery;
+- publisher gửi sai thứ tự;
+- một transaction bên ngoài hoàn tất lệch thứ tự.
+
+Nếu cần vừa scale vừa giữ thứ tự theo `orderId`, hãy hash theo entity vào nhiều queue shard và bật SAC trên từng shard.
+
+---
+
+## 3. Publish/Subscribe – mỗi subscriber một bản sao
+
+### 3.1 Fanout exchange
+
+```text
+                             ┌──► [email.user-events] ──► Email Service
+Publisher ──► (user.events) ─┼──► [crm.user-events] ───► CRM Service
+                             └──► [audit.user-events] ──► Audit Service
+```
+
+Fanout exchange bỏ qua routing key và route message tới mọi queue đã bind.
+
+```java
+channel.exchangeDeclare(
+    "user.events",
+    com.rabbitmq.client.BuiltinExchangeType.FANOUT,
+    true
+);
+
+for (String queue : List.of(
+    "email.user-events",
+    "crm.user-events",
+    "audit.user-events"
+)) {
+    channel.queueDeclare(
+        queue,
+        true,
+        false,
+        false,
+        Map.of("x-queue-type", "quorum")
+    );
+    channel.queueBind(queue, "user.events", "");
 }
 ```
+
+Ba queue tạo ba bản logic độc lập. Email Service ack message của nó không xóa bản trong queue CRM hoặc Audit.
+
+### 3.2 Queue tạm hay queue durable?
+
+| Loại subscription | Topology | Khi subscriber offline |
+|---|---|---|
+| Chỉ quan tâm event khi đang online | Server-named, exclusive queue | Queue biến mất; event mới không được giữ cho subscriber |
+| Service phải xử lý mọi event | Durable queue riêng cho service | Message tiếp tục chờ trong queue |
+| N instance cùng một service chia tải | Một durable queue, nhiều consumer | Các instance cạnh tranh message trong queue đó |
+
+Queue tạm:
+
+```java
+String temporaryQueue = channel.queueDeclare(
+    "",
+    false,
+    true,
+    true,
+    null
+).getQueue();
+
+channel.queueBind(temporaryQueue, "user.events", "");
+```
+
+> Durable exchange không tự giữ lịch sử. Nếu lúc publish không có queue nào được bind, fanout message không có nơi lưu và sẽ bị loại, trừ khi có alternate exchange phù hợp.
+
+---
+
+## 4. Routing – Direct, Topic và Headers
+
+### 4.1 Direct hay Topic?
+
+| Nhu cầu | Binding | Exchange |
+|---|---|---|
+| Khớp đúng một loại | `invoice.created` | Direct |
+| Một service nhận cả nhóm event | `invoice.#` | Topic |
+| Khớp đúng một segment | `invoice.*` | Topic |
+| Lọc theo metadata không phù hợp routing key | `format=pdf`, `region=apac` | Headers |
+
+```java
+channel.exchangeDeclare(
+    "commerce.events",
+    com.rabbitmq.client.BuiltinExchangeType.TOPIC,
+    true
+);
+
+channel.queueBind(
+    "billing.events",
+    "commerce.events",
+    "order.payment.#"
+);
+channel.queueBind(
+    "notification.events",
+    "commerce.events",
+    "*.critical"
+);
+channel.queueBind(
+    "audit.events",
+    "commerce.events",
+    "#"
+);
+```
+
+Ví dụ kết quả:
+
+| Routing key | Billing | Notification | Audit |
+|---|---:|---:|---:|
+| `order.payment.completed` | ✓ |  | ✓ |
+| `order.payment.failed` | ✓ |  | ✓ |
+| `order.critical` |  | ✓ | ✓ |
+| `user.registered` |  |  | ✓ |
+
+### 4.2 Quy ước routing key
+
+Một quy ước dễ mở rộng:
+
+```text
+<bounded-context>.<entity>.<event>
+
+commerce.order.created
+commerce.order.cancelled
+billing.payment.failed
+identity.user.registered
+```
+
+Khuyến nghị:
+
+- dùng từ ổn định mang ý nghĩa nghiệp vụ, không dùng tên class Java;
+- dùng lowercase và dấu chấm;
+- đặt schema version trong payload/property thay vì thay routing key cho mọi thay đổi tương thích;
+- không đưa PII hoặc secret vào routing key vì nó xuất hiện trong log/metric/topology;
+- kiểm thử binding như kiểm thử API contract.
+
+Headers exchange linh hoạt nhưng khó quan sát hơn topic routing. Chỉ dùng khi nhiều chiều lọc không thể biểu diễn rõ bằng một routing key.
+
+---
+
+## 5. Retry, Dead Letter và Poison Message
+
+### 5.1 Phân loại lỗi trước khi retry
+
+| Loại lỗi | Ví dụ | Hành động |
+|---|---|---|
+| Tạm thời theo message/entity | HTTP 429 cho một tenant, row lock | Trả message với delayed retry |
+| Downstream hỏng toàn cục | Database ngừng hoạt động | Pause consumer/circuit breaker; không retry nóng từng message |
+| Không thể sửa bằng retry | Schema sai, tài khoản không tồn tại | Reject không requeue → DLQ |
+| Bug/poison message | Luôn làm consumer crash | Delivery limit → DLQ và alert |
+
+> Retry không chữa được lỗi vĩnh viễn. Nó chỉ đổi **thời điểm thử lại** và luôn cần giới hạn.
+
+### 5.2 RabbitMQ 4.3: delayed retry native cho quorum queue
+
+RabbitMQ 4.3 có thể giữ message bị trả lại ngay bên trong quorum queue cho đến khi hết delay. Không cần publish sang wait queue rồi quay lại.
+
+```text
+                    temporary failure
+Consumer ── reject(requeue=true) ──► Quorum Queue
+                                         │
+                                giữ riêng trong thời gian delay
+                                         │
+                                         └──► available for redelivery
+```
+
+Cấu hình bằng policy:
+
+```bash
+rabbitmqctl set_policy \
+  --vhost production \
+  order-retry \
+  '^orders\.process$' \
+  '{
+    "delayed-retry-type": "all",
+    "delayed-retry-min": 5000,
+    "delayed-retry-max": 300000,
+    "delivery-limit": 5,
+    "dead-letter-exchange": "orders.dlx",
+    "dead-letter-routing-key": "orders.failed"
+  }' \
+  --priority 10 \
+  --apply-to quorum_queues
+```
+
+Backoff tuyến tính:
+
+```text
+delay = min(delayed-retry-min × delivery-count, delayed-retry-max)
+
+Lần thất bại 1:   5 giây
+Lần thất bại 2:  10 giây
+Lần thất bại 3:  15 giây
+...
+Tối đa:          300 giây
+```
+
+Với AMQP 0-9-1 trên RabbitMQ 4.3:
+
+- `basic.reject(requeue=true)` biểu thị delivery thất bại, tăng `x-delivery-count`; phù hợp khi muốn `delivery-limit` chặn poison message.
+- `basic.nack(requeue=true)` trả message nhưng không đánh dấu lần xử lý là failed trong mô hình đếm mới; có thể không tiến tới delivery limit.
+- `delayed-retry-type=all` áp delay cho cả hai kiểu return, nhưng ứng dụng vẫn phải chọn đúng semantics để giới hạn retry hoạt động như mong muốn.
+
+Consumer:
+
+```java
+try {
+    handler.processIdempotently(message);
+    channel.basicAck(tag, false);
+} catch (RetryableException e) {
+    // Failed attempt: queue áp delayed retry; delivery limit bảo vệ vòng lặp.
+    channel.basicReject(tag, true);
+} catch (NonRetryableException e) {
+    // Không thử lại: dead-letter ngay nếu DLX đã cấu hình.
+    channel.basicReject(tag, false);
+}
+```
+
+Khi số lần failed vượt `delivery-limit`, quorum queue dead-letter message nếu có DLX; nếu không, message bị loại. Vì vậy queue quan trọng nên có DLQ và alarm.
+
+### 5.3 Khi nào một message trở thành dead letter?
+
+Các nguyên nhân phổ biến:
+
+- consumer `basic.reject` hoặc `basic.nack` với `requeue=false`;
+- message hết TTL;
+- queue vượt length limit theo cơ chế loại message;
+- quorum queue vượt delivery limit.
+
+```text
+[orders.process] ── dead-letter ──► (orders.dlx)
+                                          │ orders.failed
+                                          ▼
+                                  [orders.process.dlq]
+```
+
+Nên dùng policy thay vì hard-code DLX trong application:
+
+```bash
+rabbitmqctl set_policy \
+  --vhost production \
+  order-dlx \
+  '^orders\.process$' \
+  '{
+    "dead-letter-exchange": "orders.dlx",
+    "dead-letter-routing-key": "orders.failed"
+  }' \
+  --apply-to queues
+```
+
+RabbitMQ thêm lịch sử vào header `x-death`. Đây là một **mảng các record được nén theo cặp queue/reason**, không phải một số retry đơn giản do ứng dụng tự tăng.
+
+Các bẫy quan trọng:
+
+- DLX phải tồn tại lúc dead-letter; nếu không, message có thể bị loại âm thầm.
+- Mặc định broker republish dead letter mà không bật publisher confirms nội bộ, nên transfer sang target queue không tuyệt đối an toàn.
+- Quorum queue hỗ trợ cấu hình at-least-once dead-lettering; chi tiết thuộc bài reliability.
+- Dead-letter cycle có thể hình thành nếu routing quay lại queue cũ. RabbitMQ phát hiện một số cycle, nhưng topology vẫn phải được thiết kế rõ ràng.
+
+### 5.4 Retry kiểu cũ bằng TTL + DLX
+
+Trước RabbitMQ 4.3, hoặc với classic queue, thường tạo các retry bucket:
+
+```text
+[orders.process]
+       │ lỗi tạm thời
+       ▼
+[orders.retry.5s] ── TTL ──► exchange chính ──► [orders.process]
+
+[orders.retry.30s] ─ TTL ──► exchange chính ──► [orders.process]
+
+[orders.retry.5m] ── TTL ──► exchange chính ──► [orders.process]
+```
+
+Mỗi retry queue dùng queue-level TTL cố định và DLX quay về exchange chính. Cách này vẫn hữu ích cho version cũ nhưng có nhiều topology, ghi message nhiều lần và khó bảo đảm atomic giữa “publish bản retry” với “ack bản gốc”.
+
+Nếu consumer tự republish:
+
+1. Publish bản retry với publisher confirm.
+2. Chỉ ack bản gốc sau khi nhận confirm.
+3. Chấp nhận rằng connection có thể mất sau confirm nhưng trước ack, tạo duplicate.
+4. Consumer bắt buộc idempotent.
+
+Không làm như sau:
+
+```text
+nack(requeue=false) bản gốc sang DLX
+             +
+publish thêm một bản vào retry queue
+             =
+có thể tồn tại hai bản message
+```
+
+### 5.5 Retry không phải scheduling
+
+Delayed retry của quorum queue 4.3 dành cho **message đã được giao rồi bị trả lại**, không phải API tổng quát để publisher lên lịch một message mới vào ngày mai.
+
+Community plugin `rabbitmq_delayed_message_exchange` đã bị deprecate và repository bị archive; bản cuối nhắm RabbitMQ 4.2. Không nên chọn nó cho thiết kế RabbitMQ 4.3 mới.
+
+Với lịch nghiệp vụ dài hạn như “gửi email sau 7 ngày”, dùng:
+
+- database/outbox chứa `execute_at` cùng scheduler;
+- Quartz/Spring Scheduler với persistent job store;
+- dịch vụ scheduling chuyên dụng;
+- tính năng thương mại phù hợp nếu tổ chức dùng Tanzu RabbitMQ.
 
 ---
 
 ## 6. Priority Queue
 
-```python
-# Priority Queue: higher priority messages delivered first
-channel.queue_declare(
-    queue='priority_tasks',
-    durable=True,
-    arguments={
-        'x-max-priority': 10,  # max priority level (0-10)
-        # Keep small: each priority level = separate data structure
-    }
-)
+Priority chỉ có tác dụng với message còn **ready trong queue**. Message đã được prefetch vào client không bị “giành lại” khi message ưu tiên cao xuất hiện.
 
-# Publish with priority
-def publish_priority(channel, task: dict, priority: int):
-    channel.basic_publish(
-        exchange='',
-        routing_key='priority_tasks',
-        body=json.dumps(task),
-        properties=pika.BasicProperties(
-            delivery_mode=2,
-            priority=priority,  # 0 = lowest, 10 = highest
-        )
-    )
+### 6.1 Classic queue
 
-# Publish various priority tasks
-publish_priority(channel, {'type': 'batch_report', 'id': 1}, priority=1)    # low
-publish_priority(channel, {'type': 'email_send', 'id': 2}, priority=5)      # medium
-publish_priority(channel, {'type': 'payment_process', 'id': 3}, priority=9) # high
-publish_priority(channel, {'type': 'fraud_check', 'id': 4}, priority=10)    # critical
+Classic queue phải khai báo `x-max-priority`; RabbitMQ khuyến nghị số mức nhỏ, thường 2–4:
 
-# Consumer receives in priority order: fraud_check → payment → email → report
-# NOTE: Priority only works when messages are QUEUED (not if consumed immediately)
-# Set prefetch_count > 1 for priority to be effective
-channel.basic_qos(prefetch_count=10)
+```java
+channel.queueDeclare(
+    "tasks.priority.classic",
+    true,
+    false,
+    false,
+    Map.of("x-max-priority", 4)
+);
 ```
+
+Mỗi mức tạo thêm chi phí CPU/memory. Giá trị lớn hơn max sẽ bị clamp về max; message không có property priority được xem là `0`.
+
+### 6.2 Quorum queue trong RabbitMQ 4.3
+
+Quorum queue 4.3 luôn bật sẵn 32 mức strict priority từ `0` đến `31`; không cần và không dùng `x-max-priority`.
+Giá trị ngoài khoảng này bị clamp; message không đặt priority được xem là mức `4`.
+
+```java
+channel.queueDeclare(
+    "tasks.priority.quorum",
+    true,
+    false,
+    false,
+    Map.of("x-queue-type", "quorum")
+);
+
+AMQP.BasicProperties properties = new AMQP.BasicProperties.Builder()
+    .deliveryMode(2)
+    .priority(20)
+    .build();
+
+channel.basicPublish(
+    "",
+    "tasks.priority.quorum",
+    properties,
+    payload
+);
+```
+
+Trước RabbitMQ 4.3, quorum queue chỉ có hai nhóm priority tương đối. Khi vận hành cluster hỗn hợp trong quá trình upgrade, không giả định semantics 32 mức cho đến khi hoàn tất nâng cấp theo hướng dẫn.
+
+### 6.3 Khi nào không nên dùng priority?
+
+Ba queue `tasks.high`, `tasks.normal`, `tasks.low` thường dễ:
+
+- đặt consumer capacity và SLO riêng;
+- quan sát backlog theo class;
+- tránh low-priority starvation;
+- scale độc lập;
+- reasoning rõ hơn khi retry.
+
+Priority queue phù hợp khi thực sự cần một queue chung và chấp nhận ordering không còn FIFO tuyệt đối.
 
 ---
 
-## 7. Consistent Hashing Exchange
+## 7. Partition theo entity bằng Hash Exchange
+
+### 7.1 Built-in Modulus Hash Exchange
+
+RabbitMQ 4.3 có exchange type built-in `x-modulus-hash`, hash routing key rồi chọn một destination theo `hash mod N`.
+
+```text
+routing key = order-123 ─┐
+routing key = order-123 ─┼──► [orders.shard.2]
+routing key = order-987 ─┘                 khác hash ──► [orders.shard.0]
+```
+
+```java
+channel.exchangeDeclare(
+    "orders.partitioned",
+    "x-modulus-hash",
+    true
+);
+
+for (int i = 0; i < 8; i++) {
+    String queue = "orders.shard." + i;
+    Map<String, Object> args = new HashMap<>();
+    args.put("x-queue-type", "quorum");
+    args.put("x-single-active-consumer", true);
+
+    channel.queueDeclare(queue, true, false, false, args);
+
+    // Binding key không tham gia phép hash của modulus exchange.
+    channel.queueBind(queue, "orders.partitioned", "shard-" + i);
+}
+
+channel.basicPublish(
+    "orders.partitioned",
+    "order-123",
+    properties,
+    body
+);
+```
+
+Khi bindings không đổi, cùng routing key luôn tới cùng queue, kể cả sau restart. Nhưng khi thay số queue `N`, gần như toàn bộ key có thể bị remap.
+
+### 7.2 Consistent Hash Exchange plugin
+
+Plugin `rabbitmq_consistent_hash_exchange` dùng hash ring để giảm số key bị remap khi thêm/bớt destination:
 
 ```bash
-# Plugin: rabbitmq_consistent_hash_exchange
-# Route messages consistently based on routing key hash
-# Useful for: ensure related messages go to same queue (ordering per entity)
-
 rabbitmq-plugins enable rabbitmq_consistent_hash_exchange
-
-# Declare exchange
-channel.exchange_declare(
-    exchange='consistent_hash',
-    exchange_type='x-consistent-hash',
-    durable=True,
-)
-
-# Bind queues with weight (higher weight = more messages)
-# Weight is the routing_key of the binding (not of the message!)
-channel.queue_bind(exchange='consistent_hash', queue='queue1', routing_key='1')  # weight 1
-channel.queue_bind(exchange='consistent_hash', queue='queue2', routing_key='2')  # weight 2 (2x more)
-channel.queue_bind(exchange='consistent_hash', queue='queue3', routing_key='1')  # weight 1
-
-# Messages with same routing_key ALWAYS go to same queue
-# Good for: user-specific ordering (all events for user:123 → same queue)
-channel.basic_publish(
-    exchange='consistent_hash',
-    routing_key='user:123',  # always same queue
-    body=json.dumps({'action': 'purchase', 'user_id': 123})
-)
 ```
+
+```java
+channel.exchangeDeclare(
+    "orders.consistent",
+    "x-consistent-hash",
+    true
+);
+
+// Binding key là weight trong consistent-hash exchange.
+channel.queueBind("orders.shard.0", "orders.consistent", "1");
+channel.queueBind("orders.shard.1", "orders.consistent", "1");
+channel.queueBind("orders.shard.2", "orders.consistent", "1");
+```
+
+| Tiêu chí | Modulus Hash | Consistent Hash |
+|---|---|---|
+| Cài đặt | Built-in | Cần plugin |
+| Topology tĩnh | Đơn giản, ổn định | Dùng được |
+| Thêm/bớt shard | Remap phần lớn key | Remap ít key hơn |
+| Weight | Bind trùng queue với dummy keys | Binding key là weight |
+
+Hash chỉ bảo đảm route cùng key vào cùng queue khi topology ổn định. Muốn giữ processing order còn cần SAC hoặc một processing lane tuần tự trên mỗi shard, idempotency và chiến lược retry phù hợp.
 
 ---
 
-## 8. Delayed Messaging Plugin
+## 8. Request/Reply (RPC)
 
-```bash
-# Plugin: rabbitmq_delayed_message_exchange
-rabbitmq-plugins enable rabbitmq_delayed_message_exchange
+### 8.1 Luồng
+
+```text
+Requester                                      Responder
+    │                                              │
+    ├── request ──► [rpc.orders] ─────────────────►│
+    │   reply_to=client.reply                      │ xử lý
+    │   correlation_id=abc                         │
+    │                                              │
+    │◄──────────── [client.reply] ◄── response ────┤
+    │              correlation_id=abc              │
 ```
 
-```python
-# Send message with a delay
-channel.exchange_declare(
-    exchange='delayed',
-    exchange_type='x-delayed-message',
-    durable=True,
-    arguments={'x-delayed-type': 'direct'}  # underlying routing
-)
+- `reply_to` cho responder biết nơi gửi response.
+- `correlation_id` giúp requester ghép response với request đang chờ.
+- Một reply queue dùng lại cho nhiều request hiệu quả hơn tạo queue cho từng request.
 
-channel.queue_declare(queue='scheduled_tasks', durable=True)
-channel.queue_bind(exchange='delayed', queue='scheduled_tasks', routing_key='scheduled')
+Java client có lớp tiện ích; cấu hình timeout và `mandatory` ngay từ đầu:
 
-# Publish with delay header
-def publish_delayed(channel, body: dict, delay_ms: int):
-    channel.basic_publish(
-        exchange='delayed',
-        routing_key='scheduled',
-        body=json.dumps(body),
-        properties=pika.BasicProperties(
-            delivery_mode=2,
-            headers={'x-delay': delay_ms},  # delay in milliseconds
-        )
-    )
+```java
+com.rabbitmq.client.RpcClientParams params =
+    new com.rabbitmq.client.RpcClientParams()
+        .channel(channel)
+        .exchange("")
+        .routingKey("rpc.orders")
+        .timeout(5_000)
+        .useMandatory();
 
-# Schedule for later
-publish_delayed(channel, {'type': 'reminder', 'user_id': 123}, delay_ms=3600000)  # 1 hour
-publish_delayed(channel, {'type': 'trial_expire', 'user_id': 456}, delay_ms=86400000)  # 24h
+try (com.rabbitmq.client.RpcClient rpc =
+         new com.rabbitmq.client.RpcClient(params)) {
+    String response = rpc.stringCall(requestJson);
+}
 ```
+
+Trong ứng dụng thực tế cần đặt timeout và giới hạn số request đang chờ. Không để thread chờ vô hạn.
+
+### 8.2 Failure semantics thường bị che giấu
+
+```text
+Responder xử lý xong
+    ├── publish response thành công
+    └── chết trước khi ack request
+
+Request được redeliver → xử lý lại → response có thể xuất hiện lần hai
+```
+
+Vì vậy:
+
+- operation phía responder nên idempotent;
+- requester phải chấp nhận response trùng và bỏ correlation ID không còn chờ;
+- timeout chỉ có nghĩa “chưa thấy response đúng hạn”, không chứng minh request chưa chạy;
+- retry request sau timeout có thể thực thi nghiệp vụ lần hai;
+- nên có request ID nghiệp vụ, deadline và trạng thái lỗi rõ ràng.
+
+RPC qua broker làm lời gọi từ xa trông giống hàm cục bộ nhưng latency và failure hoàn toàn khác. Nếu không thật sự cần phản hồi đồng bộ, pipeline event bất đồng bộ thường dễ vận hành hơn.
+
+### 8.3 Reply queue hay Direct Reply-To?
+
+| Cách nhận response | Đặc điểm | Dùng khi |
+|---|---|---|
+| Exclusive reply queue dùng lại | Có buffer trong lúc connection còn sống | RPC client thông thường |
+| Durable/non-exclusive reply queue | Response có thể chờ khi client tạm mất kết nối | Tác vụ dài, mất reply không chấp nhận được |
+| Direct Reply-To | Không tạo queue, zero-buffer, at-most-once | Nhiều client, reply mất có thể retry |
+
+Direct Reply-To dùng pseudo-queue `amq.rabbitmq.reply-to`. Reply bị mất nếu requester disconnect và không được broker lưu. Nó tối ưu resource, không tăng durability.
 
 ---
 
-## 9. Alternate Exchange
+## 9. Alternate Exchange và `mandatory`
 
-```python
-# Alternate Exchange: catch unroutable messages
-# When a message has no matching queue binding → sent to alternate exchange
+Alternate exchange xử lý message mà exchange chính không route được:
 
-channel.exchange_declare(exchange='main', exchange_type='direct', durable=True,
-    arguments={'alternate-exchange': 'unrouted'})
+```java
+channel.exchangeDeclare(
+    "commerce.commands",
+    com.rabbitmq.client.BuiltinExchangeType.DIRECT,
+    true,
+    false,
+    Map.of("alternate-exchange", "commerce.unrouted")
+);
 
-channel.exchange_declare(exchange='unrouted', exchange_type='fanout', durable=True)
+channel.exchangeDeclare(
+    "commerce.unrouted",
+    com.rabbitmq.client.BuiltinExchangeType.FANOUT,
+    true
+);
 
-channel.queue_declare(queue='main_queue', durable=True)
-channel.queue_bind(exchange='main', queue='main_queue', routing_key='known_key')
-
-channel.queue_declare(queue='catch_all', durable=True)
-channel.queue_bind(exchange='unrouted', queue='catch_all')
-
-# Message with unknown routing key → goes to 'catch_all' via 'unrouted' exchange
-channel.basic_publish(exchange='main', routing_key='unknown_key', body='test')
+channel.queueDeclare(
+    "commerce.unrouted.queue",
+    true,
+    false,
+    false,
+    Map.of("x-queue-type", "quorum")
+);
+channel.queueBind(
+    "commerce.unrouted.queue",
+    "commerce.unrouted",
+    ""
+);
 ```
+
+| Cơ chế | Ai xử lý? | Phù hợp khi |
+|---|---|---|
+| `mandatory=true` + return callback | Publisher | Publisher cần biết ngay và tự quyết định |
+| Alternate exchange | Broker topology | Muốn gom message unroutable để quan sát/xử lý tập trung |
+
+Nếu alternate exchange route được message, publisher không nhận `basic.return`. Nếu alternate exchange cũng không route được, message vẫn có thể bị loại. Publish vào exchange **không tồn tại** là channel error, alternate exchange không cứu được trường hợp này.
 
 ---
 
 ## 10. Exchange-to-Exchange Binding
 
-```python
-# E2E binding: chain exchanges for complex routing
+Một exchange có thể bind tới exchange khác để tái sử dụng routing:
 
-# Source exchange: receives all events
-channel.exchange_declare(exchange='all_events', exchange_type='topic', durable=True)
-
-# Sub-exchange: only payment events
-channel.exchange_declare(exchange='payment_events', exchange_type='fanout', durable=True)
-
-# Bind exchange to exchange!
-channel.exchange_bind(
-    destination='payment_events',
-    source='all_events',
-    routing_key='payment.*',  # filter
-)
-
-# Queues bound to sub-exchange
-channel.queue_bind(exchange='payment_events', queue='payment_service')
-channel.queue_bind(exchange='payment_events', queue='payment_analytics')
-
-# Publisher sends to source exchange
-channel.basic_publish(exchange='all_events', routing_key='payment.completed', body='...')
-# → matches 'payment.*' → routed to payment_events → fanout → both queues
+```text
+                         payment.#
+(all.events / topic) ───────────────► (payment.events / fanout)
+      │                                         ├──► payment-service
+      │ #                                       └──► payment-audit
+      └──────────────────────────────► audit-all
 ```
+
+```java
+channel.exchangeDeclare(
+    "all.events",
+    com.rabbitmq.client.BuiltinExchangeType.TOPIC,
+    true
+);
+channel.exchangeDeclare(
+    "payment.events",
+    com.rabbitmq.client.BuiltinExchangeType.FANOUT,
+    true
+);
+
+channel.exchangeBind(
+    "payment.events", // destination
+    "all.events",     // source
+    "payment.#"
+);
+```
+
+Exchange-to-exchange binding giúp tách routing chung và routing theo domain, nhưng topology nhiều tầng khó debug. Cần naming, sơ đồ, owner và kiểm thử route tự động.
 
 ---
 
-## Ghi chú – Topics tiếp theo
+## 11. Các anti-pattern thường gặp
 
-- **Publisher Confirms**: guarantee messages reach broker → `rabbitmq_reliability.md`
-- **Consumer Acks**: guarantee processing → `rabbitmq_reliability.md`
-- **Message durability**: survive restarts → `rabbitmq_reliability.md`
-- **Prefetch & QoS**: flow control → `rabbitmq_reliability.md`
-- **Transactions (AMQP tx)**: → `rabbitmq_reliability.md`
-- **Clustering**: → `rabbitmq_production.md`
-- **Quorum Queues**: Raft replication → `rabbitmq_production.md`
-- **Spring AMQP deep dive**: @RabbitListener, error handlers → `rabbitmq_production.md`
+### Một queue khổng lồ cho mọi loại việc
+
+Task nhanh bị chặn sau task chậm, không scale/SLO riêng được. Tách queue theo workload và priority class có ý nghĩa.
+
+### `requeue=true` ngay lập tức cho mọi exception
+
+Tạo hot loop, tăng CPU/network và làm consumer không xử lý message khác. Phân loại lỗi, delayed retry và delivery limit.
+
+### Một fanout subscriber dùng queue tạm nhưng kỳ vọng nhận event lúc offline
+
+Queue exclusive biến mất cùng connection. Dùng durable queue riêng nếu cần catch up.
+
+### Retry bằng cách nack sang DLX rồi publish thêm bản mới
+
+Có thể tạo hai bản. Chọn một state machine retry rõ ràng và luôn idempotent.
+
+### Dùng priority để chữa thiết kế queue kém
+
+Nhiều queue với capacity riêng thường dễ hiểu và vận hành hơn hàng chục mức priority.
+
+### Dùng RPC cho workflow dài
+
+Requester giữ thread và timeout trong khi server vẫn chạy. Với workflow dài, trả task ID rồi publish completion event hoặc cho client polling trạng thái.
+
+### Tin rằng cùng queue đồng nghĩa xử lý đúng thứ tự
+
+Competing consumer, prefetch, retry và xử lý song song đều có thể làm thứ tự hoàn tất khác thứ tự enqueue.
+
+---
+
+## 12. Checklist thiết kế pattern
+
+- [ ] Xác định rõ một message cần được chia việc hay nhân bản cho nhiều service.
+- [ ] Mỗi durable subscriber có queue riêng và owner rõ ràng.
+- [ ] Routing key có naming convention, contract test và không chứa dữ liệu nhạy cảm.
+- [ ] Prefetch được chọn theo concurrency/latency thực tế, không copy máy móc.
+- [ ] Consumer manual ack và idempotent.
+- [ ] Lỗi được phân loại retryable/non-retryable/global outage.
+- [ ] Retry có backoff, delivery limit, DLQ và metric.
+- [ ] Không dùng community delayed-message plugin đã archive cho thiết kế 4.3 mới.
+- [ ] Priority/hash/SAC được chọn sau khi xác định yêu cầu ordering thật sự.
+- [ ] RPC có timeout, deadline, giới hạn in-flight và xử lý duplicate.
+- [ ] Unroutable message được quan sát bằng `mandatory`, alternate exchange hoặc metric.
+- [ ] Topology phức tạp có sơ đồ, owner, migration plan và automated routing test.
+
+---
+
+## 13. Chủ đề tiếp theo
+
+Tiếp theo: [RabbitMQ Reliability & Guarantees](rabbitmq_reliability.md)
+
+- Publisher confirms và chiến lược async confirm.
+- Consumer acknowledgement, redelivery và idempotency.
+- Durable topology, persistent message và quorum replication.
+- At-least-once dead-lettering.
+- Connection/topology recovery và xử lý duplicate.
+
+Liên quan:
+
+- [RabbitMQ Fundamentals](rabbitmq_fundamentals.md)
+- [RabbitMQ Glossary](glossary.md)
+- [Production & Operations](rabbitmq_production.md)
+- [Spring Boot Messaging](../springboot/springboot_messaging.md)
+
+## Tài liệu chính thức
+
+- [RabbitMQ Tutorials – Work Queues, Pub/Sub, Routing và RPC](https://www.rabbitmq.com/tutorials)
+- [Consumer Prefetch](https://www.rabbitmq.com/docs/consumer-prefetch)
+- [Consumers và Single Active Consumer](https://www.rabbitmq.com/docs/consumers)
+- [Dead Letter Exchanges](https://www.rabbitmq.com/docs/dlx)
+- [Quorum Queue Delayed Retry](https://www.rabbitmq.com/docs/quorum-queues#delayed-retry)
+- [Priority Support in Queues](https://www.rabbitmq.com/docs/priority)
+- [Modulus Hash Exchange](https://www.rabbitmq.com/docs/modulus-hash-exchange)
+- [Direct Reply-To](https://www.rabbitmq.com/docs/direct-reply-to)
+- [Exchange-to-Exchange Bindings](https://www.rabbitmq.com/docs/e2e)
+- [RabbitMQ 4.3 Release Highlights](https://www.rabbitmq.com/blog/2026/04/23/rabbitmq-4.3-release)
+
+*Cập nhật lần cuối: 2026-07-29*

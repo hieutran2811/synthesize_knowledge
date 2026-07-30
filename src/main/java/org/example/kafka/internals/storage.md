@@ -3,6 +3,8 @@
 > Phương pháp: What – How – Why – Components – Compare – Trade-offs – Real-world – Ghi chú
 >
 > 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
+>
+> Phạm vi đối chiếu chính: Apache Kafka 4.3. Với cluster phiên bản khác, luôn kiểm tra lại tên property, giá trị mặc định và giới hạn tiered storage.
 
 ---
 
@@ -148,6 +150,56 @@ kafka-configs.sh --bootstrap-server localhost:9092 \
 
 ---
 
+## How – Log boundaries và `__consumer_offsets`
+
+Ba loại offset thường bị nhầm với nhau:
+
+```text
+Partition data:
+  log start = 120                                      log end = 182
+         │                                                   │
+         ▼                                                   ▼
+       [120] ... [149] | [150] ... [181] | (vị trí ghi kế tiếp)
+                       ▲
+                       └─ current position = 150
+                          (record kế tiếp consumer sẽ fetch)
+
+Consumer group metadata:
+  committed offset = 145 (vị trí bền vững để resume)
+```
+
+- **Log start offset** là offset nhỏ nhất broker còn có thể phục vụ. Retention hoặc truncate có thể làm mốc này tăng.
+- **Log end offset** là vị trí ngay sau record cuối hiện có, không phải offset của chính record cuối.
+- **Current position** nằm trong consumer đang chạy và tiến theo `poll()`.
+- **Committed offset** được lưu bền cho group và cũng biểu thị record kế tiếp cần đọc sau restart.
+
+Kafka lưu committed offset và group metadata trong internal topic compacted `__consumer_offsets`. Key của bản ghi nhận diện group/topic/partition; value chứa offset và metadata liên quan. Compaction giữ trạng thái mới nhất, còn tombstone cho phép dọn state của group hoặc offset đã hết hạn.
+
+```properties
+# Broker defaults trong Kafka 4.3; quyết định sớm trước production.
+offsets.topic.num.partitions=50
+offsets.topic.replication.factor=3
+offsets.topic.segment.bytes=104857600
+offsets.retention.minutes=10080
+```
+
+`offsets.topic.num.partitions` quyết định cách tải coordinator được chia và không nên đổi sau khi triển khai. Internal topic chỉ được tạo khi cluster đáp ứng replication factor đã cấu hình; cluster dev một broker thường phải override phù hợp, nhưng production không nên hạ durability chỉ để che thiếu broker.
+
+Offset hết hạn không đơn giản là “sau 7 ngày kể từ commit” trong mọi trường hợp. Với subscribed group, Kafka xét thời gian group không còn consumer hoặc partition không còn thuộc subscription; với manual assignment, thời gian tính từ commit cuối. Xóa group hoặc topic có thể xóa metadata offset liên quan mà không chờ retention.
+
+Nếu committed/current offset nhỏ hơn log start offset vì data đã bị retention xóa, consumer gặp **offset out of range**. Khi đó:
+
+- `auto.offset.reset=earliest`: đọc từ record cũ nhất còn tồn tại, không thể khôi phục phần đã xóa.
+- `auto.offset.reset=latest`: bỏ qua tới cuối log hiện tại; có nguy cơ mất xử lý mà không thấy lỗi nghiệp vụ rõ ràng.
+- `auto.offset.reset=none`: ném lỗi để operator hoặc ứng dụng quyết định có chủ đích.
+
+> 💡 **Giải thích dễ hiểu — bookmark và số trang còn lại:**
+> Committed offset là bookmark của một nhóm đọc, còn log start/end là phạm vi trang vẫn nằm trong thư viện. Nếu bookmark ở trang 50 nhưng thư viện đã hủy mọi trang trước 120, Kafka không thể “replay từ 50”; ứng dụng phải chọn đọc từ trang 120, nhảy tới cuối, hoặc dừng để báo lỗi.
+
+Không chỉnh sửa `__consumer_offsets` trực tiếp. Dùng `kafka-consumer-groups.sh` hoặc Admin API để xem/reset/delete group và lưu audit cho mọi thao tác reset.
+
+---
+
 ## How – Log Compaction
 
 **Log compaction** *(gom/dọn log theo key)* là background rewrite giữ trạng thái mới nhất theo key trong từng partition. Đây khác với retention `delete`, vốn xóa segment theo tuổi/kích thước.
@@ -208,7 +260,6 @@ log.cleaner.min.compaction.lag.ms=0       # min time before record can be compac
 log.cleaner.max.compaction.lag.ms=9223372036854775807  # max time record can stay uncompacted
 log.cleaner.delete.retention.ms=86400000   # broker default for tombstones (1 day)
 # Topic override: delete.retention.ms=86400000
-log.cleaner.min.compaction.lag.ms=0       # broker default for compaction eligibility
 # Topic override: min.compaction.lag.ms=0
 ```
 
@@ -239,7 +290,7 @@ Log sections:
 
 ---
 
-## How – Tiered Storage *(lưu phân tầng)* (Kafka 3.6-era feature; kiểm tra version/provider)
+## How – Tiered Storage *(lưu phân tầng, Kafka 4.3)*
 
 **Remote Log Metadata Manager (RLMM)** *(bộ quản lý metadata log ở remote)* theo dõi segment và index đang ở local hay object storage để broker phục vụ fetch.
 
@@ -373,6 +424,23 @@ Với compacted topic, cần chừa dung lượng cho cleaner rewrite và các s
 > 💡 **Giải thích dễ hiểu — sizing là tính cả kho, lối đi và lúc chuyển kho:**
 > Nếu cần chứa 1.000 thùng hàng, kho ba bản sao phải có chỗ cho 3.000 thùng, lối đi, hàng đang sang kệ và khoảng trống khi một kho đóng cửa. Compaction/recovery cũng cần chỗ tạm; chỉ đủ chỗ cho dữ liệu “đang thấy” sẽ khiến broker đầy đúng lúc sự cố.
 
+### Disk failure và log directories
+
+`log.dirs` có thể chứa nhiều thư mục/volume, nhưng đây không phải bản sao dữ liệu bên trong một broker. Mỗi replica partition nằm ở một log directory; durability đến từ replica trên broker/failure domain khác.
+
+Khi Kafka gặp I/O error sau lúc load log, directory có thể bị đánh dấu offline. Replica nằm trong directory đó không còn phục vụ; client nhận lỗi retriable/metadata refresh và partition leader có thể chuyển sang replica hợp lệ trên broker khác. Nếu topic thiếu replica khỏe, sự cố một volume vẫn có thể làm partition unavailable hoặc mất durability.
+
+Production cần:
+
+- Alert disk usage, inode, I/O latency, offline log directory và under-replicated/offline partition.
+- Giữ headroom cho compaction, replica catch-up và reassignment; không chờ 100% disk mới hành động.
+- Dùng `kafka-log-dirs.sh --describe` để xác định replica nằm ở directory nào.
+- Dùng partition reassignment để di chuyển dữ liệu; không copy/move file segment thủ công khi broker đang chạy.
+- Thay volume lỗi theo runbook đã thử nghiệm, rồi xác minh ISR và replica lag trước khi đóng incident.
+
+> 💡 **Giải thích dễ hiểu — nhiều ổ không đồng nghĩa có bản sao:**
+> Hai tủ hồ sơ trong cùng văn phòng chỉ giúp chia chỗ, không tự tạo hai bản của mỗi hồ sơ. Khi một tủ hỏng, chỉ hồ sơ đã được sao sang văn phòng broker khác mới giúp hệ thống tiếp tục phục vụ.
+
 ---
 
 ## Real-world
@@ -381,7 +449,7 @@ Với compacted topic, cần chừa dung lượng cho cleaner rewrite và các s
 # Monitor log compaction
 kafka-log-dirs.sh --bootstrap-server localhost:9092 \
   --topic-list user-profiles --describe
-# Shows: size, offsetLag, isFuture, isValid per segment
+# Shows replica/partition placement, size, offsetLag, isFuture theo log directory
 
 # Check cleaner stats (JMX)
 # kafka.log:type=LogCleanerManager,name=max-dirty-percent
@@ -389,7 +457,8 @@ kafka-log-dirs.sh --bootstrap-server localhost:9092 \
 # → Alert: cleaner falling behind (dirty ratio consistently high)
 
 # Force compaction (testing/emergency)
-# No CLI command; change min.cleanable.dirty.ratio temporarily to trigger faster
+# Không có lệnh force. Hạ min.cleanable.dirty.ratio chỉ làm log sớm đủ điều kiện;
+# cleaner backlog/I/O vẫn quyết định khi nào hoàn tất. Khôi phục config sau thử nghiệm.
 
 # Segment inspection tool
 kafka-dump-log.sh --files /data/kafka/orders-0/00000000000000000000.log \
@@ -426,9 +495,19 @@ Production retention strategy:
 
 ---
 
+## Nguồn tham khảo chính thức
+
+- [Apache Kafka 4.3 – Design](https://kafka.apache.org/43/design/design/)
+- [Apache Kafka 4.3 – Broker Configs](https://kafka.apache.org/43/configuration/broker-configs/)
+- [Apache Kafka 4.3 – Tiered Storage](https://kafka.apache.org/43/operations/tiered-storage/)
+- [KafkaConsumer API – Offsets and Consumer Position](https://kafka.apache.org/43/javadoc/org/apache/kafka/clients/consumer/KafkaConsumer.html)
+- [OffsetOutOfRangeException API](https://kafka.apache.org/43/javadoc/org/apache/kafka/clients/consumer/OffsetOutOfRangeException.html)
+
+---
+
 ## Ghi chú – Chủ đề tiếp theo
 > [replication.md](replication.md): Leader election, ISR (In-Sync Replicas), acks & min.insync.replicas, unclean leader election, replica lag monitoring, preferred replica election, partition leadership rebalancing
 
 ---
 
-*Cập nhật lần cuối: 2026-07-22*
+*Cập nhật lần cuối: 2026-07-27*

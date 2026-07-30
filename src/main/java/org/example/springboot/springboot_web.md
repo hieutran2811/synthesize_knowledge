@@ -1,778 +1,462 @@
-# Spring Boot Web Layer
+# Spring Boot Web Layer – REST, WebFlux, Security và Production
 
-## 1. REST API Best Practices
+> Phương pháp: What – How – Why – Components – When – Compare – Trade-offs – Production – Ghi chú
+>
+> Tra cứu nhanh thuật ngữ tại [Spring Boot Glossary](glossary.md).
 
-### 1.1 Response Structure & Global Exception Handler
+---
+
+## What – Spring Boot Web Layer là gì?
+
+**Web layer** *(tầng tiếp nhận và trả lời HTTP request)* là biên giới giữa client và business logic của ứng dụng. Với Spring Boot, tầng này thường dùng:
+
+- **Spring MVC** *(web stack đồng bộ dựa trên Servlet)* cho ứng dụng imperative, JPA/JDBC và thư viện blocking;
+- **Spring WebFlux** *(web stack reactive, hỗ trợ non-blocking I/O)* cho luồng I/O bất đồng bộ, streaming và concurrency cao;
+- Spring Security cho authentication/authorization;
+- `RestClient` hoặc `WebClient` để gọi HTTP service khác;
+- Bean Validation, `ProblemDetail`, OpenAPI, CORS và rate limiting để hoàn thiện contract production.
+
+**REST API** *(giao diện tài nguyên qua HTTP)* không chỉ là một controller trả JSON. Một API tốt phải có resource model, HTTP semantics, error contract, security, giới hạn tải, khả năng quan sát và chiến lược tiến hóa rõ ràng.
+
+> 💡 **Giải thích dễ hiểu:**
+> Web layer giống quầy lễ tân. Nó kiểm tra khách đưa đủ giấy tờ, chuyển yêu cầu tới đúng phòng, rồi trả kết quả theo một mẫu thống nhất. Lễ tân không nên tự làm toàn bộ nghiệp vụ của các phòng phía sau.
+
+---
+
+## Why – Vì sao phải thiết kế Web Layer có chủ đích?
+
+- Contract ổn định giúp frontend, mobile và service khác phát triển độc lập.
+- HTTP status, header và media type đúng giúp proxy/cache/client hoạt động chính xác.
+- Validation sớm giảm dữ liệu sai đi sâu vào domain, nhưng không thay thế business rule.
+- Error format chuẩn giúp client xử lý lỗi bằng máy thay vì đọc chuỗi message.
+- Authentication/authorization ở framework giảm lỗi tự viết crypto hoặc filter.
+- Timeout, retry và rate limit ngăn một dependency chậm gây hiệu ứng dây chuyền.
+- OpenAPI và observability làm API kiểm thử, vận hành và điều tra được.
+
+Web layer nên mỏng: chuyển HTTP input thành command/query, gọi application service, rồi ánh xạ kết quả trở lại HTTP. Transaction, invariant và orchestration nghiệp vụ không nên sống trong controller.
+
+---
+
+## Components – Request Lifecycle
+
+```text
+Client
+  ↓
+Reverse proxy / API gateway
+  ↓
+CORS + Spring Security FilterChain + correlation/observability filters
+  ↓
+DispatcherServlet (MVC) hoặc WebHandler (WebFlux)
+  ↓
+Routing → data binding → validation → controller/handler
+  ↓
+Application service → repository / downstream services
+  ↓
+HTTP response hoặc ProblemDetail
+```
+
+| Thành phần | Trách nhiệm chính |
+|---|---|
+| DTO | Contract request/response, tách khỏi persistence entity |
+| Controller/handler | HTTP mapping và orchestration mỏng |
+| Validation | Kiểm tra cấu trúc/ràng buộc input |
+| Exception handler | Ánh xạ exception thành error contract |
+| Security filter chain | Xác thực token, phân quyền endpoint |
+| HTTP client | Gọi dependency với timeout/retry/telemetry |
+| OpenAPI | Mô tả machine-readable của API |
+| Gateway/filter | CORS, rate limit, routing, cross-cutting concerns |
+
+> 💡 **Giải thích dễ hiểu:**
+> Request đi qua nhiều cửa kiểm soát như hành khách ở sân bay: kiểm tra tuyến bay, giấy tờ, hành lý rồi mới lên máy bay. Mỗi cửa chỉ nên làm đúng một nhiệm vụ để lỗi dễ tìm và chính sách không bị trùng lặp.
+
+---
+
+## How – Thiết kế REST API
+
+### Resource, method và status code
+
+Ưu tiên noun cho resource và dùng HTTP method thể hiện hành động:
+
+```text
+POST   /api/orders          tạo order mới
+GET    /api/orders/{id}     đọc một order
+GET    /api/orders          tìm kiếm/phân trang
+PUT    /api/orders/{id}     thay toàn bộ representation nếu contract định nghĩa vậy
+PATCH  /api/orders/{id}     cập nhật một phần
+DELETE /api/orders/{id}     xóa/hủy theo semantics đã công bố
+```
+
+Status code thường dùng:
+
+| Status | Khi dùng |
+|---|---|
+| `200 OK` | Đọc/cập nhật thành công có body |
+| `201 Created` | Tạo thành công; nên trả `Location` |
+| `204 No Content` | Thành công không có body |
+| `400 Bad Request` | JSON, parameter hoặc validation request không hợp lệ |
+| `401 Unauthorized` | Chưa/không xác thực được |
+| `403 Forbidden` | Đã xác thực nhưng không có quyền |
+| `404 Not Found` | Resource không tồn tại hoặc được che giấu theo policy |
+| `409 Conflict` | Xung đột trạng thái/unique/version hiện tại |
+| `422 Unprocessable Content` | Request đúng cú pháp nhưng vi phạm rule có semantics phù hợp |
+| `429 Too Many Requests` | Vượt rate limit |
+
+**Idempotency** *(gọi lặp lại vẫn cho hiệu ứng cuối giống một lần)* đặc biệt quan trọng với retry. `GET`, `PUT`, `DELETE` được thiết kế có tính idempotent theo HTTP semantics; `POST` tạo dữ liệu nên dùng idempotency key nếu client có thể retry.
 
 ```java
-// Standard API response wrapper
-@Getter
-@Builder
-public class ApiResponse<T> {
-    private final boolean success;
-    private final T data;
-    private final String message;
-    private final List<FieldError> errors;
-    private final String traceId;
-    private final Instant timestamp;
+@RestController
+@RequestMapping("/api/orders")
+@RequiredArgsConstructor
+class OrderController {
 
-    public static <T> ApiResponse<T> ok(T data) {
-        return ApiResponse.<T>builder()
-            .success(true).data(data).timestamp(Instant.now()).build();
+    private final OrderApplicationService service;
+
+    @PostMapping
+    ResponseEntity<OrderResponse> create(
+            @Valid @RequestBody CreateOrderRequest request) {
+        OrderResponse created = service.create(request);
+        URI location = URI.create("/api/orders/" + created.id());
+        return ResponseEntity.created(location).body(created);
     }
 
-    public static <T> ApiResponse<T> error(String message, List<FieldError> errors) {
-        return ApiResponse.<T>builder()
-            .success(false).message(message).errors(errors).timestamp(Instant.now()).build();
-    }
-
-    @Getter @Builder
-    public static class FieldError {
-        private final String field;
-        private final Object rejectedValue;
-        private final String message;
-    }
-}
-
-// Global Exception Handler
-@RestControllerAdvice
-@Slf4j
-public class GlobalExceptionHandler {
-
-    @ExceptionHandler(MethodArgumentNotValidException.class)
-    @ResponseStatus(HttpStatus.BAD_REQUEST)
-    public ApiResponse<Void> handleValidation(MethodArgumentNotValidException ex,
-                                               HttpServletRequest request) {
-        List<ApiResponse.FieldError> errors = ex.getBindingResult()
-            .getFieldErrors()
-            .stream()
-            .map(err -> ApiResponse.FieldError.builder()
-                .field(err.getField())
-                .rejectedValue(err.getRejectedValue())
-                .message(err.getDefaultMessage())
-                .build())
-            .toList();
-
-        log.warn("Validation failed on {}: {}", request.getRequestURI(), errors);
-        return ApiResponse.error("Validation failed", errors);
-    }
-
-    @ExceptionHandler(EntityNotFoundException.class)
-    @ResponseStatus(HttpStatus.NOT_FOUND)
-    public ApiResponse<Void> handleNotFound(EntityNotFoundException ex) {
-        return ApiResponse.error(ex.getMessage(), null);
-    }
-
-    @ExceptionHandler(AccessDeniedException.class)
-    @ResponseStatus(HttpStatus.FORBIDDEN)
-    public ApiResponse<Void> handleAccessDenied(AccessDeniedException ex) {
-        return ApiResponse.error("Access denied", null);
-    }
-
-    @ExceptionHandler(DuplicateKeyException.class)
-    @ResponseStatus(HttpStatus.CONFLICT)
-    public ApiResponse<Void> handleDuplicate(DuplicateKeyException ex) {
-        return ApiResponse.error("Resource already exists", null);
-    }
-
-    @ExceptionHandler(Exception.class)
-    @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
-    public ApiResponse<Void> handleAll(Exception ex, HttpServletRequest request) {
-        String traceId = MDC.get("traceId");
-        log.error("Unhandled exception on {} [traceId={}]", request.getRequestURI(), traceId, ex);
-        return ApiResponse.<Void>builder()
-            .success(false)
-            .message("Internal server error")
-            .traceId(traceId)
-            .timestamp(Instant.now())
-            .build();
+    @GetMapping("/{id}")
+    OrderResponse get(@PathVariable @Positive long id) {
+        return service.get(id);
     }
 }
 ```
 
-### 1.1b ProblemDetail – RFC 9457 (Spring Boot 3+)
+### DTO, pagination và entity boundary
 
-Spring Boot 3 hỗ trợ chuẩn `ProblemDetail` (RFC 9457 / RFC 7807) thay thế cho custom wrapper:
+**DTO** *(đối tượng truyền dữ liệu qua boundary)* giúp API không vô tình lộ column, lazy relation hoặc thay đổi persistence model. Dùng DTO riêng cho create/update/response thường dễ hiểu hơn một DTO với quá nhiều validation group.
+
+```java
+public record CreateOrderRequest(
+    @NotNull Long customerId,
+    @NotEmpty List<@Valid OrderLineRequest> lines,
+    @Size(max = 500) String note
+) {}
+
+public record OrderLineRequest(
+    @NotNull Long productId,
+    @Positive int quantity
+) {}
+
+public record OrderResponse(
+    long id,
+    String status,
+    BigDecimal total,
+    Instant createdAt
+) {}
+```
+
+API list cần giới hạn `size`, quy định sort field được phép và dùng cursor pagination khi dữ liệu thay đổi nhanh hoặc offset lớn. Không trả thẳng `Page<Entity>` nếu không muốn contract phụ thuộc cấu trúc nội bộ của framework.
+
+---
+
+## How – Error Contract với `ProblemDetail`
+
+**Problem Details** *(định dạng lỗi HTTP chuẩn theo RFC 9457)* có các field `type`, `title`, `status`, `detail`, `instance`. Spring Framework cung cấp `ProblemDetail`, `ErrorResponse` và `ResponseEntityExceptionHandler` cho cả MVC/WebFlux.
 
 ```yaml
 spring:
   mvc:
     problemdetails:
-      enabled: true   # Spring tự dùng ProblemDetail cho built-in exceptions
+      enabled: true
 ```
 
+Property trên giúp Spring Boot tự cấu hình Problem Details cho nhiều exception built-in của MVC. Business exception vẫn cần ánh xạ có chủ đích:
+
 ```java
-// ProblemDetail-based exception handler (alternative to ApiResponse<T>)
 @RestControllerAdvice
-public class ProblemDetailExceptionHandler {
+class ApiExceptionHandler {
 
-    @ExceptionHandler(MethodArgumentNotValidException.class)
-    public ResponseEntity<ProblemDetail> handleValidation(
-            MethodArgumentNotValidException ex, HttpServletRequest request) {
-
+    @ExceptionHandler(ResourceNotFoundException.class)
+    ProblemDetail handleNotFound(ResourceNotFoundException ex,
+                                 HttpServletRequest request) {
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(
-            HttpStatus.BAD_REQUEST, "Request validation failed"
-        );
-        problem.setTitle("Validation Error");
-        problem.setType(URI.create("https://api.example.com/errors/validation"));
+            HttpStatus.NOT_FOUND, ex.getMessage());
+        problem.setTitle("Resource not found");
+        problem.setType(URI.create("https://api.example.com/problems/not-found"));
         problem.setInstance(URI.create(request.getRequestURI()));
-        problem.setProperty("timestamp", Instant.now());
-        problem.setProperty("errors", ex.getBindingResult().getFieldErrors().stream()
-            .map(fe -> Map.of("field", fe.getField(), "message", fe.getDefaultMessage()))
-            .toList());
-
-        return ResponseEntity.badRequest().body(problem);
+        problem.setProperty("code", ex.code());
+        problem.setProperty("traceId", MDC.get("traceId"));
+        return problem;
     }
 
-    @ExceptionHandler(ConstraintViolationException.class)
-    public ResponseEntity<ProblemDetail> handleConstraintViolation(ConstraintViolationException ex) {
+    @ExceptionHandler(DuplicateResourceException.class)
+    ProblemDetail handleConflict(DuplicateResourceException ex) {
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(
-            HttpStatus.BAD_REQUEST, "Constraint violation"
-        );
-        problem.setProperty("errors", ex.getConstraintViolations().stream()
-            .map(v -> Map.of("field", v.getPropertyPath().toString(), "message", v.getMessage()))
-            .toList());
-        return ResponseEntity.badRequest().body(problem);
+            HttpStatus.CONFLICT, ex.getMessage());
+        problem.setTitle("Resource conflict");
+        problem.setType(URI.create("https://api.example.com/problems/conflict"));
+        problem.setProperty("code", ex.code());
+        return problem;
     }
 }
 ```
 
 ```json
-// Response format (RFC 9457):
 {
-  "type": "https://api.example.com/errors/validation",
-  "title": "Validation Error",
+  "type": "https://api.example.com/problems/validation",
+  "title": "Request validation failed",
   "status": 400,
-  "detail": "Request validation failed",
-  "instance": "/api/users",
-  "timestamp": "2024-01-15T10:30:00Z",
+  "detail": "One or more fields are invalid",
+  "instance": "/api/orders",
+  "code": "VALIDATION_FAILED",
+  "traceId": "01J...",
   "errors": [
-    { "field": "email", "message": "Must be a valid email" },
-    { "field": "password", "message": "Must contain at least 1 uppercase letter" }
+    { "field": "lines[0].quantity", "message": "must be greater than 0" }
   ]
 }
 ```
 
-### 1.1c Business Exception Hierarchy
+`type` nên là URI ổn định đại diện cho loại lỗi, không tạo một URI mới cho từng request. Extension field như `code`, `traceId`, `errors` được Spring/Jackson đưa ra top level. Không trả stack trace, SQL, token, PII hoặc `rejectedValue` nhạy cảm.
+
+`ProblemDetail.status` quyết định HTTP status; tránh bọc nó trong một response luôn trả `200`. Với success response, có thể trả DTO trực tiếp hoặc wrapper có metadata, nhưng phải nhất quán toàn API.
+
+> 💡 **Giải thích dễ hiểu:**
+> `ProblemDetail` giống mẫu biên bản sự cố chung: luôn có loại sự cố, tiêu đề, mã trạng thái và nơi xảy ra. Mỗi đội có thể thêm mã nội bộ, nhưng client không phải học một mẫu lỗi hoàn toàn mới cho từng service.
+
+### Business exception hierarchy
 
 ```java
-// Base exception — carries HTTP status + error code
 public abstract class ApplicationException extends RuntimeException {
-    private final String errorCode;
-    private final HttpStatus httpStatus;
+    private final String code;
 
-    protected ApplicationException(String errorCode, String message, HttpStatus status) {
+    protected ApplicationException(String code, String message) {
         super(message);
-        this.errorCode = errorCode;
-        this.httpStatus = status;
+        this.code = code;
     }
+
+    public String code() { return code; }
 }
 
-public class ResourceNotFoundException extends ApplicationException {
-    public ResourceNotFoundException(String resource, Object id) {
-        super("RESOURCE_NOT_FOUND",
-              String.format("%s with id '%s' not found", resource, id),
-              HttpStatus.NOT_FOUND);
-    }
-}
-
-public class DuplicateResourceException extends ApplicationException {
-    public DuplicateResourceException(String resource, String field, Object value) {
-        super("DUPLICATE_RESOURCE",
-              String.format("%s with %s '%s' already exists", resource, field, value),
-              HttpStatus.CONFLICT);
-    }
-}
-
-public class BusinessRuleException extends ApplicationException {
-    public BusinessRuleException(String errorCode, String message) {
-        super(errorCode, message, HttpStatus.UNPROCESSABLE_ENTITY);
-    }
-}
-
-// Generic handler — works for all ApplicationException subclasses
-@ExceptionHandler(ApplicationException.class)
-public ResponseEntity<ApiResponse<Void>> handleApplicationException(ApplicationException ex) {
-    return ResponseEntity.status(ex.getHttpStatus())
-        .body(ApiResponse.error(ex.getMessage(), null));
-}
-
-// Usage in service
-public void cancelOrder(Long orderId) {
-    Order order = orderRepo.findById(orderId)
-        .orElseThrow(() -> new ResourceNotFoundException("Order", orderId));
-
-    if (order.getStatus() == OrderStatus.SHIPPED) {
-        throw new BusinessRuleException("ORDER_ALREADY_SHIPPED",
-            "Cannot cancel an order that has already been shipped");
+public final class OrderAlreadyShippedException extends ApplicationException {
+    public OrderAlreadyShippedException(long orderId) {
+        super("ORDER_ALREADY_SHIPPED",
+              "Order " + orderId + " has already been shipped");
     }
 }
 ```
 
-### 1.1d Filter vs Interceptor vs @ControllerAdvice
-
-```
-Request lifecycle:
-HTTP → [Filter] → DispatcherServlet → [Interceptor.preHandle] 
-     → Controller → [Interceptor.postHandle] 
-     → [Filter] → Response
-              ↓ on exception
-     [@ControllerAdvice @ExceptionHandler]
-```
-
-| | Filter | Interceptor | @ControllerAdvice |
-|--|--------|-------------|-------------------|
-| Level | Servlet | Spring MVC | Spring MVC |
-| Exception scope | Any (raw response) | Controller exceptions | @Controller exceptions only |
-| Access Spring beans | Via @Autowired | Yes | Yes |
-| Modify request/response | Yes (both) | Yes (pre/post) | Response body only |
-| Runs outside Spring context | Yes | No | No |
-| Use for | Auth token parsing, CORS, logging, encoding | Auth check, request context, audit | Error response formatting |
-
-### 1.2 Validation Deep
-
-```java
-// Custom validator
-@Documented
-@Constraint(validatedBy = UniqueEmailValidator.class)
-@Target({ElementType.FIELD})
-@Retention(RetentionPolicy.RUNTIME)
-public @interface UniqueEmail {
-    String message() default "Email already registered";
-    Class<?>[] groups() default {};
-    Class<? extends Payload>[] payload() default {};
-}
-
-@Component
-public class UniqueEmailValidator implements ConstraintValidator<UniqueEmail, String> {
-    @Autowired
-    private UserRepository userRepository;
-
-    @Override
-    public boolean isValid(String email, ConstraintValidatorContext context) {
-        if (email == null) return true;
-        return !userRepository.existsByEmail(email);
-    }
-}
-
-// Validation groups (different rules for create vs update)
-public interface OnCreate {}
-public interface OnUpdate {}
-
-public record UserRequest(
-    @NotBlank(groups = OnCreate.class)
-    @Null(groups = OnUpdate.class)  // id must be null on create
-    Long id,
-
-    @NotBlank @Email @UniqueEmail(groups = OnCreate.class)
-    String email,
-
-    @NotBlank(groups = OnCreate.class)
-    @Size(min = 8, max = 100)
-    String password,
-
-    @NotBlank @Size(min = 2, max = 100)
-    String name,
-
-    @Min(0) @Max(150)
-    Integer age
-) {}
-
-// Controller with validation groups
-@RestController
-@RequestMapping("/api/users")
-public class UserController {
-
-    @PostMapping
-    @ResponseStatus(HttpStatus.CREATED)
-    public ApiResponse<UserResponse> create(
-        @Validated(OnCreate.class) @RequestBody UserRequest req) {
-        return ApiResponse.ok(userService.create(req));
-    }
-
-    @PutMapping("/{id}")
-    public ApiResponse<UserResponse> update(
-        @PathVariable Long id,
-        @Validated(OnUpdate.class) @RequestBody UserRequest req) {
-        return ApiResponse.ok(userService.update(id, req));
-    }
-}
-```
-
-### 1.3 API Versioning Strategies
-
-```java
-// Strategy 1: URI versioning (most common, cacheable)
-// GET /api/v1/users  vs  GET /api/v2/users
-
-@RestController
-@RequestMapping("/api/v1/users")
-public class UserControllerV1 { }
-
-@RestController
-@RequestMapping("/api/v2/users")
-public class UserControllerV2 { }
-
-// Strategy 2: Header versioning
-// GET /api/users  +  Header: X-API-Version: 2
-@GetMapping(value = "/users", headers = "X-API-Version=1")
-public UserResponseV1 getUsersV1() { }
-
-@GetMapping(value = "/users", headers = "X-API-Version=2")
-public UserResponseV2 getUsersV2() { }
-
-// Strategy 3: Content negotiation (Accept header)
-// Accept: application/vnd.company.v1+json
-@GetMapping(value = "/users", produces = "application/vnd.company.v1+json")
-public UserResponseV1 getUsersV1() { }
-
-// Strategy 4: Query param (avoid - poor REST design)
-// GET /api/users?version=2
-```
+Không nhất thiết cho domain exception biết `HttpStatus`; một mapper ở web layer có thể chuyển domain error sang HTTP. Cách này giữ domain dùng được ở Kafka listener, batch job hoặc CLI mà không phụ thuộc web framework.
 
 ---
 
-## 2. WebFlux & Reactive Programming
+## How – Validation đúng ranh giới
 
-### 2.1 Reactive Fundamentals
+**Bean Validation** *(cơ chế kiểm tra constraint khai báo bằng annotation)* phù hợp với shape/range/format của request:
 
 ```java
-// Mono<T>: 0 or 1 element
-// Flux<T>: 0 to N elements
+public record CreateUserRequest(
+    @NotBlank @Email String email,
+    @NotBlank @Size(min = 12, max = 100) String password,
+    @NotBlank @Size(max = 100) String displayName,
+    @Min(0) @Max(150) Integer age
+) {}
+```
 
-// Non-blocking controller (no thread blocking)
+Controller có thể phát sinh cả `MethodArgumentNotValidException` khi validate request body và `HandlerMethodValidationException` khi constraint đặt trực tiếp trên method parameter. Error handler production cần test cả hai dạng.
+
+Phân chia trách nhiệm:
+
+- DTO validation: null, size, format, nested shape;
+- application/domain: trạng thái chuyển đổi, quyền nghiệp vụ, tổng tiền, inventory;
+- database: unique constraint, foreign key và concurrency invariant cuối cùng.
+
+Custom validator gọi repository để kiểm tra email tồn tại có thể tạo thêm I/O, khó batch và vẫn gặp **race condition** *(hai request cùng vượt kiểm tra trước khi commit)*. Có thể dùng nó để báo lỗi sớm, nhưng database unique constraint vẫn là hàng rào bắt buộc và phải map violation thành `409 Conflict`.
+
+> 💡 **Giải thích dễ hiểu:**
+> Validation ở cửa kiểm tra xem mẫu đơn có điền đủ và đúng định dạng. Business rule là phòng chuyên môn quyết định đơn có được duyệt không. Unique constraint là khóa két cuối cùng, ngăn hai người cùng lấy một số tài khoản dù họ đến cửa gần như đồng thời.
+
+---
+
+## How – Filter, Interceptor và `@ControllerAdvice`
+
+| Cơ chế | Phạm vi | Dùng tốt cho | Không nên dùng cho |
+|---|---|---|---|
+| Servlet `Filter` | Trước/sau `DispatcherServlet` | Security chain, CORS, correlation ID, raw request/response | Business rule |
+| MVC `HandlerInterceptor` | Quanh handler MVC | Request context, audit metadata, timing theo handler | JWT parsing thay Spring Security |
+| `@ControllerAdvice` | Exception/data binding của MVC controller | Chuẩn hóa `ProblemDetail`, binder chung | Exception xảy ra trước MVC trong security filter |
+| WebFlux `WebFilter` | Reactive web chain | Cross-cutting concern non-blocking | Servlet API/blocking I/O |
+
+```text
+HTTP → Filter/Security → DispatcherServlet → Interceptor.preHandle
+     → Controller → Interceptor.afterCompletion → Filter → HTTP response
+                              ↓ MVC exception
+                    HandlerExceptionResolver/@ControllerAdvice
+```
+
+`AuthenticationException` và `AccessDeniedException` trong Spring Security filter chain được xử lý bằng `AuthenticationEntryPoint` và `AccessDeniedHandler`, không trông chờ `@ControllerAdvice`. Nếu cần error contract thống nhất, cấu hình hai handler này trả `application/problem+json`.
+
+---
+
+## How – API Versioning
+
+Chỉ tạo version mới khi có breaking contract; thay đổi additive tương thích không nhất thiết cần version.
+
+| Strategy | Ví dụ | Điểm mạnh | Chi phí |
+|---|---|---|---|
+| URI | `/api/v2/orders` | Dễ nhìn, route/cache/document rõ | URL thay đổi |
+| Header | `API-Version: 2` | URI tài nguyên ổn định | Khó thử bằng browser/cache key phải đúng |
+| Media type | `Accept: application/vnd.acme.v2+json` | Gắn version với representation | Phức tạp cho client/tooling |
+| Query parameter | `/orders?version=2` | Dễ triển khai | Dễ lẫn với query nghiệp vụ |
+
+Mỗi version cần deprecation policy, sunset date, usage metrics và migration guide. Không copy toàn bộ controller nếu chỉ khác mapping DTO; tách application service dùng chung.
+
+---
+
+## How – Spring MVC hay WebFlux?
+
+**Spring MVC** dùng mô hình request-per-thread và chấp nhận blocking. **WebFlux** dùng **event loop** *(một nhóm nhỏ thread xử lý nhiều I/O event)*, Reactor và Reactive Streams **backpressure** *(consumer điều tiết tốc độ producer)*.
+
+| Tiêu chí | Spring MVC | Spring WebFlux |
+|---|---|---|
+| Mô hình | Imperative, blocking được | Reactive, non-blocking end-to-end |
+| Data access phù hợp | JPA/JDBC | R2DBC/reactive driver |
+| HTTP client tự nhiên | `RestClient` | `WebClient` |
+| Streaming | Có async support nhưng không phải trọng tâm | SSE/streaming/backpressure là thế mạnh |
+| Debug/learning curve | Dễ hơn | Operator chain/context phức tạp hơn |
+| Tải phù hợp | CRUD và phần lớn business API | Nhiều slow I/O/concurrent connection |
+
+`Mono<T>` biểu diễn 0..1 phần tử; `Flux<T>` biểu diễn 0..N. Trả `Mono` không làm một hàm blocking trở thành non-blocking. Gọi JPA/JDBC hoặc `.block()` trên event-loop thread có thể làm nhiều request cùng đứng.
+
+```java
 @RestController
 @RequestMapping("/reactive/users")
-public class ReactiveUserController {
+@RequiredArgsConstructor
+class ReactiveUserController {
 
-    @Autowired
-    private ReactiveUserService userService;
+    private final ReactiveUserService service;
 
     @GetMapping("/{id}")
-    public Mono<UserResponse> getUser(@PathVariable Long id) {
-        return userService.findById(id)
+    Mono<ResponseEntity<UserResponse>> get(@PathVariable long id) {
+        return service.findById(id)
             .map(UserResponse::from)
-            .switchIfEmpty(Mono.error(new EntityNotFoundException("User " + id + " not found")));
+            .map(ResponseEntity::ok)
+            .switchIfEmpty(Mono.just(ResponseEntity.notFound().build()));
     }
 
-    @GetMapping
-    public Flux<UserResponse> listUsers(
-            @RequestParam(defaultValue = "0") int page,
-            @RequestParam(defaultValue = "20") int size) {
-        return userService.findAll(PageRequest.of(page, size))
-            .map(UserResponse::from);
-    }
-
-    @PostMapping
-    @ResponseStatus(HttpStatus.CREATED)
-    public Mono<UserResponse> createUser(@Validated @RequestBody UserRequest req) {
-        return userService.create(req)
-            .map(UserResponse::from);
-    }
-
-    // Server-Sent Events (SSE) - push updates to client
-    @GetMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<ServerSentEvent<UserEvent>> streamEvents() {
-        return userService.subscribeToEvents()
-            .map(event -> ServerSentEvent.<UserEvent>builder()
-                .id(String.valueOf(event.getId()))
-                .event("user-update")
-                .data(event)
+    @GetMapping(value = "/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    Flux<ServerSentEvent<UserEvent>> events() {
+        return service.events()
+            .map(event -> ServerSentEvent.builder(event)
+                .event("user-updated")
+                .id(event.id().toString())
                 .build());
     }
 }
-
-// Reactive Service
-@Service
-public class ReactiveUserService {
-
-    @Autowired
-    private ReactiveUserRepository userRepository;  // R2DBC repository
-
-    public Mono<User> findById(Long id) {
-        return userRepository.findById(id);
-    }
-
-    public Flux<User> findAll(Pageable pageable) {
-        return userRepository.findAllBy(pageable);
-    }
-
-    // Combining multiple reactive calls (parallel)
-    public Mono<UserProfile> getUserProfile(Long userId) {
-        Mono<User> userMono = userRepository.findById(userId);
-        Mono<List<Order>> ordersMono = orderRepository.findByUserId(userId).collectList();
-        Mono<Address> addressMono = addressRepository.findByUserId(userId);
-
-        // zip: wait for all three, then combine
-        return Mono.zip(userMono, ordersMono, addressMono)
-            .map(tuple -> UserProfile.builder()
-                .user(tuple.getT1())
-                .orders(tuple.getT2())
-                .address(tuple.getT3())
-                .build());
-    }
-
-    // Error handling
-    public Mono<User> findByIdSafe(Long id) {
-        return userRepository.findById(id)
-            .onErrorResume(DataAccessException.class, ex -> {
-                log.error("DB error fetching user {}", id, ex);
-                return Mono.empty();
-            })
-            .timeout(Duration.ofSeconds(5))
-            .onErrorMap(TimeoutException.class,
-                ex -> new ServiceUnavailableException("User service timeout"));
-    }
-}
 ```
 
-### 2.2 Functional Routing (WebFlux)
+**Server-Sent Events (SSE)** *(server đẩy chuỗi event một chiều qua HTTP)* phù hợp với notification/status stream; WebSocket phù hợp hơn khi cần giao tiếp hai chiều.
 
 ```java
-// Functional endpoints (alternative to @Controller)
-@Configuration
-public class UserRouter {
+Mono<UserProfile> profile(long userId) {
+    Mono<User> user = users.findById(userId);
+    Mono<List<Order>> orders = ordersByUser(userId).collectList();
+    Mono<Address> address = addresses.findByUserId(userId);
 
-    @Bean
-    public RouterFunction<ServerResponse> userRoutes(UserHandler handler) {
-        return RouterFunctions.route()
-            .path("/functional/users", builder -> builder
-                .GET("/{id}", handler::getUser)
-                .GET("", handler::listUsers)
-                .POST("", handler::createUser)
-                .PUT("/{id}", handler::updateUser)
-                .DELETE("/{id}", handler::deleteUser)
-            )
-            .filter((request, next) -> {
-                // Middleware / filter per router
-                log.info("Request: {} {}", request.method(), request.path());
-                return next.handle(request);
-            })
-            .build();
-    }
-}
-
-@Component
-public class UserHandler {
-
-    @Autowired
-    private ReactiveUserService userService;
-
-    public Mono<ServerResponse> getUser(ServerRequest request) {
-        Long id = Long.parseLong(request.pathVariable("id"));
-        return userService.findById(id)
-            .map(UserResponse::from)
-            .flatMap(user -> ServerResponse.ok()
-                .contentType(MediaType.APPLICATION_JSON)
-                .bodyValue(user))
-            .switchIfEmpty(ServerResponse.notFound().build());
-    }
-
-    public Mono<ServerResponse> createUser(ServerRequest request) {
-        return request.bodyToMono(UserRequest.class)
-            .flatMap(req -> {
-                // Manual validation in functional style
-                Errors errors = new BeanPropertyBindingResult(req, "userRequest");
-                validator.validate(req, errors);
-                if (errors.hasErrors()) {
-                    return ServerResponse.badRequest()
-                        .bodyValue(ApiResponse.error("Validation failed",
-                            mapErrors(errors)));
-                }
-                return userService.create(req)
-                    .map(UserResponse::from)
-                    .flatMap(user -> ServerResponse.created(
-                        URI.create("/functional/users/" + user.getId()))
-                        .bodyValue(user));
-            });
-    }
+    return Mono.zip(user, orders, address)
+        .map(t -> new UserProfile(t.getT1(), t.getT2(), t.getT3()));
 }
 ```
+
+`zip` subscribe các nguồn async và chờ đủ kết quả; lợi ích concurrency chỉ xuất hiện nếu các nguồn thực sự non-blocking hoặc được schedule đúng. Luôn đặt timeout, giới hạn concurrency/buffer và quy định behavior khi một nguồn lỗi/rỗng.
+
+> 💡 **Giải thích dễ hiểu:**
+> MVC giống mỗi bàn có một nhân viên phục vụ đứng chờ bếp. WebFlux giống ít nhân viên nhận nhiều bàn rồi quay lại khi bếp rung chuông. Nếu nhân viên WebFlux vẫn đứng chắn trước bếp bằng một cuộc gọi JDBC blocking, lợi thế phục vụ nhiều bàn biến mất.
+
+### Functional endpoint trong WebFlux
+
+```java
+@Bean
+RouterFunction<ServerResponse> userRoutes(UserHandler handler) {
+    return RouterFunctions.route()
+        .GET("/functional/users/{id}", handler::get)
+        .POST("/functional/users", handler::create)
+        .build();
+}
+
+Mono<ServerResponse> get(ServerRequest request) {
+    long id = Long.parseLong(request.pathVariable("id"));
+    return service.findById(id)
+        .flatMap(user -> ServerResponse.ok().bodyValue(UserResponse.from(user)))
+        .switchIfEmpty(ServerResponse.notFound().build());
+}
+```
+
+Functional routing cho quyền kiểm soát pipeline rõ nhưng validation/error mapping phải được tổ chức nhất quán, không rải manual code ở từng handler.
 
 ---
 
-## 3. WebClient & RestClient
+## How – Gọi HTTP bằng `RestClient` và `WebClient`
 
-### 3.1 WebClient (Reactive HTTP Client)
+### `RestClient` – synchronous
+
+**RestClient** *(HTTP client đồng bộ với fluent API)* phù hợp Spring MVC/imperative service. Trong Spring Framework mới, đây là lựa chọn hiện đại thay cho phát triển mới với `RestTemplate`.
 
 ```java
-@Configuration
-public class WebClientConfig {
-
-    @Bean
-    public WebClient orderServiceClient(
-            @Value("${services.order.url}") String baseUrl) {
-        return WebClient.builder()
-            .baseUrl(baseUrl)
-            .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
-            .defaultHeader(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE)
-            .codecs(configurer -> configurer.defaultCodecs()
-                .maxInMemorySize(10 * 1024 * 1024))  // 10MB
-            .filter(ExchangeFilterFunction.ofRequestProcessor(req -> {
-                log.debug("Request: {} {}", req.method(), req.url());
-                return Mono.just(req);
-            }))
-            .filter(ExchangeFilterFunction.ofResponseProcessor(res -> {
-                log.debug("Response: {}", res.statusCode());
-                return Mono.just(res);
-            }))
-            .build();
-    }
+@Bean
+RestClient inventoryClient(RestClient.Builder builder,
+                           @Value("${clients.inventory.base-url}") String baseUrl) {
+    return builder
+        .baseUrl(baseUrl)
+        .defaultHeader(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE)
+        .defaultStatusHandler(HttpStatusCode::is5xxServerError, (request, response) -> {
+            throw new InventoryUnavailableException(response.getStatusCode());
+        })
+        .build();
 }
 
-@Service
-public class OrderClient {
-
-    private final WebClient webClient;
-
-    public OrderClient(WebClient orderServiceClient) {
-        this.webClient = orderServiceClient;
-    }
-
-    public Mono<Order> getOrder(Long id) {
-        return webClient.get()
-            .uri("/orders/{id}", id)
-            .retrieve()
-            .onStatus(HttpStatus::is4xxClientError, response -> {
-                if (response.statusCode() == HttpStatus.NOT_FOUND) {
-                    return Mono.error(new EntityNotFoundException("Order " + id));
-                }
-                return response.createException();
-            })
-            .onStatus(HttpStatus::is5xxServerError, response ->
-                response.bodyToMono(String.class)
-                    .flatMap(body -> Mono.error(
-                        new ServiceUnavailableException("Order service error: " + body))))
-            .bodyToMono(Order.class)
-            .retryWhen(Retry.backoff(3, Duration.ofSeconds(1))
-                .filter(ex -> ex instanceof ServiceUnavailableException))
-            .timeout(Duration.ofSeconds(5));
-    }
-
-    // POST with body
-    public Mono<Order> createOrder(CreateOrderRequest request) {
-        return webClient.post()
-            .uri("/orders")
-            .bodyValue(request)
-            .retrieve()
-            .bodyToMono(Order.class);
-    }
-
-    // Exchange for full response access
-    public Mono<ResponseEntity<Order>> getOrderWithHeaders(Long id) {
-        return webClient.get()
-            .uri("/orders/{id}", id)
-            .retrieve()
-            .toEntity(Order.class);
-    }
+InventoryResponse getInventory(RestClient client, long productId) {
+    return client.get()
+        .uri("/inventory/{id}", productId)
+        .retrieve()
+        .onStatus(status -> status.value() == 404, (request, response) -> {
+            throw new InventoryNotFoundException(productId);
+        })
+        .body(InventoryResponse.class);
 }
 ```
 
-### 3.2 RestClient (Spring Boot 3.2+ - Synchronous)
+### `WebClient` – reactive/non-blocking
+
+**WebClient** *(HTTP client reactive, non-blocking)* phù hợp WebFlux, streaming hoặc fan-out nhiều remote call.
 
 ```java
-// RestClient = modern RestTemplate replacement (fluent, synchronous)
-@Configuration
-public class RestClientConfig {
-
-    @Bean
-    public RestClient productServiceClient(
-            @Value("${services.product.url}") String baseUrl) {
-        return RestClient.builder()
-            .baseUrl(baseUrl)
-            .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
-            .requestInterceptor((request, body, execution) -> {
-                // Add auth token
-                request.getHeaders().add("Authorization", "Bearer " + tokenProvider.getToken());
-                return execution.execute(request, body);
-            })
-            .build();
-    }
-}
-
-@Service
-public class ProductClient {
-
-    private final RestClient restClient;
-
-    public ProductResponse getProduct(Long id) {
-        return restClient.get()
-            .uri("/products/{id}", id)
-            .retrieve()
-            .onStatus(HttpStatusCode::is4xxClientError, (request, response) -> {
-                throw new EntityNotFoundException("Product " + id + " not found");
-            })
-            .body(ProductResponse.class);
-    }
-
-    public List<ProductResponse> searchProducts(String query) {
-        return restClient.get()
-            .uri(uriBuilder -> uriBuilder
-                .path("/products")
-                .queryParam("q", query)
-                .build())
-            .retrieve()
-            .body(new ParameterizedTypeReference<List<ProductResponse>>() {});
-    }
+Mono<OrderResponse> getOrder(WebClient client, long id) {
+    return client.get()
+        .uri("/orders/{id}", id)
+        .retrieve()
+        .onStatus(status -> status.value() == 404,
+            response -> Mono.error(new OrderNotFoundException(id)))
+        .onStatus(HttpStatusCode::is5xxServerError,
+            response -> response.createException()
+                .flatMap(ex -> Mono.error(new OrderServiceUnavailableException(ex))))
+        .bodyToMono(OrderResponse.class)
+        .timeout(Duration.ofSeconds(3))
+        .retryWhen(Retry.backoff(2, Duration.ofMillis(200))
+            .filter(OrderServiceUnavailableException.class::isInstance));
 }
 ```
+
+Production client cần cấu hình connect/read/response timeout ở HTTP connector, connection pool, TLS, max response size và observability. Reactor `.timeout()` bảo vệ pipeline tổng thể nhưng không thay mọi network timeout của client implementation.
+
+Chỉ retry lỗi transient và operation an toàn/idempotent. Không retry mọi `4xx`, validation error hoặc `POST` tạo tài nguyên nếu không có idempotency key. Thêm exponential backoff + jitter và **circuit breaker** *(ngắt gọi tạm thời khi dependency lỗi liên tục)* để tránh retry storm.
+
+> 💡 **Giải thích dễ hiểu:**
+> Timeout là giới hạn thời gian chờ tổng đài; retry là gọi lại; circuit breaker là tạm ngừng gọi khi tổng đài đang hỏng. Nếu hàng nghìn khách đều gọi lại ngay lập tức, hệ thống hỏng càng khó hồi phục, nên cần backoff và giới hạn số lần.
+
+Spring cũng hỗ trợ **HTTP Service Clients** *(Java interface có annotation được tạo proxy)* trên nền `RestClient` hoặc `WebClient`, hữu ích khi nhiều endpoint cùng một service cần contract typed.
 
 ---
 
-## 4. Spring Security
+## How – JWT và OAuth 2.0 Resource Server
 
-### 4.1 JWT Authentication
+**OAuth 2.0 Resource Server** *(API nhận và kiểm tra access token)* nên dùng support có sẵn của Spring Security thay vì tự viết `OncePerRequestFilter` parse JWT.
 
-```java
-// Security Config
-@Configuration
-@EnableWebSecurity
-@EnableMethodSecurity  // enables @PreAuthorize, @PostAuthorize, @Secured
-public class SecurityConfig {
-
-    @Autowired
-    private JwtAuthenticationFilter jwtFilter;
-
-    @Bean
-    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
-        return http
-            .csrf(AbstractHttpConfigurer::disable)
-            .sessionManagement(sm ->
-                sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-            .authorizeHttpRequests(auth -> auth
-                .requestMatchers("/api/auth/**", "/actuator/health").permitAll()
-                .requestMatchers(HttpMethod.GET, "/api/products/**").permitAll()
-                .requestMatchers("/api/admin/**").hasRole("ADMIN")
-                .anyRequest().authenticated())
-            .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class)
-            .exceptionHandling(ex -> ex
-                .authenticationEntryPoint(jwtAuthEntryPoint())
-                .accessDeniedHandler(jwtAccessDeniedHandler()))
-            .build();
-    }
-
-    @Bean
-    public PasswordEncoder passwordEncoder() {
-        return new BCryptPasswordEncoder(12);
-    }
-}
-
-// JWT Filter
-@Component
-@RequiredArgsConstructor
-public class JwtAuthenticationFilter extends OncePerRequestFilter {
-
-    private final JwtTokenProvider tokenProvider;
-    private final UserDetailsService userDetailsService;
-
-    @Override
-    protected void doFilterInternal(HttpServletRequest request,
-                                    HttpServletResponse response,
-                                    FilterChain chain) throws ServletException, IOException {
-        String token = extractToken(request);
-
-        if (token != null && tokenProvider.validateToken(token)) {
-            String username = tokenProvider.getUsernameFromToken(token);
-            UserDetails userDetails = userDetailsService.loadUserByUsername(username);
-
-            UsernamePasswordAuthenticationToken auth =
-                new UsernamePasswordAuthenticationToken(
-                    userDetails, null, userDetails.getAuthorities());
-            auth.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
-
-            SecurityContextHolder.getContext().setAuthentication(auth);
-        }
-
-        chain.doFilter(request, response);
-    }
-
-    private String extractToken(HttpServletRequest request) {
-        String bearerToken = request.getHeader("Authorization");
-        if (StringUtils.hasText(bearerToken) && bearerToken.startsWith("Bearer ")) {
-            return bearerToken.substring(7);
-        }
-        return null;
-    }
-}
-
-// JWT Token Provider
-@Component
-public class JwtTokenProvider {
-
-    @Value("${app.jwt.secret}")
-    private String jwtSecret;
-
-    @Value("${app.jwt.expiration-ms}")
-    private long jwtExpirationMs;
-
-    private SecretKey key;
-
-    @PostConstruct
-    public void init() {
-        key = Keys.hmacShaKeyFor(Decoders.BASE64.decode(jwtSecret));
-    }
-
-    public String generateToken(Authentication authentication) {
-        UserDetails user = (UserDetails) authentication.getPrincipal();
-        return Jwts.builder()
-            .subject(user.getUsername())
-            .claim("roles", user.getAuthorities().stream()
-                .map(GrantedAuthority::getAuthority).toList())
-            .issuedAt(new Date())
-            .expiration(new Date(System.currentTimeMillis() + jwtExpirationMs))
-            .signWith(key)
-            .compact();
-    }
-
-    public String getUsernameFromToken(String token) {
-        return Jwts.parser().verifyWith(key).build()
-            .parseSignedClaims(token).getPayload().getSubject();
-    }
-
-    public boolean validateToken(String token) {
-        try {
-            Jwts.parser().verifyWith(key).build().parseSignedClaims(token);
-            return true;
-        } catch (JwtException | IllegalArgumentException e) {
-            log.error("Invalid JWT: {}", e.getMessage());
-            return false;
-        }
-    }
-}
-```
-
-### 4.2 Method Security
-
-```java
-@Service
-public class OrderService {
-
-    // Role-based
-    @PreAuthorize("hasRole('ADMIN')")
-    public void deleteAll() { }
-
-    // Permission-based
-    @PreAuthorize("hasAuthority('order:write')")
-    public Order createOrder(CreateOrderRequest req) { }
-
-    // SpEL with current user
-    @PreAuthorize("hasRole('ADMIN') or #userId == authentication.principal.id")
-    public List<Order> getUserOrders(Long userId) { }
-
-    // Post-authorize: check return value
-    @PostAuthorize("returnObject.userId == authentication.principal.id or hasRole('ADMIN')")
-    public Order getOrder(Long id) { }
-
-    // Pre/Post filtering on collections
-    @PreFilter("filterObject.status != 'CANCELLED'")
-    public void processOrders(List<Order> orders) { }
-
-    @PostFilter("filterObject.userId == authentication.principal.id")
-    public List<Order> getAllOrders() { }
-}
-```
-
-### 4.3 OAuth2 Resource Server (Spring Boot 3)
+**JWT** *(JSON Web Token có chữ ký)* là một loại bearer token self-contained. Resource Server dùng `JwtDecoder` để xác minh chữ ký và validate claim như `exp`, `nbf`, `iss`; production thường phải validate thêm `aud`.
 
 ```yaml
 spring:
@@ -780,247 +464,318 @@ spring:
     oauth2:
       resourceserver:
         jwt:
-          issuer-uri: https://auth-server.example.com
-          jwk-set-uri: https://auth-server.example.com/.well-known/jwks.json
+          issuer-uri: https://idp.example.com/issuer
+          audiences: https://orders-api.example.com
 ```
+
+Với `issuer-uri`, Spring Security có thể discovery **JWK Set** *(tập public key dùng kiểm chữ ký)* và tự xử lý key rotation. Nếu authorization server không có metadata endpoint hoặc cần chỉ định trực tiếp, cấu hình thêm `jwk-set-uri` nhưng vẫn giữ issuer validation theo hướng dẫn phiên bản.
 
 ```java
 @Configuration
-@EnableWebSecurity
-public class OAuth2ResourceServerConfig {
+@EnableMethodSecurity
+class SecurityConfig {
 
     @Bean
-    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+    SecurityFilterChain apiSecurity(HttpSecurity http) throws Exception {
         return http
+            .csrf(csrf -> csrf.disable()) // Chỉ hợp lý cho stateless bearer-token API
+            .cors(Customizer.withDefaults())
+            .sessionManagement(sm ->
+                sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
-                .requestMatchers("/api/public/**").permitAll()
+                .requestMatchers("/actuator/health/readiness").permitAll()
+                .requestMatchers(HttpMethod.GET, "/api/catalog/**").permitAll()
+                .requestMatchers("/api/admin/**").hasRole("ADMIN")
                 .anyRequest().authenticated())
             .oauth2ResourceServer(oauth2 -> oauth2
-                .jwt(jwt -> jwt.jwtAuthenticationConverter(jwtAuthenticationConverter())))
+                .jwt(jwt -> jwt.jwtAuthenticationConverter(authoritiesConverter())))
             .build();
     }
 
-    @Bean
-    public JwtAuthenticationConverter jwtAuthenticationConverter() {
-        JwtGrantedAuthoritiesConverter grantedAuthoritiesConverter =
-            new JwtGrantedAuthoritiesConverter();
-        grantedAuthoritiesConverter.setAuthoritiesClaimName("roles");
-        grantedAuthoritiesConverter.setAuthorityPrefix("ROLE_");
+    JwtAuthenticationConverter authoritiesConverter() {
+        JwtGrantedAuthoritiesConverter grants = new JwtGrantedAuthoritiesConverter();
+        grants.setAuthoritiesClaimName("roles");
+        grants.setAuthorityPrefix("ROLE_");
 
         JwtAuthenticationConverter converter = new JwtAuthenticationConverter();
-        converter.setJwtGrantedAuthoritiesConverter(grantedAuthoritiesConverter);
+        converter.setJwtGrantedAuthoritiesConverter(grants);
         return converter;
     }
 }
 ```
 
+```java
+@PreAuthorize("hasAuthority('order:write')")
+public OrderResponse createOrder(CreateOrderCommand command) { ... }
+
+@PreAuthorize("hasRole('ADMIN') or #userId == authentication.name")
+public List<OrderResponse> ordersOf(String userId) { ... }
+```
+
+Authentication trả lời “ai đang gọi”; authorization trả lời “người đó được làm gì”. Không tin roles chỉ vì claim tồn tại: phải tin đúng issuer/audience/signature và map claim theo contract của Identity Provider.
+
+JWT khó revoke tức thời vì resource server có thể validate offline. Dùng access token ngắn hạn, rotate key/refresh token phù hợp, hoặc opaque token introspection khi cần trạng thái thu hồi tập trung. Không log bearer token.
+
+**CSRF** *(giả mạo request dùng credential tự động của browser)* không tự biến mất vì API trả JSON. Disable CSRF thường hợp lý cho API stateless chỉ nhận bearer token qua `Authorization` header; nếu dùng session cookie/cookie credential, cần giữ CSRF protection.
+
+> 💡 **Giải thích dễ hiểu:**
+> JWT giống thẻ ra vào có chữ ký của ban quản lý. Bảo vệ cửa không tự in thẻ rồi đoán chữ ký; họ kiểm nơi phát hành, hạn dùng, tòa nhà được phép vào và quyền ghi trên thẻ. Thẻ hợp lệ cũng không có nghĩa được mở mọi phòng.
+
 ---
 
-## 5. OpenAPI 3 Documentation
+## How – OpenAPI và API Documentation
+
+**OpenAPI** *(đặc tả machine-readable của HTTP API)* có thể được sinh từ annotation bằng `springdoc-openapi`. Đây là thư viện ngoài Spring Framework; chọn major/version tương thích với dòng Spring Boot đang dùng thay vì copy một version cũ.
 
 ```xml
-<!-- pom.xml -->
 <dependency>
     <groupId>org.springdoc</groupId>
     <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
-    <version>2.3.0</version>
+    <version>${springdoc.version}</version>
 </dependency>
 ```
 
+WebFlux dùng starter `springdoc-openapi-starter-webflux-ui` tương ứng.
+
 ```java
-@Configuration
-public class OpenApiConfig {
-
-    @Bean
-    public OpenAPI openAPI() {
-        return new OpenAPI()
-            .info(new Info()
-                .title("Order Service API")
-                .description("Order management service")
-                .version("v2.0")
-                .contact(new Contact().name("Team Backend").email("backend@company.com")))
-            .addSecurityItem(new SecurityRequirement().addList("bearerAuth"))
-            .components(new Components()
-                .addSecuritySchemes("bearerAuth", new SecurityScheme()
-                    .name("bearerAuth")
-                    .type(SecurityScheme.Type.HTTP)
-                    .scheme("bearer")
-                    .bearerFormat("JWT")));
-    }
-}
-
-// Controller documentation
-@RestController
-@RequestMapping("/api/orders")
-@Tag(name = "Orders", description = "Order management endpoints")
-public class OrderController {
-
-    @Operation(summary = "Get order by ID",
-        description = "Returns a single order. Requires VIEWER or ADMIN role.")
-    @ApiResponses({
-        @ApiResponse(responseCode = "200", description = "Order found",
-            content = @Content(schema = @Schema(implementation = OrderResponse.class))),
-        @ApiResponse(responseCode = "404", description = "Order not found",
-            content = @Content(schema = @Schema(implementation = ApiResponse.class))),
-        @ApiResponse(responseCode = "401", description = "Unauthorized")
-    })
-    @GetMapping("/{id}")
-    public ApiResponse<OrderResponse> getOrder(
-        @Parameter(description = "Order ID", required = true, example = "42")
-        @PathVariable Long id) {
-        return ApiResponse.ok(orderService.findById(id));
-    }
-}
+@Operation(summary = "Get order by id")
+@ApiResponses({
+    @ApiResponse(responseCode = "200", description = "Order found"),
+    @ApiResponse(responseCode = "404", description = "Order not found",
+        content = @Content(schema = @Schema(implementation = ProblemDetail.class))),
+    @ApiResponse(responseCode = "401", description = "Authentication required"),
+    @ApiResponse(responseCode = "403", description = "Insufficient permission"))
+})
+@GetMapping("/{id}")
+OrderResponse get(@PathVariable long id) { ... }
 ```
 
 ```yaml
-# application.yml
 springdoc:
   api-docs:
     path: /api-docs
   swagger-ui:
     path: /swagger-ui.html
-    operationsSorter: method
-    tagsSorter: alpha
   show-actuator: false
-  default-produces-media-type: application/json
 ```
+
+OpenAPI phải mô tả cả security scheme, pagination, headers, `ProblemDetail` và example. Trong CI, export spec, lint và kiểm breaking change. Swagger UI là interactive client có thể gọi production API, nên hạn chế quyền truy cập hoặc tắt ở môi trường không cần thiết.
 
 ---
 
-## 6. CORS Configuration
+## How – CORS đúng với Spring Security
+
+**CORS** *(chính sách browser cho request khác origin)* cho phép server công bố origin/method/header nào được browser gọi. **Preflight** *(request `OPTIONS` hỏi quyền trước request thật)* thường không mang cookie; vì vậy CORS phải được xử lý trước Spring Security.
 
 ```java
-@Configuration
-public class CorsConfig implements WebMvcConfigurer {
-
-    @Override
-    public void addCorsMappings(CorsRegistry registry) {
-        registry.addMapping("/api/**")
-            .allowedOriginPatterns("https://*.example.com", "http://localhost:*")
-            .allowedMethods("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS")
-            .allowedHeaders("*")
-            .allowCredentials(true)
-            .maxAge(3600);
-    }
-}
-
-// Or per endpoint
-@CrossOrigin(origins = "https://frontend.example.com", maxAge = 3600)
-@RestController
-public class ProductController { }
-
-// With Spring Security (must configure security too)
 @Bean
-public CorsConfigurationSource corsConfigurationSource() {
+UrlBasedCorsConfigurationSource corsConfigurationSource() {
     CorsConfiguration config = new CorsConfiguration();
-    config.setAllowedOriginPatterns(List.of("https://*.example.com"));
-    config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
-    config.setAllowedHeaders(List.of("*"));
+    config.setAllowedOrigins(List.of("https://app.example.com"));
+    config.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE"));
+    config.setAllowedHeaders(List.of("Authorization", "Content-Type", "Idempotency-Key"));
+    config.setExposedHeaders(List.of("Location", "Retry-After"));
     config.setAllowCredentials(true);
     config.setMaxAge(3600L);
 
     UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
-    source.registerCorsConfiguration("/**", config);
+    source.registerCorsConfiguration("/api/**", config);
     return source;
 }
 
-// Add to SecurityFilterChain:
-// .cors(cors -> cors.configurationSource(corsConfigurationSource()))
+// SecurityFilterChain:
+// .cors(Customizer.withDefaults())
 ```
+
+Khi `allowCredentials=true`, không dùng wildcard `*` cho `allowedOrigins`; dùng origin cụ thể hoặc `allowedOriginPatterns` có kiểm soát. Hạn chế methods/headers theo nhu cầu production.
+
+CORS không phải authentication, authorization hay firewall. Nó chủ yếu được browser thực thi; `curl` hoặc service-to-service client không bị CORS ngăn. CORS cũng không thay CSRF protection.
+
+> 💡 **Giải thích dễ hiểu:**
+> CORS giống danh sách website được phép gọi từ trình duyệt, không phải khóa cửa server. Người dùng công cụ ngoài trình duyệt vẫn có thể gửi request, nên cửa thật vẫn phải có authentication và authorization.
 
 ---
 
-## 7. Rate Limiting with Bucket4j
+## How – Rate Limiting
 
-```xml
-<dependency>
-    <groupId>com.bucket4j</groupId>
-    <artifactId>bucket4j-core</artifactId>
-    <version>8.7.0</version>
-</dependency>
-<dependency>
-    <groupId>com.bucket4j</groupId>
-    <artifactId>bucket4j-redis</artifactId>
-    <version>8.7.0</version>
-</dependency>
-```
+**Rate limiting** *(giới hạn số request theo thời gian)* bảo vệ capacity và chống abuse. **Token bucket** *(xô token được nạp dần)* cho phép một lượng burst ngắn nhưng giữ tốc độ trung bình.
+
+Nên áp nhiều lớp:
+
+1. gateway/edge limit theo API key, tenant hoặc authenticated principal;
+2. service limit cho operation đắt tiền như OTP, export hoặc search;
+3. downstream concurrency limit để bảo vệ database/dependency.
+
+Spring Cloud Gateway có `RequestRateLimiter`; WebFlux gateway thường dùng Redis token bucket. Spring Cloud Gateway Server MVC có Bucket4j rate limiter. Khi vượt giới hạn, mặc định phù hợp là `429 Too Many Requests`, kèm `Retry-After` và error body thống nhất.
 
 ```java
-@Component
-public class RateLimitingFilter extends OncePerRequestFilter {
+// Ý tưởng ở application filter; bucketStore phải là distributed store trong multi-instance.
+ConsumptionProbe probe = bucketStore.forKey(rateLimitKey(request))
+    .tryConsumeAndReturnRemaining(1);
 
-    private final Map<String, Bucket> buckets = new ConcurrentHashMap<>();
-
-    // 100 requests per minute per IP
-    private Bucket getBucket(String key) {
-        return buckets.computeIfAbsent(key, k -> Bucket.builder()
-            .addLimit(Bandwidth.classic(100, Refill.greedy(100, Duration.ofMinutes(1))))
-            .build());
-    }
-
-    @Override
-    protected void doFilterInternal(HttpServletRequest request,
-                                    HttpServletResponse response,
-                                    FilterChain chain) throws IOException, ServletException {
-        String clientIp = getClientIp(request);
-        Bucket bucket = getBucket(clientIp);
-
-        ConsumptionProbe probe = bucket.tryConsumeAndReturnRemaining(1);
-
-        if (probe.isConsumed()) {
-            response.setHeader("X-Rate-Limit-Remaining",
-                String.valueOf(probe.getRemainingTokens()));
-            chain.doFilter(request, response);
-        } else {
-            long waitSeconds = probe.getNanosToWaitForRefill() / 1_000_000_000;
-            response.setHeader("X-Rate-Limit-Retry-After-Seconds", String.valueOf(waitSeconds));
-            response.sendError(HttpStatus.TOO_MANY_REQUESTS.value(),
-                "Rate limit exceeded. Retry after " + waitSeconds + "s");
-        }
-    }
+if (!probe.isConsumed()) {
+    long nanos = probe.getNanosToWaitForRefill();
+    long retryAfterSeconds = Math.max(1, (nanos + 999_999_999L) / 1_000_000_000L);
+    response.setStatus(HttpStatus.TOO_MANY_REQUESTS.value());
+    response.setHeader(HttpHeaders.RETRY_AFTER, String.valueOf(retryAfterSeconds));
+    writeProblemDetail(response, "RATE_LIMIT_EXCEEDED");
+    return;
 }
-
-// Custom annotation for method-level rate limiting
-@Target(ElementType.METHOD)
-@Retention(RetentionPolicy.RUNTIME)
-public @interface RateLimit {
-    int requests() default 100;
-    int duration() default 60;  // seconds
-    String key() default "ip";  // "ip" | "user" | custom SpEL
-}
-
-@RateLimit(requests = 5, duration = 60, key = "user")  // 5 per minute per user
-@PostMapping("/send-otp")
-public ResponseEntity<?> sendOtp(@RequestBody SendOtpRequest req) { ... }
+chain.doFilter(request, response);
 ```
+
+`ConcurrentHashMap<String, Bucket>` chỉ phù hợp demo/single instance: limit không chia sẻ giữa replicas, mất khi restart và map có thể tăng vô hạn. Với cluster, dùng Redis/Hazelcast/JCache hoặc gateway-managed distributed state.
+
+Không tin trực tiếp `X-Forwarded-For`; chỉ dùng forwarded header do reverse proxy tin cậy đã ghi đè/chuẩn hóa. Principal/API key thường là key công bằng hơn IP vì nhiều người có thể chung NAT và attacker có thể xoay IP.
+
+> 💡 **Giải thích dễ hiểu:**
+> Token bucket giống bãi xe phát một số vé mỗi phút. Có thể dùng vé tích lại cho giờ cao điểm ngắn, nhưng khi hết vé phải chờ. Nếu mỗi cổng giữ sổ vé riêng trong RAM, người lái chỉ cần đổi cổng để vượt giới hạn; vì vậy nhiều instance phải dùng chung sổ.
 
 ---
 
-## 8. HTTP Compression & HTTP/2
+## How – HTTP Compression, HTTP/2 và Transport
 
 ```yaml
-# application.yml
 server:
   compression:
     enabled: true
-    mime-types: application/json,application/xml,text/html,text/plain
-    min-response-size: 1024   # compress responses > 1KB
+    mime-types: application/json,application/problem+json,text/html,text/plain
+    min-response-size: 2KB
   http2:
-    enabled: true             # requires HTTPS in production
-  ssl:
-    key-store: classpath:keystore.p12
-    key-store-password: ${SSL_KEYSTORE_PASSWORD}
-    key-store-type: PKCS12
+    enabled: true
 ```
+
+**HTTP compression** *(nén response để giảm băng thông)* đổi CPU lấy network; benchmark với payload thật và tránh nén các response chứa secret bị phản chiếu trong bối cảnh có rủi ro side-channel. **HTTP/2** *(nhiều stream trên một connection)* cần server/runtime hoặc reverse proxy hỗ trợ; TLS có thể terminate ở load balancer thay vì trong ứng dụng.
+
+Ngoài ra cần giới hạn request/header/upload size, connection/idle timeout, graceful shutdown và forwarded-header trust. Không bật một config rồi giả định CDN, ingress và embedded server đều có cùng behavior.
 
 ---
 
-## Ghi chú – Topics tiếp theo
+## When – Chọn công cụ nào?
 
-- **JPA N+1**: EntityGraph, JOIN FETCH, Projections → `springboot_data.md`
-- **Spring Cache**: @Cacheable, Redis, multi-level cache → `springboot_data.md`
-- **Spring Kafka**: @KafkaListener, consumer groups → `springboot_messaging.md`
-- **@TransactionalEventListener**: reliable events → `springboot_messaging.md`
-- **@WebMvcTest**: testing controllers in isolation → `springboot_testing.md`
-- **Actuator**: custom health, metrics → `springboot_production.md`
+| Tình huống | Lựa chọn khuyến nghị |
+|---|---|
+| CRUD + JPA/JDBC, team imperative | Spring MVC + `RestClient` |
+| Nhiều remote I/O non-blocking, SSE/streaming | WebFlux + `WebClient` |
+| MVC nhưng cần fan-out HTTP async | Có thể dùng `WebClient`; đo lợi ích trước khi đổi cả stack |
+| API nhận JWT từ IdP | OAuth2 Resource Server + `issuer-uri`/audience |
+| Cần revoke token gần tức thời | Cân nhắc opaque token introspection hoặc token lifetime ngắn |
+| Rate limit toàn hệ thống nhiều instance | Gateway + distributed store |
+| Giới hạn operation nghiệp vụ riêng | Service-level limiter theo principal/tenant |
+| Public/partner API | OpenAPI, version/deprecation policy, quota và contract test bắt buộc |
+
+Nếu Spring MVC đang đáp ứng SLO, không chuyển sang WebFlux chỉ vì “reactive nhanh hơn”. Lợi ích WebFlux chủ yếu là scale concurrency với ít thread hơn khi pipeline non-blocking và có nhiều I/O latency.
+
+---
+
+## Compare – Các lựa chọn dễ nhầm
+
+### Success wrapper và `ProblemDetail`
+
+| Cách | Ưu điểm | Nhược điểm |
+|---|---|---|
+| Trả DTO trực tiếp, lỗi dùng `ProblemDetail` | Theo HTTP tự nhiên, ít nesting | Metadata success phải qua header hoặc DTO riêng |
+| Wrapper cho success, lỗi dùng `ProblemDetail` | Success metadata thống nhất | Client có hai shape |
+| Wrapper cho mọi response | Một shape bề ngoài | Dễ trả `200` cho lỗi, bỏ phí media type/status chuẩn |
+
+### JWT và opaque token
+
+| | JWT | Opaque token |
+|---|---|---|
+| Validation | Local bằng chữ ký/JWK | Gọi introspection server hoặc cache |
+| Latency/dependency | Thấp, ít phụ thuộc IdP runtime | Phụ thuộc introspection availability |
+| Revocation | Khó tức thời | Quản lý tập trung dễ hơn |
+| Dữ liệu token | Claim nhìn thấy được, không phải mã hóa mặc định | Client không biết nội dung |
+
+### `RestClient` và `WebClient`
+
+| | `RestClient` | `WebClient` |
+|---|---|---|
+| API | Synchronous/fluent | Reactive/non-blocking |
+| Stack hợp | MVC/imperative | WebFlux/reactive/streaming |
+| Dùng sai phổ biến | Thiếu network timeout | Gọi `.block()` trên event loop |
+
+---
+
+## Trade-offs
+
+- Chuẩn hóa `ProblemDetail` giảm client-specific error handling nhưng cần governance cho type URI/error code.
+- Validation annotation tiện, nhưng validation group/custom validator I/O quá nhiều làm contract khó hiểu và chậm.
+- WebFlux tiết kiệm thread dưới I/O concurrency cao, đổi lại debugging, context propagation và reactive composition khó hơn.
+- JWT giảm dependency runtime vào IdP nhưng revocation và claim lifecycle phức tạp.
+- OpenAPI code-first giảm viết tay nhưng annotation có thể lệch behavior nếu CI không kiểm spec.
+- CORS/rate limit ở app linh hoạt nhưng có thể trùng gateway; cần một source of truth cho policy.
+- Retry tăng khả năng chịu lỗi transient nhưng có thể nhân tải và tạo duplicate nếu operation không idempotent.
+
+---
+
+## Production – Checklist triển khai
+
+### API contract
+
+- Dùng DTO, status/header đúng và giới hạn pagination.
+- Error theo RFC 9457; không lộ stack trace/PII/secret.
+- Có version/deprecation policy và contract test.
+- OpenAPI được lint, diff breaking change và publish đúng version.
+
+### Security
+
+- Dùng Spring Security Resource Server; validate signature, issuer, audience, expiry/not-before.
+- Phân biệt `401` và `403`; method security cho rule cần defense-in-depth.
+- Chỉ disable CSRF cho đúng kiến trúc stateless bearer API.
+- CORS allowlist nhỏ; Swagger/Actuator không public ngoài ý muốn.
+- Không log token/password; secret/key lấy từ secret manager và có rotation.
+
+### Resilience và outbound HTTP
+
+- Connect/read/response timeout, bounded connection pool và response-size limit.
+- Retry có backoff/jitter chỉ cho transient + idempotent request.
+- Circuit breaker, bulkhead/concurrency limit và fallback có semantics rõ.
+- Propagate trace context; không propagate toàn bộ inbound header mù quáng.
+
+### Rate limit và proxy
+
+- Distributed limit cho nhiều instance; key theo tenant/principal/API key.
+- `429` + `Retry-After`; metrics cho allowed/denied/latency.
+- Chỉ tin forwarded headers từ proxy đã cấu hình trust boundary.
+
+### Observability và test
+
+- Access log có method, route template, status, latency, trace ID; tránh raw sensitive URL/body.
+- Metrics theo route/status, active request, pool saturation, downstream latency/error.
+- Test `@WebMvcTest`/`WebTestClient`, security, validation, ProblemDetail, CORS preflight và rate limit.
+- Load test cả dependency chậm, retry storm, large payload và graceful shutdown.
+
+> 💡 **Giải thích dễ hiểu:**
+> Production checklist giống kiểm tra máy bay trước khi cất cánh. Unit test chứng minh từng bộ phận chạy; checklist còn xác nhận nhiên liệu, tải trọng, liên lạc, thời tiết và phương án khi một động cơ gặp sự cố.
+
+---
+
+## Nguồn chính thức
+
+- [Spring Framework – RFC 9457 Error Responses](https://docs.spring.io/spring-framework/reference/web/webmvc/mvc-ann-rest-exceptions.html)
+- [Spring Framework – MVC Validation](https://docs.spring.io/spring-framework/reference/web/webmvc/mvc-controller/ann-validation.html)
+- [Spring Framework – WebFlux overview và lựa chọn MVC/WebFlux](https://docs.spring.io/spring-framework/reference/web/webflux/new-framework.html)
+- [Spring Framework – REST Clients](https://docs.spring.io/spring-framework/reference/integration/rest-clients.html)
+- [Spring Security – OAuth2 Resource Server JWT](https://docs.spring.io/spring-security/reference/servlet/oauth2/resource-server/jwt.html)
+- [Spring Security – CORS](https://docs.spring.io/spring-security/reference/servlet/integrations/cors.html)
+- [Spring Security – CSRF](https://docs.spring.io/spring-security/reference/servlet/exploits/csrf.html)
+- [Spring Cloud Gateway – RequestRateLimiter](https://docs.spring.io/spring-cloud-gateway/reference/spring-cloud-gateway-server-webflux/gatewayfilter-factories/requestratelimiter-factory.html)
+- [springdoc-openapi – Getting Started](https://springdoc.org/getting-started.html)
+- [RFC Editor – RFC 9457 Problem Details for HTTP APIs](https://www.rfc-editor.org/rfc/rfc9457)
+
+---
+
+## Ghi chú – Chủ đề tiếp theo
+
+- Persistence, transaction và N+1: [Spring Boot Data](springboot_data.md).
+- Spring Kafka, reliable events: [Spring Boot Messaging](springboot_messaging.md).
+- Controller/slice/integration test: [Spring Boot Testing](springboot_testing.md).
+- Actuator, metrics, logging và deployment: [Spring Boot Production](springboot_production.md).
+- Dependency injection, configuration và lifecycle: [Spring Boot Core](springboot_core.md).
+
+> Keywords: REST semantics, idempotency key, DTO mapping, RFC 9457, `ProblemDetail`, `ErrorResponse`, `ResponseEntityExceptionHandler`, `HandlerMethodValidationException`, Spring MVC, WebFlux, Reactor, backpressure, SSE, functional endpoint, `RestClient`, `WebClient`, HTTP Service Client, OAuth2 Resource Server, JWT, JWK rotation, audience validation, CSRF, CORS preflight, OpenAPI, Bucket4j, token bucket, `429 Too Many Requests`, retry/backoff/jitter, circuit breaker, HTTP/2.
+
+---
+
+*Cập nhật lần cuối: 2026-07-27*

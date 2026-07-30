@@ -1,984 +1,1016 @@
 # Redis Design Patterns
 
-## 1. Caching Patterns
+> Pattern tốt không chỉ chạy đúng khi mọi thứ khỏe. Nó phải nói rõ dữ liệu nào có thẩm quyền, operation nào atomic, có thể mất/trùng/stale điều gì và recovery ra sao. Nội dung được chuẩn hóa theo Redis Open Source 8.8.
 
-### 1.1 Cache-Aside (Lazy Loading)
+## 1. Chọn pattern từ invariant
 
-**What**: Application code tự quản lý cache. Read-through khi cache miss.
+Trước khi chọn data type hay command, trả lời:
 
-```
-Read flow:
-  App → GET cache_key
-  Cache HIT  → return from cache
-  Cache MISS → read from DB → SET in cache → return
+1. Redis là cache có thể tái tạo hay source of truth?
+2. Chấp nhận stale data trong bao lâu?
+3. Message được phép mất, trùng hoặc xử lý lại không?
+4. Side effect có idempotent không?
+5. Atomic boundary nằm trong một Redis key/slot hay qua database khác?
+6. Khi client timeout, làm sao biết operation đã chạy?
+7. Dữ liệu được giữ bao lâu và ai dọn?
 
-Write flow:
-  App → write to DB
-  App → DEL cache_key  (invalidate, not update)
-```
+### 1.1 Bảng chọn nhanh
 
-```python
-import redis
-import json
-from functools import wraps
-from typing import Optional, Callable, Any
+| Nhu cầu | Pattern bắt đầu | Guarantee chính | Điều phải tự xử lý |
+|---|---|---|---|
+| Giảm tải database | Cache-aside | Staleness bị chặn bởi TTL/invalidation | Stampede, race và miss fallback |
+| Fan-out realtime cho client online | Pub/Sub | At-most-once | Disconnect là mất message |
+| Event có replay/consumer group | Streams | Thường at-least-once | Idempotency, retry, retention, DLQ |
+| Giới hạn request | `INCREX`, sliding window hoặc token bucket | Atomic trong một key/slot | Scope, clock, fail-open/closed |
+| Session dùng chung nhiều app node | Hash/String + TTL | Trạng thái server-side có expiry | Security, durability, logout/index |
+| Phối hợp công việc ngắn | Lease/lock | Mutual exclusion có thời hạn | Ownership, expiry, fencing |
+| Xếp hạng realtime | Sorted Set | Update/rank atomic theo member | Tie, season, hot key, retention |
+| Background jobs | Streams hoặc `BLMOVE` | At-least-once nếu thiết kế recovery | Visibility timeout, retry, DLQ |
+| Chạy job vào tương lai | Sorted Set scheduler | Atomic claim cần script/function | Polling/wakeup, clock, retry |
 
-r = redis.Redis(decode_responses=True)
-
-def get_user(user_id: int) -> dict:
-    cache_key = f"user:{user_id}"
-    
-    # 1. Check cache
-    cached = r.get(cache_key)
-    if cached:
-        return json.loads(cached)
-    
-    # 2. Cache miss: fetch from DB
-    user = db.query("SELECT * FROM users WHERE id = ?", user_id)
-    
-    # 3. Store in cache with TTL
-    r.setex(cache_key, 3600, json.dumps(user))
-    
-    return user
-
-def update_user(user_id: int, data: dict):
-    # 1. Update DB first
-    db.execute("UPDATE users SET ... WHERE id = ?", user_id)
-    
-    # 2. Invalidate cache (not update!)
-    r.delete(f"user:{user_id}")
-    # Why delete not update? Avoids race condition:
-    # T1: write DB → T2: read DB → T2: write cache → T1: write cache (stale!)
-    # Delete + Cache-Aside: consistent
-
-# Generic cache decorator
-def cache(key_prefix: str, ttl: int = 3600, key_func: Optional[Callable] = None):
-    def decorator(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            # Build cache key
-            if key_func:
-                cache_key = f"{key_prefix}:{key_func(*args, **kwargs)}"
-            else:
-                cache_key = f"{key_prefix}:{':'.join(str(a) for a in args)}"
-            
-            cached = r.get(cache_key)
-            if cached is not None:
-                return json.loads(cached)
-            
-            result = func(*args, **kwargs)
-            r.setex(cache_key, ttl, json.dumps(result))
-            return result
-        
-        wrapper.invalidate = lambda *args, **kwargs: r.delete(
-            f"{key_prefix}:{key_func(*args, **kwargs)}" if key_func
-            else f"{key_prefix}:{':'.join(str(a) for a in args)}"
-        )
-        return wrapper
-    return decorator
-
-@cache("product", ttl=1800, key_func=lambda product_id: product_id)
-def get_product(product_id: int) -> dict:
-    return db.get_product(product_id)
-
-# Usage
-product = get_product(42)     # cache miss → DB
-product = get_product(42)     # cache hit → Redis
-get_product.invalidate(42)    # invalidate cache
-```
-
-### 1.2 Write-Through
-
-**What**: Application write cả DB lẫn cache đồng thời.
-
-```python
-def update_product_price(product_id: int, new_price: float):
-    # Write to DB AND cache in same transaction
-    cache_key = f"product:{product_id}"
-    
-    # Strategy: write DB first, then cache
-    db.execute("UPDATE products SET price = ? WHERE id = ?", new_price, product_id)
-    
-    # Update cache (không delete → giảm cache miss)
-    cached_product = r.get(cache_key)
-    if cached_product:
-        product = json.loads(cached_product)
-        product['price'] = new_price
-        r.setex(cache_key, 3600, json.dumps(product))
-
-# Better: pipeline both operations
-def update_with_pipeline(product_id: int, new_price: float):
-    db.execute("UPDATE products SET price = ? WHERE id = ?", new_price, product_id)
-    
-    with r.pipeline() as pipe:
-        pipe.hset(f"product:{product_id}", "price", new_price)
-        pipe.expire(f"product:{product_id}", 3600)
-        pipe.execute()
-```
-
-**Trade-offs:**
-| | Cache-Aside | Write-Through |
-|--|------------|--------------|
-| Cache freshness | May be stale until TTL | Always fresh |
-| Write latency | Lower (only DB) | Higher (DB + cache) |
-| Cache population | On demand | On every write |
-| Cache size | Only accessed data | All written data |
-| Best for | Read-heavy, tolerate stale | Write-heavy, need fresh data |
-
-### 1.3 Write-Behind (Write-Back)
-
-**What**: Write cache trước, async write DB sau.
-
-```python
-import asyncio
-from datetime import datetime
-
-class WriteBehindCache:
-    def __init__(self, redis_client, flush_interval=5):
-        self.r = redis_client
-        self.flush_interval = flush_interval
-        self.dirty_keys = set()
-    
-    def write(self, key: str, value: dict):
-        # Write to cache immediately (fast)
-        self.r.hset(f"cache:{key}", mapping=value)
-        self.r.expire(f"cache:{key}", 3600)
-        
-        # Track dirty keys for DB flush
-        self.r.sadd("cache:dirty_keys", key)
-        self.r.expire("cache:dirty_keys", 86400)
-    
-    async def flush_loop(self):
-        while True:
-            await asyncio.sleep(self.flush_interval)
-            await self.flush_dirty_keys()
-    
-    async def flush_dirty_keys(self):
-        # Get and clear dirty set atomically
-        dirty_keys = self.r.smembers("cache:dirty_keys")
-        if not dirty_keys:
-            return
-        
-        self.r.delete("cache:dirty_keys")
-        
-        for key in dirty_keys:
-            data = self.r.hgetall(f"cache:{key}")
-            if data:
-                await db.upsert(key, data)  # async DB write
-
-# Risk: data loss if Redis crashes before flush
-# Mitigation: Redis persistence (AOF everysec) + proper shutdown handling
-```
-
-### 1.4 Cache Stampede (Thundering Herd) Prevention
-
-```python
-# Problem: key expires → 100 requests simultaneously → 100 DB queries!
-
-# Solution 1: Probabilistic Early Expiration
-import math
-import random
-import time
-
-def get_with_early_expiry(key: str, ttl: int, recompute_fn, beta=1.0):
-    data_str = r.get(key)
-    
-    if data_str:
-        data = json.loads(data_str)
-        remaining_ttl = r.ttl(key)
-        
-        # XFetch algorithm: early expiry probability
-        # Simulate: should we refresh early?
-        delta = time.time() - data.get('_computed_at', 0)
-        if -delta * beta * math.log(random.random()) >= remaining_ttl:
-            # Refresh early (only this one request does it)
-            result = recompute_fn()
-            r.setex(key, ttl, json.dumps({**result, '_computed_at': time.time()}))
-            return result
-        
-        return {k: v for k, v in data.items() if not k.startswith('_')}
-    
-    # Cache miss
-    result = recompute_fn()
-    r.setex(key, ttl, json.dumps({**result, '_computed_at': time.time()}))
-    return result
-
-# Solution 2: Mutex lock on cache miss
-import redis
-
-def get_with_mutex(key: str, ttl: int, recompute_fn):
-    cached = r.get(key)
-    if cached:
-        return json.loads(cached)
-    
-    # Try to acquire lock (only one request recomputes)
-    lock_key = f"{key}:lock"
-    lock_acquired = r.set(lock_key, "1", nx=True, ex=10)  # 10s timeout
-    
-    if lock_acquired:
-        try:
-            result = recompute_fn()
-            r.setex(key, ttl, json.dumps(result))
-            return result
-        finally:
-            r.delete(lock_key)
-    else:
-        # Wait for lock holder to populate cache
-        for _ in range(10):
-            import time; time.sleep(0.1)
-            cached = r.get(key)
-            if cached:
-                return json.loads(cached)
-        # Fallback: direct DB query
-        return recompute_fn()
-```
+Không có pattern nào tạo transaction nguyên tử giữa Redis và PostgreSQL/Kafka/HTTP chỉ bằng pipeline.
 
 ---
 
-## 2. Pub/Sub
+## 2. Caching patterns
 
-### 2.1 Basic Pub/Sub
+### 2.1 Cache-aside
 
-```bash
-# Publisher
-PUBLISH news:sports "Team A wins 3-2!"
-PUBLISH news:tech "New iPhone announced"
+Cache-aside phù hợp khi database là source of truth:
 
-# Subscriber (blocking, receives messages)
-SUBSCRIBE news:sports news:tech         # exact channel names
-PSUBSCRIBE news:*                       # pattern subscription
-# Returns: subscribe/message/psubscribe/pmessage types
+```text
+READ
+App -> GET cache
+  hit  -> trả dữ liệu
+  miss -> đọc DB -> SET cache với TTL -> trả dữ liệu
 
-# Unsubscribe
-UNSUBSCRIBE news:sports
-PUNSUBSCRIBE news:*
-
-# Check subscribers
-PUBSUB CHANNELS news:*                  # list active channels matching pattern
-PUBSUB NUMSUB news:sports news:tech     # subscriber count per channel
-PUBSUB NUMPAT                           # number of pattern subscriptions
-PUBSUB SHARDCHANNELS *                  # Redis 7.0+ shard channels
+WRITE
+App -> commit DB -> xóa/invalidate cache
 ```
 
-```python
-# Python Pub/Sub
-import redis
-import threading
-import json
+Ví dụ Java ở mức khái niệm:
 
-r = redis.Redis(decode_responses=True)
-
-# Subscriber (runs in background thread)
-def start_subscriber():
-    pubsub = r.pubsub(ignore_subscribe_messages=True)
-    pubsub.subscribe(
-        **{
-            'news:sports': lambda msg: print(f"Sports: {msg['data']}"),
-            'notifications:user:123': lambda msg: handle_user_notification(msg['data']),
-        }
-    )
-    pubsub.psubscribe(**{'notifications:*': handle_wildcard_notification})
-    
-    # Blocking listen (runs forever)
-    pubsub.run_in_thread(sleep_time=0.001, daemon=True)
-
-# Publisher
-def publish_notification(user_id: int, event: dict):
-    channel = f"notifications:user:{user_id}"
-    r.publish(channel, json.dumps(event))
-
-# Limitations:
-# - Not durable: if subscriber disconnects, messages are LOST
-# - Not persistent: no storage
-# - No consumer groups
-# → For reliable messaging, use Streams instead!
-```
-
-### 2.2 Pub/Sub Use Cases vs Streams
-
-```
-Pub/Sub best for:
-✓ Real-time notifications (chat messages, live scores)
-✓ Cache invalidation broadcast (invalidate cache on multiple servers)
-✓ Lightweight fan-out (no need to persist)
-
-Streams best for:
-✓ Event sourcing (need persistence)
-✓ Multiple consumer groups (each group processes independently)
-✓ Replay events (new consumer catches up from past)
-✓ Reliable delivery with acknowledgment
-```
-
----
-
-## 3. Streams (Event Streaming)
-
-### 3.1 Producer-Consumer with Consumer Groups
-
-```python
-import redis
-import json
-import threading
-import time
-
-r = redis.Redis(decode_responses=True)
-STREAM = "order:events"
-GROUP = "order-processor"
-CONSUMER = f"worker-{threading.current_thread().ident}"
-
-# Setup stream and group
-def setup_stream():
-    try:
-        # Create consumer group (MKSTREAM creates stream if not exists)
-        r.xgroup_create(STREAM, GROUP, id='0', mkstream=True)
-    except redis.exceptions.ResponseError as e:
-        if "BUSYGROUP" not in str(e):
-            raise
-
-# Producer: publish events
-def publish_order(order_id: str, data: dict) -> str:
-    entry_id = r.xadd(
-        STREAM,
-        {
-            'order_id': order_id,
-            'data': json.dumps(data),
-            'timestamp': str(time.time()),
-        },
-        maxlen=100000,  # cap stream size (~= retain last 100k events)
-        approximate=True,  # ~ = faster, slightly over 100k
-    )
-    return entry_id
-
-# Consumer: process events
-def process_events(consumer_name: str, batch_size: int = 10):
-    while True:
-        try:
-            # Read up to batch_size undelivered messages for this consumer
-            messages = r.xreadgroup(
-                groupname=GROUP,
-                consumername=consumer_name,
-                streams={STREAM: '>'},   # '>' = only new, undelivered
-                count=batch_size,
-                block=5000,              # block 5000ms if no messages
-            )
-            
-            if not messages:
-                continue
-            
-            for stream_name, entries in messages:
-                for entry_id, fields in entries:
-                    try:
-                        order_id = fields['order_id']
-                        data = json.loads(fields['data'])
-                        
-                        # Process the order
-                        process_order(order_id, data)
-                        
-                        # Acknowledge: remove from pending list
-                        r.xack(STREAM, GROUP, entry_id)
-                        
-                    except Exception as e:
-                        print(f"Failed to process {entry_id}: {e}")
-                        # Don't ACK → stays in pending for retry/DLQ
-        
-        except Exception as e:
-            print(f"Consumer error: {e}")
-            time.sleep(1)
-
-# Dead Letter Queue: handle stale pending messages
-def reclaim_stale_messages(idle_ms: int = 60000):
-    while True:
-        time.sleep(30)
-        
-        # Find messages pending for > 60s (likely dead consumer)
-        response = r.xautoclaim(
-            name=STREAM,
-            groupname=GROUP,
-            consumername="reclaim-worker",
-            min_idle_time=idle_ms,
-            start_id='0',
-            count=100,
-        )
-        
-        next_id, claimed, deleted = response
-        
-        for entry_id, fields in claimed:
-            delivery_count = get_delivery_count(entry_id)  # custom tracking
-            
-            if delivery_count >= 3:
-                # Too many retries → move to DLQ
-                r.xadd("order:events:dlq", fields)
-                r.xack(STREAM, GROUP, entry_id)
-                print(f"Moved {entry_id} to DLQ")
-            else:
-                # Retry (just reclaim → will be redelivered)
-                process_events_for_entry(entry_id, fields)
-```
-
-### 3.2 Stream Monitoring
-
-```bash
-# Stream info
-XLEN events                         # total entries
-XINFO STREAM events                 # stream details (length, first/last entry)
-XINFO STREAM events FULL COUNT 10   # full info including consumer groups
-
-XINFO GROUPS events                 # all consumer groups
-# Fields: name, consumers, pending, last-delivered-id, entries-read, lag
-
-XINFO CONSUMERS events my-group    # consumers in group
-# Fields: name, pending, idle, inactive
-
-# Check pending messages (not yet ACKed)
-XPENDING events my-group - + 10    # show pending entries
-XPENDING events my-group IDLE 60000 - + 10  # pending > 60s (idle time)
-
-# Trim old entries
-XTRIM events MAXLEN ~ 100000       # keep ~100k most recent
-XTRIM events MINID ~ 1735000000000  # remove entries older than timestamp
-```
-
----
-
-## 4. Rate Limiting
-
-### 4.1 Fixed Window Rate Limiter
-
-```python
-def fixed_window_rate_limit(user_id: str, limit: int, window_seconds: int) -> bool:
-    key = f"ratelimit:fixed:{user_id}:{int(time.time() // window_seconds)}"
-    
-    with r.pipeline() as pipe:
-        pipe.incr(key)
-        pipe.expire(key, window_seconds)
-        count, _ = pipe.execute()
-    
-    return count <= limit
-
-# Problem: burst at window boundary
-# Window ends at :59, new starts at :00 → 2x requests in 2 seconds!
-```
-
-### 4.2 Sliding Window Rate Limiter (Sorted Set)
-
-```python
-def sliding_window_rate_limit(user_id: str, limit: int, window_seconds: int) -> bool:
-    key = f"ratelimit:sliding:{user_id}"
-    now = time.time()
-    window_start = now - window_seconds
-    
-    SCRIPT = """
-    local key = KEYS[1]
-    local now = tonumber(ARGV[1])
-    local window_start = tonumber(ARGV[2])
-    local limit = tonumber(ARGV[3])
-    local window = tonumber(ARGV[4])
-    
-    -- Remove expired entries
-    redis.call('ZREMRANGEBYSCORE', key, '-inf', window_start)
-    
-    -- Count requests in window
-    local count = redis.call('ZCARD', key)
-    
-    if count < limit then
-        -- Add current request (score=timestamp, member=unique_id)
-        redis.call('ZADD', key, now, now .. '-' .. math.random(1000000))
-        redis.call('EXPIRE', key, window)
-        return 1  -- allowed
-    else
-        return 0  -- rate limited
-    end
-    """
-    
-    result = r.eval(SCRIPT, 1, key, now, window_start, limit, window_seconds + 1)
-    return result == 1
-
-# Usage: 100 requests per 60 seconds
-if not sliding_window_rate_limit("user:123", 100, 60):
-    raise Exception("Rate limited")
-```
-
-### 4.3 Token Bucket
-
-```python
-TOKEN_BUCKET_SCRIPT = """
-local key = KEYS[1]
-local capacity = tonumber(ARGV[1])      -- max tokens
-local refill_rate = tonumber(ARGV[2])   -- tokens per second
-local now = tonumber(ARGV[3])           -- current timestamp (float)
-local requested = tonumber(ARGV[4])     -- tokens needed (usually 1)
-
-local bucket = redis.call('HMGET', key, 'tokens', 'last_refill')
-local tokens = tonumber(bucket[1]) or capacity
-local last_refill = tonumber(bucket[2]) or now
-
--- Calculate refill
-local elapsed = now - last_refill
-local new_tokens = math.min(capacity, tokens + elapsed * refill_rate)
-
-if new_tokens >= requested then
-    redis.call('HMSET', key, 'tokens', new_tokens - requested, 'last_refill', now)
-    redis.call('EXPIRE', key, math.ceil(capacity / refill_rate) + 1)
-    return 1  -- allowed
-else
-    redis.call('HMSET', key, 'tokens', new_tokens, 'last_refill', now)
-    redis.call('EXPIRE', key, math.ceil(capacity / refill_rate) + 1)
-    return 0  -- rate limited
-end
-"""
-
-def token_bucket_check(key: str, capacity: int, refill_rate: float, tokens: int = 1) -> bool:
-    result = r.eval(TOKEN_BUCKET_SCRIPT, 1, key, capacity, refill_rate, time.time(), tokens)
-    return result == 1
-
-# 100 capacity, refill 10 tokens/second → 10 req/s sustained, burst up to 100
-if not token_bucket_check(f"api:{user_id}", capacity=100, refill_rate=10):
-    raise Exception("Rate limited")
-```
-
----
-
-## 5. Session Store
-
-```python
-import uuid
-from datetime import timedelta
-
-SESSION_TTL = 3600  # 1 hour
-
-def create_session(user_id: int, user_data: dict) -> str:
-    session_id = str(uuid.uuid4())
-    session_key = f"session:{session_id}"
-    
-    session_data = {
-        "user_id": str(user_id),
-        "created_at": str(time.time()),
-        **{k: json.dumps(v) if isinstance(v, (dict, list)) else str(v) 
-           for k, v in user_data.items()}
+```java
+public Product getProduct(long id) {
+    String key = "cache:product:" + id;
+    String cached = redis.get(key);
+    if (NOT_FOUND.equals(cached)) {
+        return null;
     }
-    
-    with r.pipeline() as pipe:
-        pipe.hset(session_key, mapping=session_data)
-        pipe.expire(session_key, SESSION_TTL)
-        pipe.execute()
-    
-    return session_id
+    if (cached != null) {
+        return codec.decode(cached);
+    }
 
-def get_session(session_id: str) -> Optional[dict]:
-    session_key = f"session:{session_id}"
-    data = r.hgetall(session_key)
-    
-    if not data:
-        return None
-    
-    # Refresh TTL on access (sliding expiry)
-    r.expire(session_key, SESSION_TTL)
-    
-    return data
+    Product product = repository.findById(id);
+    if (product == null) {
+        redis.set(key, NOT_FOUND, SetArgs.Builder.ex(30));
+        return null;
+    }
 
-def destroy_session(session_id: str):
-    r.delete(f"session:{session_id}")
+    long ttlSeconds = 300 + ThreadLocalRandom.current().nextLong(60);
+    redis.set(key, codec.encode(product), SetArgs.Builder.ex(ttlSeconds));
+    return product;
+}
 
-def destroy_all_user_sessions(user_id: int):
-    # Track user's sessions in a Set
-    user_sessions_key = f"user:{user_id}:sessions"
-    session_ids = r.smembers(user_sessions_key)
-    
-    with r.pipeline() as pipe:
-        for sid in session_ids:
-            pipe.delete(f"session:{sid}")
-        pipe.delete(user_sessions_key)
-        pipe.execute()
-
-# Spring Boot Integration
-# application.yml
-# spring:
-#   session:
-#     store-type: redis
-#     redis:
-#       namespace: spring:session
-#     timeout: 3600
+public void updateProduct(Product product) {
+    repository.updateAndCommit(product);
+    redis.del("cache:product:" + product.id());
+}
 ```
+
+Ví dụ chỉ minh họa flow. Production cần timeout, tracing, fallback budget và chống stampede.
+
+### 2.2 Invalidation vẫn có race
+
+“Commit DB rồi `DEL` cache” là lựa chọn đơn giản, nhưng chưa phải strong consistency:
+
+```text
+T1: cache miss, đọc DB phiên bản cũ
+T2: commit DB phiên bản mới
+T2: DEL cache
+T1: SET lại phiên bản cũ vào cache
+```
+
+Cách giảm rủi ro tùy SLO:
+
+- TTL ngắn để chặn thời gian stale tối đa;
+- version trong value/key và không cho version cũ ghi đè version mới;
+- singleflight theo key để giảm nhiều loader đồng thời;
+- transactional outbox/CDC phát invalidation sau DB commit;
+- cache key theo version như `product:42:v17`;
+- đọc source of truth cho operation cần consistency mạnh.
+
+Không gọi pipeline Redis sau transaction DB là “atomic write-through”; hai hệ thống vẫn có failure window.
+
+### 2.3 Negative caching
+
+Request cho ID không tồn tại có thể xuyên qua cache và đánh DB liên tục. Lưu sentinel ngắn hạn:
+
+```redis
+SET cache:product:missing-id __NOT_FOUND__ EX 30 NX
+```
+
+Phải phân biệt:
+
+- cache miss: Redis không có entry;
+- negative hit: đã xác nhận “không tồn tại” tại một thời điểm;
+- backend error: không được cache như “không tồn tại”.
+
+TTL negative thường ngắn hơn TTL dữ liệu thật để object mới tạo không bị ẩn quá lâu.
+
+### 2.4 Chống cache stampede
+
+Khi hot key hết hạn, nhiều request cùng gọi source of truth. Có thể kết hợp:
+
+| Kỹ thuật | Cách hoạt động | Đổi lại |
+|---|---|---|
+| TTL jitter | Phân tán thời điểm hết hạn | Không giải quyết một hot key riêng lẻ |
+| Singleflight/mutex | Một worker refresh, worker khác đợi/dùng stale | Cần lease và safe release |
+| Stale-while-revalidate | Trả value cũ trong khi một worker refresh | Chấp nhận stale có giới hạn |
+| Probabilistic early refresh | Một số request refresh trước hard expiry | Logic/quan sát phức tạp hơn |
+| Request coalescing tại app | Gộp miss cùng key trong một process | Không phối hợp giữa nhiều app node |
+
+Singleflight tối thiểu:
+
+```text
+1. GET cache; nếu hit thì trả.
+2. SET lock:<key> <unique-token> NX PX <lease>.
+3. Nếu có lock: GET cache lần hai.
+4. Nếu vẫn miss: load source, SET cache.
+5. Release chỉ khi token còn thuộc mình.
+6. Nếu không có lock: đợi bounded, đọc lại hoặc dùng stale/fallback.
+```
+
+Redis 8.4+ hỗ trợ safe release:
+
+```redis
+SET lock:cache:product:42 7f0c... NX PX 5000
+DELEX lock:cache:product:42 IFEQ 7f0c...
+```
+
+Không dùng `DEL lock-key`: lease cũ có thể đã hết và key hiện thuộc worker khác.
+
+Stale-while-revalidate thường lưu logical expiry trong value và hard TTL dài hơn:
+
+```text
+value = {
+  payload,
+  fresh_until,
+  stale_until
+}
+```
+
+- trước `fresh_until`: trả ngay;
+- giữa hai mốc: có thể trả stale, một worker refresh;
+- sau `stale_until`: không trả stale, fallback theo policy.
+
+### 2.5 Cache avalanche, penetration và breakdown
+
+| Sự cố | Mô tả | Biện pháp |
+|---|---|---|
+| Avalanche | Nhiều key hết hạn/cụm cache mất cùng lúc | TTL jitter, warmup, HA, source capacity |
+| Penetration | Request cho key không tồn tại luôn xuống DB | Negative cache, validation, Bloom filter khi phù hợp |
+| Breakdown/stampede | Một hot key hết hạn, nhiều loader đồng thời | Singleflight, stale-while-revalidate |
+
+Bloom filter có false positive và lifecycle riêng; nó không thay negative cache/source validation một cách tự động.
+
+### 2.6 Write-through và write-behind
+
+#### Write-through
+
+Application hoặc một abstraction ghi source of truth và cập nhật cache trên write. Vì DB và Redis không cùng transaction:
+
+- DB thành công, Redis thất bại: cache cũ/miss;
+- Redis thành công, DB rollback: cache sai;
+- retry có thể lặp side effect.
+
+Nếu DB là source of truth, cách an toàn phổ biến là commit DB rồi invalidate, kết hợp outbox/CDC nếu không muốn bỏ lỡ invalidation.
+
+#### Write-behind
+
+Write-behind trả thành công trước khi durable store hoàn tất. Khi đó Redis/queue nằm trên đường durability:
+
+```text
+Client -> durable event/command -> trả accepted
+                    |
+                    v
+              worker ghi DB
+```
+
+Không dùng “dirty Set rồi đọc toàn bộ, xóa Set trước khi flush”. Crash giữa xóa và ghi DB sẽ mất update.
+
+Thiết kế thực tế cần:
+
+- Stream hoặc durable log có message ID;
+- producer idempotency;
+- consumer group, retry và DLQ;
+- DB upsert/idempotency key;
+- ordering/version cho nhiều update cùng entity;
+- backpressure khi DB chậm;
+- reconciliation giữa Redis và DB.
+
+Nếu không chấp nhận mất acknowledged write, AOF/replication thôi vẫn chưa thay thế được thiết kế end-to-end.
+
+### 2.7 Cache warming/prefetch
+
+Chỉ warm dữ liệu có khả năng được đọc:
+
+- top products/config/reference data;
+- chạy bounded batch và backpressure;
+- version key để chuyển dataset nguyên tử ở application;
+- không scan/nạp toàn database theo phản xạ;
+- đo hit rate sau warmup để biết lợi ích thật.
 
 ---
 
-## 6. Distributed Lock (Redlock)
+## 3. Pub/Sub và Streams
 
-### 6.1 Simple Lock (Single Redis)
+### 3.1 Pub/Sub: realtime, at-most-once
 
-```python
-# Simple: works for most cases with single Redis or Sentinel
-
-import uuid
-import redis
-
-r = redis.Redis(decode_responses=True)
-
-ACQUIRE_SCRIPT = """
-if redis.call('SET', KEYS[1], ARGV[1], 'NX', 'PX', ARGV[2]) then
-    return 1
-else
-    return 0
-end
-"""
-
-RELEASE_SCRIPT = """
-if redis.call('GET', KEYS[1]) == ARGV[1] then
-    return redis.call('DEL', KEYS[1])
-else
-    return 0
-end
-"""
-
-class DistributedLock:
-    def __init__(self, key: str, ttl_ms: int = 30000, retry_count: int = 3, retry_delay: float = 0.1):
-        self.key = f"lock:{key}"
-        self.ttl_ms = ttl_ms
-        self.retry_count = retry_count
-        self.retry_delay = retry_delay
-        self.token = str(uuid.uuid4())
-        self._acquire_sha = r.script_load(ACQUIRE_SCRIPT)
-        self._release_sha = r.script_load(RELEASE_SCRIPT)
-    
-    def acquire(self) -> bool:
-        for i in range(self.retry_count):
-            result = r.evalsha(self._acquire_sha, 1, self.key, self.token, self.ttl_ms)
-            if result == 1:
-                return True
-            if i < self.retry_count - 1:
-                time.sleep(self.retry_delay * (2 ** i))  # exponential backoff
-        return False
-    
-    def release(self):
-        r.evalsha(self._release_sha, 1, self.key, self.token)
-    
-    def extend(self, additional_ms: int) -> bool:
-        # Extend lock TTL if still owner
-        EXTEND_SCRIPT = """
-        if redis.call('GET', KEYS[1]) == ARGV[1] then
-            return redis.call('PEXPIRE', KEYS[1], ARGV[2])
-        else
-            return 0
-        end
-        """
-        return bool(r.eval(EXTEND_SCRIPT, 1, self.key, self.token, additional_ms))
-    
-    def __enter__(self):
-        if not self.acquire():
-            raise Exception(f"Failed to acquire lock: {self.key}")
-        return self
-    
-    def __exit__(self, *args):
-        self.release()
-
-# Usage
-with DistributedLock("inventory:product:42", ttl_ms=5000) as lock:
-    # Critical section
-    current = int(r.get("inventory:42") or 0)
-    if current > 0:
-        r.decr("inventory:42")
+```redis
+SUBSCRIBE realtime:price
+PUBLISH realtime:price '{"symbol":"ABC","price":"42.10"}'
 ```
 
-### 6.2 Redlock (Multi-Node)
+Redis Pub/Sub:
 
-```python
-# Redlock: acquire lock on majority (N/2 + 1) of independent Redis nodes
-# Handles single-node failure
+- chỉ gửi tới subscriber đang online;
+- không persist/replay/ack;
+- delivery là at-most-once;
+- subscriber match cả channel và pattern có thể nhận cùng message nhiều lần;
+- channel namespace không bị tách theo logical database.
 
-import time
-import uuid
-import redis
+Phù hợp cho presence, live UI hint, cache invalidation có cơ chế tự hồi phục và WebSocket fan-out không cần replay.
 
-NODES = [
-    redis.Redis(host='redis1', port=6379),
-    redis.Redis(host='redis2', port=6379),
-    redis.Redis(host='redis3', port=6379),
-    redis.Redis(host='redis4', port=6379),
-    redis.Redis(host='redis5', port=6379),
-]
+Trong Cluster, global Pub/Sub lan rộng qua cluster. Sharded Pub/Sub giới hạn propagation theo shard:
 
-QUORUM = len(NODES) // 2 + 1  # 3
-
-class Redlock:
-    def __init__(self, resource: str, ttl_ms: int = 10000):
-        self.resource = f"redlock:{resource}"
-        self.ttl_ms = ttl_ms
-        self.token = str(uuid.uuid4())
-    
-    def acquire(self) -> bool:
-        start = time.time() * 1000
-        acquired = 0
-        
-        for node in NODES:
-            try:
-                result = node.set(self.resource, self.token, nx=True, px=self.ttl_ms)
-                if result:
-                    acquired += 1
-            except redis.RedisError:
-                pass  # node unavailable, continue
-        
-        # Check: acquired majority AND within valid time
-        elapsed = time.time() * 1000 - start
-        validity_time = self.ttl_ms - elapsed - (self.ttl_ms * 0.01)  # 1% drift factor
-        
-        if acquired >= QUORUM and validity_time > 0:
-            return True
-        else:
-            # Failed: release any partial locks
-            self.release()
-            return False
-    
-    def release(self):
-        RELEASE_SCRIPT = """
-        if redis.call('GET', KEYS[1]) == ARGV[1] then
-            return redis.call('DEL', KEYS[1])
-        else
-            return 0
-        end
-        """
-        for node in NODES:
-            try:
-                node.eval(RELEASE_SCRIPT, 1, self.resource, self.token)
-            except redis.RedisError:
-                pass
-
-# Use redlock-py library for production:
-# pip install redlock-py
-from redlock import Redlock as RedlockLib
-
-dlm = RedlockLib([
-    {"host": "redis1", "port": 6379, "db": 0},
-    {"host": "redis2", "port": 6379, "db": 0},
-    {"host": "redis3", "port": 6379, "db": 0},
-])
-
-my_lock = dlm.lock("resource_name", 10000)  # 10s TTL
-if my_lock:
-    try:
-        # critical section
-        pass
-    finally:
-        dlm.unlock(my_lock)
+```redis
+SSUBSCRIBE price:{asia}
+SPUBLISH price:{asia} '{"symbol":"ABC","price":"42.10"}'
 ```
+
+Client phải hỗ trợ sharded Pub/Sub và route theo channel slot.
+
+### 3.2 Pub/Sub không thay transactional event
+
+Flow sau có cửa sổ mất event:
+
+```text
+commit DB -> process crash -> chưa PUBLISH
+```
+
+Nếu event phải tương ứng với DB commit, dùng transactional outbox:
+
+```text
+DB transaction:
+  update business row
+  insert outbox row
+
+Relay:
+  đọc outbox -> publish/XADD -> đánh dấu sent
+```
+
+Relay có thể publish trùng khi crash sau publish trước khi đánh dấu; consumer vẫn cần idempotency.
+
+### 3.3 Streams: durable log và consumer group
+
+Tạo stream/group:
+
+```redis
+XGROUP CREATE events:orders billing 0 MKSTREAM
+
+XADD events:orders * \
+  event_id evt-20260729-001 \
+  type OrderPaid \
+  order_id 42 \
+  version 7
+```
+
+Consumer:
+
+```redis
+XREADGROUP GROUP billing billing-1 \
+  COUNT 20 BLOCK 5000 \
+  STREAMS events:orders >
+```
+
+Message mới được giao vào Pending Entries List (PEL). Chỉ ack sau khi side effect đã hoàn tất bền vững:
+
+```redis
+XACK events:orders billing 1770000000000-0
+```
+
+Nếu consumer crash sau ghi DB nhưng trước `XACK`, message được xử lý lại. Đây là at-least-once; handler phải idempotent.
+
+### 3.4 Producer idempotency từ Redis 8.6
+
+`XADD IDMP` dùng producer ID và idempotency ID:
+
+```redis
+XADD events:orders \
+  IDMP checkout-service evt-20260729-001 \
+  * type OrderPaid order_id 42 version 7
+```
+
+Gửi lại cùng `(producer-id, idempotency-id)` trả về entry ID cũ thay vì append bản sao trong cửa sổ dedup được cấu hình.
+
+`IDMPAUTO` tạo ID từ nội dung:
+
+```redis
+XADD events:orders \
+  IDMPAUTO checkout-service \
+  * type OrderPaid order_id 42 version 7
+```
+
+Điểm cần nhớ:
+
+- producer phải giữ cùng producer ID sau restart;
+- manual ID thường rõ semantics hơn content hash;
+- dedup có duration/max-size, không vô hạn;
+- đổi cấu hình IDMP có thể xóa map theo dõi;
+- producer dedup không làm consumer side effect trở thành idempotent.
+
+### 3.5 Recovery với `XAUTOCLAIM`
+
+```redis
+XAUTOCLAIM events:orders billing recovery-1 \
+  60000 0-0 COUNT 100
+```
+
+Command claim các pending entry idle quá 60 giây sang consumer recovery. Visibility timeout phải lớn hơn thời gian xử lý hợp lệ hoặc có heartbeat/ownership token; nếu quá ngắn, hai worker có thể cùng tạo side effect.
+
+Theo dõi:
+
+```redis
+XPENDING events:orders billing
+XINFO GROUPS events:orders
+XINFO CONSUMERS events:orders billing
+```
+
+### 3.6 `XNACK` trong Redis 8.8
+
+Consumer có thể chủ động trả pending message về group:
+
+```redis
+# Lỗi hạ tầng của consumer; consumer khác có thể thử ngay.
+XNACK events:orders billing FAIL \
+  IDS 1 1770000000000-0
+
+# Graceful shutdown; “hoàn tác” lần delivery này trong counter.
+XNACK events:orders billing SILENT \
+  IDS 1 1770000000000-1
+
+# Poison message; đánh dấu delivery counter tối đa để recovery/DLQ xử lý.
+XNACK events:orders billing FATAL \
+  IDS 1 1770000000000-2
+```
+
+`XNACK` không xóa entry và không tự chuyển payload sang DLQ. Recovery worker vẫn phải phát hiện policy rồi:
+
+1. ghi DLQ event kèm original ID, error, attempts;
+2. bảo đảm DLQ write/idempotency;
+3. `XACK` hoặc `XACKDEL` original theo retention policy.
+
+### 3.7 Retention và nhiều consumer group
+
+Trim gần đúng để tránh Stream tăng vô hạn:
+
+```redis
+XADD events:orders MAXLEN ~ 1000000 * type OrderCreated order_id 99
+XTRIM events:orders MAXLEN ~ 1000000
+```
+
+Trim entry đang còn PEL có thể để reference mà payload không còn. Redis 8.2+ thêm:
+
+- `KEEPREF`: giữ PEL reference, tương thích hành vi cũ;
+- `DELREF`: xóa cả reference;
+- `ACKED`: chỉ xóa khi mọi group đã ack;
+- `XACKDEL`: ack và xóa có policy trong một command.
+
+```redis
+XACKDEL events:orders billing ACKED \
+  IDS 1 1770000000000-0
+```
+
+Chọn retention theo replay/recovery window và group chậm nhất, không chỉ theo memory.
+
+### 3.8 Pub/Sub hay Streams?
+
+| Câu hỏi | Pub/Sub | Streams |
+|---|---|---|
+| Subscriber offline có nhận lại? | Không | Có, trong retention |
+| Delivery | At-most-once | Thường at-least-once |
+| Ack/PEL | Không | Có |
+| Replay | Không | Có |
+| Fan-out | Mọi subscriber online | Mỗi group nhận độc lập |
+| Use case | Live signal | Event processing/job workflow |
 
 ---
 
-## 7. Leaderboard
+## 4. Rate limiting
 
-```python
-import redis
-from typing import List, Tuple
+### 4.1 Xác định policy trước
 
-r = redis.Redis(decode_responses=True)
-LEADERBOARD = "game:leaderboard"
+Một limiter cần ghi rõ:
 
-def add_score(player_id: str, score: float, player_name: str):
-    # Store score in sorted set
-    r.zadd(LEADERBOARD, {player_id: score})
-    
-    # Store player info in hash
-    r.hset(f"player:{player_id}", mapping={
-        "name": player_name,
-        "score": score,
-    })
+- identity: user, token, IP, tenant hay endpoint;
+- scope: mỗi node, toàn region hay global;
+- limit/burst/window;
+- clock source;
+- response: allowed, remaining, reset/retry-after;
+- Redis lỗi thì fail-open hay fail-closed;
+- key cardinality và retention.
 
-def increment_score(player_id: str, increment: float) -> float:
-    new_score = r.zincrby(LEADERBOARD, increment, player_id)
-    r.hset(f"player:{player_id}", "score", new_score)
-    return new_score
+Không đặt toàn bộ tenant vào một key nếu một hot counter sẽ nghẽn một Cluster slot.
 
-def get_rank(player_id: str) -> Tuple[int, float]:
-    rank = r.zrevrank(LEADERBOARD, player_id)  # 0-indexed, highest score = 0
-    score = r.zscore(LEADERBOARD, player_id)
-    return (rank + 1 if rank is not None else None), score  # 1-indexed rank
+### 4.2 Fixed window bằng `INCREX` — Redis 8.8
 
-def get_top_players(count: int = 10) -> List[dict]:
-    # Get top N (highest scores)
-    entries = r.zrange(LEADERBOARD, 0, count-1, rev=True, withscores=True)
-    
-    result = []
-    for rank, (player_id, score) in enumerate(entries, 1):
-        player_info = r.hgetall(f"player:{player_id}")
-        result.append({
-            "rank": rank,
-            "player_id": player_id,
-            "name": player_info.get("name", "Unknown"),
-            "score": score,
-        })
-    return result
-
-def get_around_player(player_id: str, range_size: int = 5) -> List[dict]:
-    # Get players around specified player
-    rank = r.zrevrank(LEADERBOARD, player_id)
-    if rank is None:
-        return []
-    
-    start = max(0, rank - range_size)
-    end = rank + range_size
-    
-    entries = r.zrange(LEADERBOARD, start, end, rev=True, withscores=True)
-    
-    return [{"rank": start + i + 1, "player_id": pid, "score": s} 
-            for i, (pid, s) in enumerate(entries)]
-
-def get_score_range(min_score: float, max_score: float) -> List[dict]:
-    entries = r.zrangebyscore(LEADERBOARD, min_score, max_score, withscores=True)
-    return [{"player_id": pid, "score": s} for pid, s in entries]
+```redis
+INCREX ratelimit:{tenant-42}:checkout \
+  BYINT 1 \
+  UBOUND 100 \
+  EX 60 ENX
 ```
+
+Kết quả gồm `[new_value, actual_increment]`:
+
+- `actual_increment = 1`: request được tính và cho phép;
+- `actual_increment = 0`: đã chạm upper bound, key/TTL không đổi.
+
+`ENX` chỉ đặt expiry khi key chưa có TTL nên request sau không kéo dài cửa sổ. Một command thay cho `INCR` + `EXPIRE` + script.
+
+Fixed window đơn giản nhưng có boundary burst: client có thể gửi gần 100 request cuối cửa sổ và 100 request đầu cửa sổ kế tiếp.
+
+### 4.3 Sliding log bằng Sorted Set
+
+Mỗi request là một member duy nhất, score là timestamp:
+
+```text
+atomic function/script:
+  now = Redis server time
+  ZREMRANGEBYSCORE key -inf (now - window)
+  count = ZCARD key
+  if count < limit:
+      ZADD key now request_id
+      EXPIRE key retention
+      allow
+  else:
+      reject + retry_after từ entry cũ nhất
+```
+
+Phải chạy atomic; pipeline riêng lẻ có race. Cost memory tỷ lệ số request trong window. Trong Cluster, mọi key script chạm tới phải cùng hash slot.
+
+### 4.4 Token bucket
+
+State thường gồm:
+
+```text
+tokens
+last_refill_time
+```
+
+Một Function/script:
+
+1. lấy server time;
+2. refill theo thời gian đã trôi qua;
+3. cap ở capacity;
+4. trừ token nếu đủ;
+5. trả `allowed`, `remaining`, `retry_after`.
+
+Token bucket cho burst có kiểm soát và throughput dài hạn mượt hơn fixed window. Dùng số nguyên theo đơn vị nhỏ để tránh sai số float nếu nghiệp vụ cần chính xác.
+
+### 4.5 Failure semantics
+
+| Hệ thống | Redis không reachable |
+|---|---|
+| Login/OTP chống abuse | Thường fail-closed hoặc local emergency limit |
+| Public content không nhạy cảm | Có thể fail-open có circuit breaker |
+| Internal batch | Có thể backoff/queue |
+
+Global limiter qua nhiều region cần quyết định consistency/latency rõ ràng; một Redis Cluster trong một region không tự tạo globally strict counter.
 
 ---
 
-## 8. Job Queue
+## 5. Session store
 
-```python
-# Reliable queue using List (LPUSH + BRPOP)
-# With LMOVE for at-least-once delivery
+### 5.1 Data model
 
-QUEUE = "jobs:pending"
-PROCESSING = "jobs:processing"
-DLQ = "jobs:failed"
+Browser giữ opaque session ID; dữ liệu ở Redis:
 
-def enqueue(job: dict, priority: int = 0) -> str:
-    job_id = str(uuid.uuid4())
-    job['id'] = job_id
-    job['enqueued_at'] = time.time()
-    
-    if priority == 0:
-        r.lpush(QUEUE, json.dumps(job))    # normal: push to front
-    else:
-        r.rpush(QUEUE, json.dumps(job))    # low priority: push to back
-    
-    return job_id
-
-def dequeue_and_process():
-    while True:
-        # Atomically move from QUEUE to PROCESSING (reliable)
-        # If worker crashes, job stays in PROCESSING (not lost)
-        job_json = r.lmove(QUEUE, PROCESSING, 'RIGHT', 'LEFT')  # or BLMOVE for blocking
-        
-        if not job_json:
-            time.sleep(0.1)
-            continue
-        
-        job = json.loads(job_json)
-        
-        try:
-            process_job(job)
-            # Remove from processing queue on success
-            r.lrem(PROCESSING, 1, job_json)
-            
-        except Exception as e:
-            job['attempts'] = job.get('attempts', 0) + 1
-            job['last_error'] = str(e)
-            
-            r.lrem(PROCESSING, 1, job_json)
-            
-            if job['attempts'] >= 3:
-                # Move to DLQ
-                r.lpush(DLQ, json.dumps(job))
-            else:
-                # Re-queue with delay
-                r.lpush(QUEUE, json.dumps(job))
-
-# Recover stuck jobs (monitoring process)
-def recover_stuck_jobs(max_age_seconds: int = 300):
-    jobs = r.lrange(PROCESSING, 0, -1)
-    now = time.time()
-    
-    for job_json in jobs:
-        job = json.loads(job_json)
-        age = now - job.get('enqueued_at', 0)
-        
-        if age > max_age_seconds:
-            r.lrem(PROCESSING, 1, job_json)
-            job['attempts'] = job.get('attempts', 0) + 1
-            r.lpush(QUEUE, json.dumps(job))
-            print(f"Re-queued stuck job: {job['id']}")
+```redis
+MULTI
+HSET session:7f0c... \
+  user_id 42 \
+  created_at 1785283200 \
+  last_seen_at 1785283200 \
+  absolute_expires_at 1785888000
+EXPIRE session:7f0c... 1800
+EXEC
 ```
+
+Transaction tránh tạo session không TTL nếu process lỗi giữa `HSET` và `EXPIRE`.
+
+Session nên nhỏ:
+
+- user ID và security context tối thiểu;
+- không lưu profile/cart lớn nếu có source riêng;
+- không đặt secret/token thô không cần thiết;
+- có schema version để rollout.
+
+### 5.2 Sliding và absolute expiration
+
+Sliding TTL giữ session sống khi người dùng hoạt động, nhưng phải có absolute deadline:
+
+```text
+new_ttl = min(idle_timeout, absolute_expires_at - now)
+```
+
+Nếu chỉ gọi `EXPIRE 30m` trên mọi request, một token bị đánh cắp có thể được kéo dài vô hạn.
+
+Không nhất thiết refresh TTL mỗi request; có thể refresh khi TTL còn dưới threshold để giảm write amplification.
+
+### 5.3 Security và lifecycle
+
+- session ID ngẫu nhiên đủ entropy và rotate sau login/privilege change;
+- cookie dùng `HttpOnly`, `Secure` và `SameSite` phù hợp;
+- logout xóa server session và cookie;
+- logout-all cần index `user -> session IDs` có cleanup;
+- không log session ID đầy đủ;
+- ACL chỉ cho service chạm namespace session;
+- xác định behavior khi Redis unavailable;
+- session thường không được phép eviction tùy ý như cache.
+
+Redis Cluster yêu cầu thiết kế hash tag nếu cần atomically cập nhật session và index liên quan. Gom mọi session một user vào cùng slot cũng có thể tạo hot slot.
+
+### 5.4 Durability
+
+Mất session có tác động kinh doanh/security khác cache miss. Chọn:
+
+- persistence và HA;
+- RPO/RTO;
+- `maxmemory-policy`;
+- khả năng re-authenticate an toàn;
+- revoke list hoặc external identity provider.
+
+Spring Session Data Redis là lựa chọn phổ biến trong Java; vẫn phải cấu hình cookie, TTL, serializer, namespace và topology-aware connection đúng SLO.
 
 ---
 
-## 9. Redis Stack (Extensions)
+## 6. Distributed lock thực chất là lease
 
-```bash
-# Redis Stack = Redis + modules
-# Install: docker run -d -p 6379:6379 redis/redis-stack-server
+### 6.1 Trước hết, có thật sự cần lock?
 
-# Available modules:
-# RedisJSON: JSON document store
-# RediSearch: full-text search + secondary indexing
-# RedisTimeSeries: time series data
-# RedisBloom: probabilistic data structures
-# RedisGraph: graph database (deprecated in Stack 7.x)
+Thường an toàn hơn:
+
+- unique constraint trong source database;
+- idempotency key;
+- optimistic concurrency/version;
+- partition công việc theo owner;
+- queue bảo đảm một consumer group phân phối;
+- state machine có compare-and-set.
+
+Lock không biến external side effect thành transaction và không sửa được operation không idempotent.
+
+### 6.2 Single-instance lease đúng ownership
+
+Acquire:
+
+```redis
+SET lock:invoice:42 7f0c-unique-token NX PX 30000
 ```
 
-```python
-# RedisJSON example
-r.json().set("doc:1", "$", {
-    "name": "Alice",
-    "age": 30,
-    "address": {"city": "HCMC", "country": "VN"},
-    "tags": ["developer", "redis"]
-})
+Release trên Redis 8.4+:
 
-r.json().get("doc:1", "$.name")        # get by JSONPath
-r.json().get("doc:1", "$.address.city")
-r.json().numincrby("doc:1", "$.age", 1)  # increment nested field
-r.json().arrappend("doc:1", "$.tags", "python")
-
-# RediSearch: full-text search with secondary index
-from redis.commands.search.field import TextField, NumericField, TagField
-from redis.commands.search.indexDefinition import IndexDefinition, IndexType
-
-# Create index on JSON documents
-r.ft("user:index").create_index(
-    [
-        TextField("$.name", as_name="name"),
-        NumericField("$.age", as_name="age"),
-        TagField("$.tags.*", as_name="tags"),
-    ],
-    definition=IndexDefinition(prefix=["user:"], index_type=IndexType.JSON)
-)
-
-# Search
-results = r.ft("user:index").search(
-    "@name:alice @age:[25 35] @tags:{developer}"
-)
-
-# RedisBloom: Bloom filter (probabilistic membership)
-r.bf().reserve("email:blacklist", 0.001, 1000000)  # 0.1% error, 1M items
-r.bf().add("email:blacklist", "spam@evil.com")
-r.bf().exists("email:blacklist", "user@example.com")  # fast check
-
-# RedisTimeSeries: metrics storage
-r.ts().create("cpu:usage", retention_msecs=86400000)  # 24h retention
-r.ts().add("cpu:usage", "*", 42.5)  # auto-timestamp
-r.ts().range("cpu:usage", from_time="-1h", to_time="+")  # last hour
-r.ts().createrule("cpu:usage", "cpu:usage:1min", "avg", 60000)  # downsample
+```redis
+DELEX lock:invoice:42 IFEQ 7f0c-unique-token
 ```
+
+Các invariant:
+
+- token duy nhất cho mỗi lần acquire;
+- TTL lớn hơn thời gian công việc dự kiến cộng margin;
+- chỉ owner hiện tại được release/renew;
+- retry acquire có backoff và jitter;
+- công việc phải dừng hoặc bị downstream từ chối khi mất lease.
+
+### 6.3 Pause dài hơn TTL
+
+```text
+Client A có lease
+Client A pause 40s
+Lease hết sau 30s
+Client B acquire và ghi
+Client A tỉnh lại và cũng ghi
+```
+
+Safe release không ngăn Client A tạo side effect muộn. Với tài nguyên quan trọng, dùng **fencing token** tăng đơn điệu:
+
+```text
+lease A -> fence 101
+lease B -> fence 102
+
+downstream chỉ chấp nhận token > token đã thấy gần nhất
+```
+
+Downstream storage phải thực sự kiểm tra token. Counter fencing cũng phải durable/monotonic qua failover; nếu nguồn token có thể quay lùi, guarantee bị phá.
+
+### 6.4 Failover và Redlock
+
+Lock ghi vào primary có thể chưa replicate trước failover:
+
+```text
+A acquire -> primary chết trước replication
+replica promote -> B acquire cùng lock
+```
+
+Nếu duplicate holder thỉnh thoảng chấp nhận được, single Redis/Sentinel lease có thể đủ. Nếu mutual exclusion là safety-critical, cần đánh giá kỹ:
+
+- Redlock trên các primary độc lập, majority và clock-drift assumption;
+- fencing ở downstream;
+- consensus/coordination system hoặc database lock có semantics phù hợp hơn;
+- thư viện đã được review thay vì tự triển khai.
+
+Redlock không tự giải quyết stale holder sau pause và không tạo transaction với external system. Hãy viết threat/failure model trước khi chọn.
 
 ---
 
-## 10. Quick Reference: Pattern Selection
+## 7. Leaderboard bằng Sorted Set
 
-| Need | Pattern | Redis Commands |
-|------|---------|---------------|
-| Cache with auto-expiry | Cache-Aside | GET + SET EX |
-| Cache always fresh | Write-Through | SET (always) |
-| High-write cache | Write-Behind | HSET + async flush |
-| Real-time notifications | Pub/Sub | PUBLISH/SUBSCRIBE |
-| Durable event log | Streams | XADD/XREADGROUP/XACK |
-| Rate limit (simple) | Fixed window | INCR + EXPIRE |
-| Rate limit (accurate) | Sliding window | ZADD + ZREMRANGEBYSCORE |
-| Rate limit (burst) | Token bucket | Lua script |
-| User session | Hash + TTL | HSET + EXPIRE |
-| Mutual exclusion | Distributed lock | SET NX PX + Lua release |
-| Multi-node lock | Redlock | Acquire on majority nodes |
-| Ranking | Leaderboard | ZADD/ZRANGE/ZRANK |
-| Background jobs | Job queue | LPUSH + BLPOP/LMOVE |
-| Unique count | HyperLogLog | PFADD/PFCOUNT |
-| Feature flags | Bitmap | SETBIT/GETBIT/BITCOUNT |
-| Geo proximity | Geo index | GEOADD/GEOSEARCH |
-| Full-text search | RediSearch | FT.SEARCH |
-| JSON documents | RedisJSON | JSON.SET/JSON.GET |
-| Metrics/IoT | TimeSeries | TS.ADD/TS.RANGE |
+### 7.1 Operations cơ bản
+
+```redis
+ZADD leaderboard:2026:s29 1250 user:42
+ZINCRBY leaderboard:2026:s29 25 user:42
+
+# Top 10, score cao trước.
+ZRANGE leaderboard:2026:s29 0 9 REV WITHSCORES
+
+# Rank bắt đầu từ 0.
+ZREVRANK leaderboard:2026:s29 user:42 WITHSCORE
+```
+
+Update score/member là atomic. Metadata người dùng nên nằm ở Hash/JSON khác; tránh nhét JSON vào member vì đổi profile sẽ đổi identity leaderboard.
+
+### 7.2 Tie và pagination
+
+Các member cùng score được sắp theo member lexicographic. Product phải định nghĩa tie-break:
+
+- chấp nhận cùng điểm và thứ tự member;
+- lưu timestamp/secondary rank ở data model khác;
+- tạo composite score chỉ khi hiểu giới hạn precision của double;
+- dùng snapshot/version nếu pagination phải ổn định khi score thay đổi liên tục.
+
+Để hiển thị quanh người dùng:
+
+1. lấy `ZREVRANK`;
+2. tính range `[rank - k, rank + k]`;
+3. `ZRANGE ... REV WITHSCORES`.
+
+Hai command có thể thấy hai thời điểm khác nhau; dùng Function/script nếu cần một snapshot atomic ngắn.
+
+### 7.3 Season, retention và Cluster
+
+Version key theo season:
+
+```text
+leaderboard:{game-7}:2026-s29
+leaderboard:{game-7}:2026-s30
+```
+
+Sau khi đóng season:
+
+- đặt TTL/archive theo yêu cầu;
+- không `DEL` big Sorted Set đồng bộ, ưu tiên `UNLINK`;
+- trim nếu chỉ cần top N, nhưng xác nhận không cần rank người ngoài top.
+
+Một leaderboard là một key/slot nên có thể thành hot key. Thêm shard không chia một Sorted Set; cần partition theo region/league rồi aggregate, chấp nhận consistency và ranking semantics phức tạp hơn.
+
+Redis 8.8 thêm `COUNT` aggregator cho các command union/intersection Sorted Set, hữu ích khi cần đếm số tập mà member xuất hiện; kiểm tra semantics trước khi dùng thay score aggregation hiện có.
+
+---
+
+## 8. Job queue và scheduler
+
+### 8.1 Chọn primitive
+
+| Primitive | Phù hợp | Hạn chế |
+|---|---|---|
+| Pub/Sub | Trigger có thể mất | Không queue/retry |
+| List + `BLMOVE` | FIFO work queue đơn giản | Tự xây metadata, visibility, retry, DLQ |
+| Streams | Consumer group, replay, PEL | Vận hành retention/recovery phức tạp hơn |
+| Sorted Set | Delayed/scheduled job | Cần atomic claim và polling/wakeup |
+
+### 8.2 Reliable List queue
+
+Producer chỉ đẩy job ID duy nhất:
+
+```redis
+MULTI
+HSET queue:{email}:job:job-123 \
+  payload '{"template":"welcome","userId":42}' \
+  attempts 0 \
+  status pending
+LPUSH queue:{email}:pending job-123
+EXEC
+```
+
+Worker atomically chuyển pending sang processing:
+
+```redis
+BLMOVE queue:{email}:pending queue:{email}:processing \
+  RIGHT LEFT 5
+```
+
+Sau khi side effect thành công, Function/script kiểm tra claim token rồi:
+
+- xóa job ID khỏi processing;
+- đánh dấu completed;
+- ghi completion event nếu cần audit.
+
+Watchdog đưa job quá visibility timeout về pending hoặc DLQ. Không chỉ lưu payload giống nhau trong List rồi `LREM 1 payload`, vì duplicate payload có thể xóa nhầm attempt.
+
+`BRPOPLPUSH` đã deprecated; dùng `BLMOVE`.
+
+### 8.3 Stream queue
+
+Streams thường tốt hơn khi cần:
+
+- nhiều consumer;
+- pending state và delivery count;
+- replay/audit;
+- recovery bằng `XAUTOCLAIM`;
+- release nhanh bằng `XNACK`;
+- producer dedup với `XADD IDMP`.
+
+Queue library/framework đã battle-tested thường an toàn hơn tự ghép command, đặc biệt với delayed retry, heartbeat và cleanup.
+
+### 8.4 Delayed queue bằng Sorted Set
+
+```redis
+ZADD queue:{email}:scheduled 1785286800000 job-123
+```
+
+Scheduler không được làm riêng:
+
+```text
+ZRANGE due -> ZREM -> LPUSH
+```
+
+Hai worker có thể lấy cùng job hoặc crash giữa các bước. Dùng Function/script atomic:
+
+```text
+claim_due(now, limit):
+  đọc tối đa limit member có score <= now
+  remove khỏi scheduled
+  push vào pending/stream
+  return IDs
+```
+
+Các key phải cùng hash slot trong Cluster. Worker cần sleep bounded hoặc signal đánh thức khi có job sớm hơn; luôn có periodic poll để tự hồi phục nếu signal Pub/Sub bị mất.
+
+### 8.5 Retry và DLQ
+
+```text
+delay = min(base * 2^attempt, max_delay) + jitter
+```
+
+Retry chỉ cho lỗi transient. Permanent validation error đi thẳng DLQ. Mỗi job cần:
+
+- stable job/idempotency ID;
+- attempt count;
+- claimed/next-run timestamp;
+- last error class, không lưu secret;
+- max attempts;
+- owner/claim token;
+- original payload/version;
+- DLQ và replay audit.
+
+Timeout external API tạo unknown outcome; truyền idempotency key tới API/DB nếu hỗ trợ.
+
+---
+
+## 9. Idempotency và “exactly once”
+
+### 9.1 Idempotency record
+
+Một request ID có state:
+
+```text
+ABSENT
+  -> PROCESSING(owner_token, lease_until)
+  -> COMPLETED(response_digest/result, expires_at)
+  -> FAILED_RETRYABLE hoặc FAILED_FINAL
+```
+
+`SET idempotency:<id> ... NX PX ...` chỉ là bước đầu. Cần:
+
+- ownership token khi complete;
+- lease/recovery nếu worker chết;
+- lưu result để duplicate nhận cùng response;
+- TTL dài hơn retry window;
+- payload hash để cùng ID không dùng cho request khác;
+- atomic transition bằng conditional command/Function.
+
+### 9.2 Exactly-once end-to-end thường là ảo tưởng
+
+Redis có thể dedup producer append, Stream có thể track delivery, DB có thể unique request ID. Nhưng crash luôn có thể xảy ra giữa hai hệ thống.
+
+Thiết kế thực tế:
+
+```text
+at-least-once delivery
++ idempotent consumer
++ dedup window
++ transactional outbox/inbox
++ reconciliation
+= hiệu ứng nghiệp vụ “như một lần” trong phạm vi đã định nghĩa
+```
+
+Phải ghi rõ phạm vi: một Redis key, một DB transaction hay cả external payment API.
+
+---
+
+## 10. Key design cho pattern
+
+### 10.1 Namespace
+
+```text
+<environment>:<service>:<pattern>:<entity>:<id>:<version>
+
+prod:catalog:cache:product:42:v7
+prod:billing:idem:evt-001
+prod:email:queue:{email}:pending
+```
+
+Không nhất thiết nhét mọi thành phần vào key; tên quá dài cũng tốn memory. Mục tiêu là tránh collision, quan sát được và có lifecycle rõ.
+
+### 10.2 Cluster hash tag
+
+Function/transaction/multi-key operation thường cần cùng slot:
+
+```text
+queue:{email}:pending
+queue:{email}:processing
+queue:{email}:scheduled
+```
+
+Hash tag gom atomic boundary nhưng cũng gom tải. Chọn tag theo đơn vị cần atomic, không theo toàn hệ thống.
+
+### 10.3 Retention
+
+Mỗi namespace phải có:
+
+- TTL hay explicit retention;
+- owner chịu trách nhiệm cleanup;
+- big-key limit;
+- cardinality budget;
+- migration/version strategy;
+- dữ liệu nào được backup.
+
+---
+
+## 11. Observability theo pattern
+
+| Pattern | Metrics quan trọng |
+|---|---|
+| Cache | hit/miss theo use case, stale served, loader latency, stampede wait, eviction |
+| Pub/Sub | publish rate, subscriber count, reconnect, dropped/processing error phía client |
+| Streams | append rate, group lag, PEL, idle age, delivery count, claim/NACK/DLQ |
+| Rate limit | allowed/rejected, Redis error, fail-open/closed, cardinality |
+| Session | active sessions, expiry/logout, read/write latency, forced re-auth |
+| Lock | acquire success/wait, lease expiry, renew failure, stale fence reject |
+| Leaderboard | update/read latency, cardinality, hot-key QPS, season size |
+| Queue | pending/processing/delayed/DLQ, oldest age, attempts, throughput |
+
+Không dùng Redis key scan làm dashboard liên tục. Duy trì counter/metric riêng hoặc exporter có sampling/throttle.
+
+### 11.1 Runbook ngắn
+
+#### Cache source bị quá tải
+
+1. kiểm tra hit rate theo endpoint/key class;
+2. tìm TTL avalanche/hot key;
+3. bật/điều chỉnh singleflight hoặc stale serving trong policy;
+4. giới hạn concurrent fallback;
+5. không tăng TTL vô hạn nếu dữ liệu cần freshness.
+
+#### Stream lag tăng
+
+1. so append và consume rate;
+2. xem PEL/oldest idle/delivery count;
+3. phân biệt poison message với consumer thiếu capacity;
+4. claim/NACK/DLQ theo policy;
+5. kiểm tra retention còn đủ recovery window.
+
+#### Lock contention tăng
+
+1. kiểm tra critical section có quá dài không;
+2. đo expiry/renew failure;
+3. tìm client retry không jitter;
+4. xác nhận downstream fencing;
+5. cân nhắc partition ownership/queue thay lock.
+
+#### Queue backlog tăng
+
+1. xem oldest job age, không chỉ queue length;
+2. phân loại transient/permanent error;
+3. kiểm tra downstream saturation;
+4. scale consumer có giới hạn;
+5. giữ backpressure, không retry storm.
+
+---
+
+## 12. Những ngộ nhận cần tránh
+
+| Ngộ nhận | Thực tế |
+|---|---|
+| Commit DB rồi update Redis luôn nhất quán | Hai hệ thống không cùng transaction, vẫn có failure/race window |
+| Pipeline DB + Redis làm write-through atomic | Pipeline chỉ áp dụng command trên Redis connection |
+| AOF làm write-behind không mất dữ liệu | Guarantee end-to-end còn replication, ack, DB idempotency và recovery |
+| Pub/Sub là message queue | Subscriber offline mất message; không ack/replay |
+| Stream consumer group là exactly-once | Crash trước/sau ack tạo redelivery hoặc mất side effect nếu ack sai |
+| `XADD IDMP` làm toàn pipeline exactly-once | Nó chỉ dedup producer append trong phạm vi cấu hình |
+| `XNACK FATAL` tự đưa message vào DLQ | Nó đánh dấu delivery state; application vẫn phải ghi DLQ |
+| `INCR` rồi `EXPIRE` luôn tạo limiter đúng | Crash/race giữa lệnh; dùng `INCREX` 8.8 hoặc atomic function |
+| `DEL` là cách release lock | Có thể xóa lease của owner mới; phải compare token |
+| Có TTL là lock an toàn tuyệt đối | Client cũ vẫn có thể ghi sau khi lease hết; cần fencing khi quan trọng |
+| Redlock giải quyết mọi distributed lock | Vẫn có clock/failure assumptions và không thay downstream fencing |
+| `BRPOP` là reliable queue | Crash sau pop trước xử lý làm mất job; dùng `BLMOVE`/Streams |
+| Thêm Cluster shard chia một leaderboard | Một Sorted Set vẫn thuộc một slot |
+
+---
+
+## 13. Production checklist
+
+### Semantics
+
+- [ ] Source of truth và staleness window được ghi rõ.
+- [ ] Delivery là at-most-once hay at-least-once được ghi rõ.
+- [ ] Unknown outcome và duplicate side effect có chiến lược.
+- [ ] Atomic boundary không vượt Redis slot/hệ thống mà không có protocol bổ sung.
+
+### Lifecycle
+
+- [ ] Mọi cache/session/idempotency key có TTL phù hợp.
+- [ ] Stream/queue/leaderboard có retention và big-key budget.
+- [ ] Retry có max attempts, backoff, jitter và DLQ.
+- [ ] Có recovery cho worker chết, consumer lag và Redis failover.
+
+### Safety
+
+- [ ] Cache stampede có singleflight/stale/fallback budget.
+- [ ] Stream consumer chỉ ack sau durable side effect.
+- [ ] Lock release/renew kiểm tra token; critical resource có fencing.
+- [ ] Rate limiter có quyết định fail-open/closed.
+- [ ] Session có secure cookie, rotation và absolute expiry.
+
+### Cluster/HA
+
+- [ ] Multi-key operation dùng hash tag đúng atomic boundary.
+- [ ] Đã kiểm tra hot key/hot slot.
+- [ ] Client hiểu Cluster/Sentinel và reconnect.
+- [ ] Pattern được test khi failover, timeout và network partition.
+
+### Observability
+
+- [ ] Có metric business và technical theo từng pattern.
+- [ ] Alert dựa trên oldest age/lag/error, không chỉ key count.
+- [ ] DLQ/replay có audit và quyền truy cập.
+- [ ] Fault injection đã kiểm chứng guarantee thực tế.
+
+---
+
+## 14. Tóm tắt
+
+- Cache-aside đơn giản nhưng vẫn cần TTL, invalidation race và stampede strategy.
+- Pub/Sub là at-most-once realtime fan-out; Streams dành cho persistence, replay và consumer group.
+- Redis 8.8 thêm `INCREX` cho fixed-window limiter và `XNACK` cho consumer chủ động release pending message.
+- Stream processing thực tế thường at-least-once; idempotency quyết định độ đúng của side effect.
+- Session cần absolute expiry, security và durability khác cache thông thường.
+- Distributed lock là lease; safe release chưa đủ nếu không chống stale holder bằng fencing.
+- List queue cần `BLMOVE` và recovery; Streams phù hợp hơn khi workflow phức tạp.
+- “Exactly once” chỉ có ý nghĩa khi định nghĩa rõ phạm vi và phối hợp mọi hệ thống liên quan.
+
+## Tài liệu chính thức
+
+- [Redis cache-aside](https://redis.io/docs/latest/develop/use-cases/cache-aside/)
+- [Redis Pub/Sub](https://redis.io/docs/latest/develop/pubsub/)
+- [Redis Streams](https://redis.io/docs/latest/develop/data-types/streams/)
+- [Idempotent message production with Streams](https://redis.io/docs/latest/develop/data-types/streams/idempotency/)
+- [`XNACK`](https://redis.io/docs/latest/commands/xnack/)
+- [`INCREX`](https://redis.io/docs/latest/commands/increx/)
+- [Distributed locks with Redis](https://redis.io/docs/latest/develop/clients/patterns/distributed-locks/)
+- [`BLMOVE`](https://redis.io/docs/latest/commands/blmove/)
+- [Redis session store](https://redis.io/docs/latest/develop/use-cases/session-store/)
+- [Redis Sorted Sets](https://redis.io/docs/latest/develop/data-types/sorted-sets/)
+- [Redis Open Source 8.8](https://redis.io/docs/latest/develop/whats-new/8-8/)
+
+## Đọc tiếp
+
+- [Redis Fundamentals](redis_fundamentals.md)
+- [Redis High Availability](redis_ha.md)
+- [Redis Performance & Internals](redis_performance.md)
+- [Redis Glossary](glossary.md)
+- [Redis Roadmap](roadmap.md)
+
+*Cập nhật lần cuối: 2026-07-29*

@@ -1,1036 +1,815 @@
 # RabbitMQ Production & Operations
 
-## 1. Clustering
+> Bài này dùng RabbitMQ 4.3 làm mốc. Mục tiêu không phải tìm một file cấu hình “chuẩn cho mọi hệ thống”, mà là hiểu các failure mode, chọn mức an toàn phù hợp và có runbook trước khi sự cố xảy ra.
+>
+> Nên đọc trước: [Fundamentals](rabbitmq_fundamentals.md), [Messaging Patterns](rabbitmq_patterns.md) và [Reliability & Guarantees](rabbitmq_reliability.md).
 
-### 1.1 How Clustering Works
+## 1. Mental model khi đưa RabbitMQ lên production
 
-```
-RabbitMQ Cluster = nhiều Erlang nodes trong cùng một cluster
+Một cluster chạy được chưa có nghĩa là hệ thống đã sẵn sàng cho production. Cần phân biệt bốn lớp:
 
-Shared across nodes:
-  ✓ Exchanges (metadata only)
-  ✓ Queue metadata (name, properties, bindings)
-  ✓ Users, vhosts, permissions
-  ✓ Policies
+| Lớp | Câu hỏi cần trả lời |
+|---|---|
+| **Node** | Process, disk, memory, network và certificate của từng node có khỏe không? |
+| **Cluster** | Các node có nhìn thấy nhau và metadata có quorum không? |
+| **Queue/stream** | Resource quan trọng có đủ replica, leader và quorum không? |
+| **Ứng dụng** | Publisher có confirm/return? Consumer có ack, idempotency và backpressure? |
 
-NOT shared by default:
-  ✗ Queue contents (messages) — stored only on declaring node!
-  → Use Quorum Queues for data replication
+Ví dụ: cluster ba node vẫn “xanh” nhưng một quorum queue ba replica đã mất hai thành viên thì queue đó không thể tiếp tục phục vụ. Ngược lại, một node bị mất không nhất thiết gây outage nếu các queue quan trọng vẫn còn đa số replica và client tự kết nối lại.
 
-Node types:
-  Disk node: persists metadata + data to disk (required ≥ 1)
-  RAM node: metadata in RAM only (faster for metadata-heavy operations)
-  → Keep at least 2 disk nodes in production!
-```
+### 1.1 Cluster không tự động nhân bản mọi message
 
-### 1.2 Cluster Setup
+RabbitMQ 4.3 dùng **Khepri** làm metadata store duy nhất. Khepri nhân bản metadata như vhost, user, queue, exchange, binding và policy giữa các node.
 
-```bash
-# Example: 3-node cluster (rabbit1, rabbit2, rabbit3)
+Message được nhân bản hay không phụ thuộc loại queue:
 
-# Step 1: Same Erlang cookie on all nodes (authentication secret)
-# Copy cookie from rabbit1 to other nodes
-scp /var/lib/rabbitmq/.erlang.cookie rabbit2:/var/lib/rabbitmq/.erlang.cookie
-scp /var/lib/rabbitmq/.erlang.cookie rabbit3:/var/lib/rabbitmq/.erlang.cookie
-chmod 400 /var/lib/rabbitmq/.erlang.cookie
-chown rabbitmq:rabbitmq /var/lib/rabbitmq/.erlang.cookie
+- **Classic queue** trong RabbitMQ 4.x không replicated.
+- **Quorum queue** nhân bản log bằng Raft.
+- **Stream** là log replicated có retention và khả năng replay.
 
-# Step 2: Start RabbitMQ on all nodes
-systemctl start rabbitmq-server  # on each node
+Vì vậy, thêm node vào cluster không biến classic queue thành HA và cũng không tự tăng một quorum queue từ ba lên năm replica.
 
-# Step 3: Join cluster (run on rabbit2 and rabbit3)
-rabbitmqctl stop_app
-rabbitmqctl reset
-rabbitmqctl join_cluster rabbit@rabbit1    # join as disk node
-# or: rabbitmqctl join_cluster --ram rabbit@rabbit1  # RAM node
-rabbitmqctl start_app
+### 1.2 Chọn failure domain trước khi chọn cấu hình
 
-# Step 4: Verify
-rabbitmqctl cluster_status
-# Cluster name: rabbit@rabbit1
-# Disk Nodes: [rabbit@rabbit1, rabbit@rabbit2, rabbit@rabbit3]
-# Running Nodes: [rabbit@rabbit1, rabbit@rabbit2, rabbit@rabbit3]
+Hãy liệt kê những gì hệ thống phải chịu được:
 
-# Remove a node from cluster
-# On the node to remove:
-rabbitmqctl stop_app
-rabbitmqctl reset  # forget cluster, become standalone
+- restart một process;
+- mất một VM hoặc Kubernetes node;
+- mất một Availability Zone;
+- disk đầy hoặc disk có latency cao;
+- network chập chờn giữa client và broker;
+- deploy nhầm topology/policy;
+- hỏng cả region;
+- publisher hoặc consumer gửi/xử lý trùng.
 
-# Or from another node:
-rabbitmqctl forget_cluster_node rabbit@rabbit3  # remove offline node
-```
-
-### 1.3 Docker Compose Cluster
-
-```yaml
-# docker-compose.yml — 3-node RabbitMQ cluster
-version: '3.8'
-
-services:
-  rabbit1:
-    image: rabbitmq:3.13-management
-    hostname: rabbit1
-    environment:
-      RABBITMQ_ERLANG_COOKIE: "SWQOKODSQALRPCLNMEQG"
-      RABBITMQ_DEFAULT_USER: "admin"
-      RABBITMQ_DEFAULT_PASS: "${RABBIT_PASSWORD}"
-      RABBITMQ_DEFAULT_VHOST: "/"
-    ports:
-      - "5672:5672"
-      - "15672:15672"
-    volumes:
-      - rabbit1_data:/var/lib/rabbitmq
-      - ./rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf
-    networks:
-      - rabbit_net
-    healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-
-  rabbit2:
-    image: rabbitmq:3.13-management
-    hostname: rabbit2
-    environment:
-      RABBITMQ_ERLANG_COOKIE: "SWQOKODSQALRPCLNMEQG"
-      RABBITMQ_DEFAULT_USER: "admin"
-      RABBITMQ_DEFAULT_PASS: "${RABBIT_PASSWORD}"
-    depends_on:
-      rabbit1:
-        condition: service_healthy
-    volumes:
-      - rabbit2_data:/var/lib/rabbitmq
-      - ./rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf
-    networks:
-      - rabbit_net
-
-  rabbit3:
-    image: rabbitmq:3.13-management
-    hostname: rabbit3
-    environment:
-      RABBITMQ_ERLANG_COOKIE: "SWQOKODSQALRPCLNMEQG"
-      RABBITMQ_DEFAULT_USER: "admin"
-      RABBITMQ_DEFAULT_PASS: "${RABBIT_PASSWORD}"
-    depends_on:
-      rabbit1:
-        condition: service_healthy
-    volumes:
-      - rabbit3_data:/var/lib/rabbitmq
-      - ./rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf
-    networks:
-      - rabbit_net
-
-  # Cluster init: join rabbit2 and rabbit3 to rabbit1
-  cluster-init:
-    image: rabbitmq:3.13-management
-    depends_on:
-      - rabbit2
-      - rabbit3
-    networks:
-      - rabbit_net
-    entrypoint: >
-      sh -c "
-        sleep 20
-        rabbitmqctl -n rabbit@rabbit2 stop_app
-        rabbitmqctl -n rabbit@rabbit2 join_cluster rabbit@rabbit1
-        rabbitmqctl -n rabbit@rabbit2 start_app
-        rabbitmqctl -n rabbit@rabbit3 stop_app
-        rabbitmqctl -n rabbit@rabbit3 join_cluster rabbit@rabbit1
-        rabbitmqctl -n rabbit@rabbit3 start_app
-        echo 'Cluster setup complete'
-      "
-
-  haproxy:
-    image: haproxy:2.8-alpine
-    ports:
-      - "5670:5670"    # AMQP load balanced
-      - "15670:15670"  # Management UI load balanced
-    volumes:
-      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg
-    networks:
-      - rabbit_net
-
-volumes:
-  rabbit1_data:
-  rabbit2_data:
-  rabbit3_data:
-
-networks:
-  rabbit_net:
-```
-
-```
-# haproxy.cfg
-global
-  maxconn 4096
-
-defaults
-  timeout connect 5s
-  timeout client 30s
-  timeout server 30s
-
-frontend amqp
-  bind *:5670
-  default_backend rabbitmq_nodes
-
-backend rabbitmq_nodes
-  balance roundrobin
-  option tcp-check
-  server rabbit1 rabbit1:5672 check inter 5s rise 2 fall 3
-  server rabbit2 rabbit2:5672 check inter 5s rise 2 fall 3
-  server rabbit3 rabbit3:5672 check inter 5s rise 2 fall 3
-```
+Mỗi failure mode cần một biện pháp khác nhau. Quorum queue giúp chịu lỗi node, nhưng không thay thế backup, không sửa được deploy sai và không cung cấp exactly-once end-to-end.
 
 ---
 
-## 2. Quorum Queues
+## 2. Thiết kế cluster RabbitMQ 4.3
 
-### 2.1 What & Why
+### 2.1 Số node
 
-**Quorum Queue** = queue được replicate trên N nodes dùng Raft consensus algorithm. Thay thế Classic Mirrored Queues (deprecated từ 3.12).
+| Quy mô | Khả năng chịu lỗi | Khi nào dùng |
+|---|---:|---|
+| 1 node | 0 node | Local, test hoặc workload chấp nhận downtime/mất dữ liệu |
+| 3 node | 1 node với nhóm replica 3 | Mốc production phổ biến |
+| 5 node | Tùy kích thước nhóm replica | Nhiều connection, nhiều queue hoặc cần nhóm replica 5 |
 
+Ưu tiên số node lẻ: 1, 3, 5. Hai node không đem lại đa số tốt hơn một node; bốn node không đem lại lợi ích quorum tốt hơn ba node nhưng tăng chi phí metadata.
+
+Không mặc định rằng cluster càng lớn càng tốt. Metadata thay đổi đồng bộ và mọi node đều giữ metadata; cluster lên tới hàng chục node thường là dấu hiệu nên tách workload thành nhiều cluster độc lập.
+
+### 2.2 Chỉ cluster trong mạng LAN ổn định
+
+RabbitMQ cluster được thiết kế cho các node có độ trễ thấp, băng thông tốt và kết nối ổn định. Không kéo một cluster qua nhiều region/WAN.
+
+Mô hình phù hợp:
+
+```text
+Region A: RabbitMQ cluster A  ── Federation/Shovel ──>  RabbitMQ cluster B: Region B
 ```
-Classic Queue:              Quorum Queue:
-- Single node storage       - Raft-based replication (majority)
-- Optional mirroring        - Automatic leader election
-  (synchronous, expensive)  - Data on majority = survives minority failure
-- Can lose data on          - Guaranteed consistency
-  master failure            - Configurable replication factor
 
-Quorum Queue layout (3 nodes, quorum-size=3):
-  rabbit1: queue leader (handles all read/write)
-  rabbit2: queue follower (has replica)
-  rabbit3: queue follower (has replica)
+Federation hoặc Shovel dùng connection như client, có retry và phù hợp với liên kết không ổn định hơn. Đây là replication bất đồng bộ ở tầng messaging, không phải một cluster đồng thuận trải dài qua WAN.
 
-  Leader fails → election → one follower becomes leader
-  Data safe if ≥ 2 nodes running (majority of 3)
+### 2.3 Danh tính node phải ổn định
+
+Node name là một phần danh tính của dữ liệu RabbitMQ, ví dụ:
+
+```text
+rabbit@rabbit-0.rabbitmq-nodes
 ```
 
-### 2.2 Declaring Quorum Queues
+Production cần:
 
-```python
-# Declare quorum queue
-channel.queue_declare(
-    queue='orders_quorum',
-    durable=True,              # required for quorum queues
-    arguments={
-        'x-queue-type': 'quorum',              # MUST be durable
-        'x-quorum-initial-group-size': 3,      # initial replica count
-        # 'x-delivery-limit': 3,              # max delivery attempts (poison message)
-        # 'x-dead-letter-exchange': 'dlx',
-        # 'x-dead-letter-strategy': 'at-least-once',  # or 'at-most-once'
-    }
-)
-```
+- hostname/DNS phân giải ổn định;
+- node name không đổi sau restart;
+- mỗi node có data directory/PVC riêng, không dùng chung;
+- Erlang cookie giống nhau giữa các node và được giữ như secret;
+- đồng bộ thời gian bằng NTP;
+- inter-node ports chỉ mở cho node RabbitMQ và máy quản trị cần thiết.
+
+Không tạo node mới bằng cách copy data directory của node đang chạy. Hai node dùng cùng dữ liệu hoặc cùng danh tính có thể làm hỏng cluster.
+
+### 2.4 Join cluster là thao tác có tính phá hủy với node đích
+
+Từ RabbitMQ 4.1, quy trình join thủ công đã gọn hơn:
 
 ```bash
-# Management: create via CLI
-rabbitmqctl declare_queue \
-    name=orders_quorum \
-    durable=true \
-    arguments='{"x-queue-type": "quorum"}'
-
-# Check quorum status
-rabbitmqctl list_quorum_queues
-rabbitmqctl quorum_queue_status orders_quorum
-# leader, members, online members
-
-# Grow/shrink replica set
-rabbitmqctl grow_queue_member_where orders_quorum extra
-rabbitmqctl shrink_queue_member_where orders_quorum orders_quorum rabbit@rabbit3
+rabbitmqctl join_cluster rabbit@rabbit-1
 ```
 
-### 2.3 Quorum Queues vs Classic Mirrored
+Không còn cần chuỗi `stop_app`, `reset`, `join_cluster`, `start_app` như hướng dẫn cũ. Tuy nhiên, node tham gia không được giữ tập dữ liệu độc lập trước đó; hãy xem join là thao tác destructive đối với dữ liệu hiện có của node đích.
 
-| Feature | Classic Mirrored | Quorum Queue |
-|---------|----------------|--------------|
-| Replication | Async + sync mirrors | Raft consensus |
-| Data safety | Can lose data on failover | Strong consistency |
-| Performance | Variable (sync mirrors slow) | Predictable |
-| Poison message | No built-in | x-delivery-limit |
-| Lazy mode | Supported | Default behavior |
-| Priority | Supported | Not supported |
-| Transactions | Supported | Not supported |
-| Max length | Supported | Supported |
-| Status | Deprecated (3.12) | Recommended |
+Trong production nên dùng peer discovery hoặc RabbitMQ Cluster Operator thay vì ghép node thủ công. CLI phù hợp hơn cho lab, test và một số tình huống phục hồi có kiểm soát.
+
+### 2.5 Client kết nối tới cluster
+
+Client có thể kết nối vào bất kỳ node nào. RabbitMQ sẽ route thao tác nội bộ đến leader/replica phù hợp, nhưng client vẫn phải biết cách tìm node còn sống:
+
+- danh sách nhiều endpoint trong client;
+- DNS có nhiều record;
+- hoặc load balancer có health check đúng.
+
+Nguyên tắc:
+
+- dùng connection sống lâu, không mở một connection cho mỗi message;
+- bật heartbeat, nhưng tránh timeout quá thấp gây false positive;
+- dùng automatic recovery của thư viện client khi phù hợp;
+- tách connection publish và consume để resource alarm chặn publisher không làm ack của consumer bị ảnh hưởng;
+- theo dõi connection churn và channel churn;
+- recovery của connection không thay thế publisher confirm hoặc idempotency.
 
 ---
 
-## 3. Policies
+## 3. Quorum queue trong production
 
-### 3.1 What & How
+### 3.1 Cluster size và replication factor là hai khái niệm khác nhau
 
-**Policy** = configuration áp dụng tự động cho queues/exchanges matching pattern. Không cần redeclare.
+Giả sử cluster có năm node nhưng queue `orders.created` có ba thành viên:
 
-```bash
-# Set policy syntax:
-rabbitmqctl set_policy <name> <pattern> <definition> [options]
-
-# HA policy (Quorum queue via policy - không nên dùng cách này, khai báo trực tiếp tốt hơn)
-rabbitmqctl set_policy ha-all "^ha\." \
-    '{"queue-mode":"lazy","max-length":100000}' \
-    --apply-to queues \
-    --priority 1 \
-    -p /
-
-# Dead Letter Exchange policy (apply to queues matching "tasks.")
-rabbitmqctl set_policy dlx-policy "^tasks\." \
-    '{"dead-letter-exchange":"dlx","message-ttl":86400000}' \
-    --apply-to queues \
-    --priority 2
-
-# Message TTL policy
-rabbitmqctl set_policy ttl-1hour "^ephemeral\." \
-    '{"message-ttl":3600000}' \
-    --apply-to queues
-
-# Max length policy  
-rabbitmqctl set_policy max-1000 "^bounded\." \
-    '{"max-length":1000,"overflow":"reject-publish-dlx"}' \
-    --apply-to queues
-
-# List policies
-rabbitmqctl list_policies
-rabbitmqctl list_policies -p production
-
-# Clear policy
-rabbitmqctl clear_policy ha-all
-
-# Operator policies (cannot be overridden by user policies)
-rabbitmqctl set_operator_policy max-msg-ttl ".*" \
-    '{"message-ttl":86400000}' \
-    --apply-to queues
+```text
+Cluster:  rabbit-1  rabbit-2  rabbit-3  rabbit-4  rabbit-5
+Queue:       leader  follower  follower      -         -
 ```
 
-### 3.2 Policy via Management API
+Queue này cần hai trong ba thành viên để có quorum. Hai node còn lại vẫn phục vụ cluster nhưng không giữ message của queue đó.
 
-```python
-import requests
+| Số replica của queue | Quorum | Chịu mất đồng thời |
+|---:|---:|---:|
+| 1 | 1 | 0 |
+| 3 | 2 | 1 |
+| 5 | 3 | 2 |
 
-RABBIT_API = 'http://localhost:15672/api'
-AUTH = ('guest', 'guest')
+Ba replica là lựa chọn phổ biến. Năm replica tăng khả năng chịu lỗi nhưng cũng tăng disk, network và chi phí ghi. Không dùng replication factor chẵn nếu không có lý do đặc biệt.
 
-def set_policy(vhost: str, name: str, pattern: str, definition: dict, apply_to: str = 'queues', priority: int = 0):
-    url = f"{RABBIT_API}/policies/{vhost}/{name}"
-    payload = {
-        'pattern': pattern,
-        'definition': definition,
-        'apply-to': apply_to,
-        'priority': priority,
-    }
-    r = requests.put(url, json=payload, auth=AUTH)
-    r.raise_for_status()
-    print(f"Policy '{name}' set: {r.status_code}")
+### 3.2 Khai báo queue type
 
-# Apply quorum + DLX + TTL to all production queues
-set_policy('/', 'prod-defaults', '^prod\.', {
-    'x-queue-type': 'quorum',
-    'x-dead-letter-exchange': 'dlx',
-    'message-ttl': 86400000,
-    'max-length': 100000,
-    'overflow': 'reject-publish-dlx',
-})
-```
-
----
-
-## 4. Federation & Shovel
-
-### 4.1 Federation (Cross-Datacenter Pub/Sub)
-
-```
-Federation: link exchanges/queues across independent clusters
-Use case: DC1 publishes → DC2 consumers receive
-
-                DC1 (US)                    DC2 (EU)
-  Producer → [upstream_exchange] ──────→ [federated_exchange] → Consumer
-                                    └→ [federated_exchange] → Consumer
-                                              (EU federation)
-
-Setup (on DC2 - downstream):
-```
-
-```bash
-# Enable plugin
-rabbitmq-plugins enable rabbitmq_federation rabbitmq_federation_management
-
-# Define upstream (DC1 connection)
-rabbitmqctl set_parameter federation-upstream us-datacenter \
-    '{"uri": "amqp://admin:password@rabbit-dc1.example.com:5672",
-      "prefetch-count": 1000,
-      "reconnect-delay": 5,
-      "ack-mode": "on-confirm",
-      "trust-user-id": false}'
-
-# Create federation policy (DC2 exchanges that pull from upstream)
-rabbitmqctl set_policy federate-exchanges "^federated\." \
-    '{"federation-upstream": "us-datacenter"}' \
-    --apply-to exchanges
-
-# Check federation status
-rabbitmqctl eval 'rabbit_federation_status:status().'
-# Management UI: Admin → Federation Status
-```
-
-### 4.2 Shovel (Message Transfer)
-
-```bash
-# Shovel: move/copy messages from source queue to destination exchange/queue
-# Use case: migrate data, bridge clusters, dead-letter processing
-
-rabbitmq-plugins enable rabbitmq_shovel rabbitmq_shovel_management
-
-# Static shovel (in rabbitmq.conf)
-# loopback_users.guest = false
-# shovel.my_shovel.source.protocol = amqp091
-# shovel.my_shovel.source.uris = amqp://rabbit1:5672
-# shovel.my_shovel.source.queue = source_queue
-# shovel.my_shovel.destination.protocol = amqp091
-# shovel.my_shovel.destination.uris = amqp://rabbit2:5672
-# shovel.my_shovel.destination.exchange = dest_exchange
-# shovel.my_shovel.destination.exchange_key = routing_key
-
-# Dynamic shovel (via management API / CLI)
-rabbitmqctl set_parameter shovel dlq-to-retry \
-    '{
-      "src-protocol": "amqp091",
-      "src-uri": "amqp://",
-      "src-queue": "task_queue.dlq",
-      "dest-protocol": "amqp091",
-      "dest-uri": "amqp://",
-      "dest-exchange": "",
-      "dest-exchange-key": "task_queue",
-      "src-prefetch-count": 100,
-      "ack-mode": "on-confirm"
-    }'
-
-# Shovel status
-rabbitmqctl shovel_status
-```
-
----
-
-## 5. Spring AMQP (Java)
-
-### 5.1 Configuration
-
-```xml
-<!-- pom.xml -->
-<dependency>
-    <groupId>org.springframework.boot</groupId>
-    <artifactId>spring-boot-starter-amqp</artifactId>
-</dependency>
-```
-
-```yaml
-# application.yml
-spring:
-  rabbitmq:
-    host: ${RABBIT_HOST:localhost}
-    port: 5672
-    username: ${RABBIT_USER:guest}
-    password: ${RABBIT_PASS:guest}
-    virtual-host: /
-    connection-timeout: 10000
-    requested-heartbeat: 60
-    publisher-confirm-type: correlated    # NONE | SIMPLE | CORRELATED
-    publisher-returns: true
-    listener:
-      simple:
-        acknowledge-mode: manual           # NONE | AUTO | MANUAL
-        prefetch: 10
-        concurrency: 3
-        max-concurrency: 10
-        default-requeue-rejected: false    # NACK → DLX, not requeue
-        retry:
-          enabled: true
-          max-attempts: 3
-          initial-interval: 1000
-          multiplier: 2
-          max-interval: 10000
-    template:
-      reply-timeout: 5000               # RPC timeout
-      mandatory: true
-```
-
-### 5.2 Queue & Exchange Declarations
+Queue type được cố định lúc declare, không thể đổi bằng policy:
 
 ```java
-@Configuration
-public class RabbitMQConfig {
-    
-    public static final String ORDER_EXCHANGE = "orders";
-    public static final String ORDER_QUEUE = "order.processing";
-    public static final String ORDER_ROUTING_KEY = "order.created";
-    public static final String DLX_EXCHANGE = "orders.dlx";
-    public static final String DLQ_QUEUE = "order.processing.dlq";
-    
-    // Dead Letter Exchange
-    @Bean
-    public DirectExchange deadLetterExchange() {
-        return ExchangeBuilder.directExchange(DLX_EXCHANGE)
-            .durable(true)
-            .build();
-    }
-    
-    // Dead Letter Queue
-    @Bean
-    public Queue deadLetterQueue() {
-        return QueueBuilder.durable(DLQ_QUEUE)
-            .withArgument("x-message-ttl", 86400000L)
-            .build();
-    }
-    
-    @Bean
-    public Binding dlqBinding() {
-        return BindingBuilder.bind(deadLetterQueue())
-            .to(deadLetterExchange())
-            .with("order.failed");
-    }
-    
-    // Main Exchange (Topic)
-    @Bean
-    public TopicExchange orderExchange() {
-        return ExchangeBuilder.topicExchange(ORDER_EXCHANGE)
-            .durable(true)
-            .build();
-    }
-    
-    // Main Queue (Quorum)
-    @Bean
-    public Queue orderQueue() {
-        return QueueBuilder.durable(ORDER_QUEUE)
-            .quorum()                                          // Quorum Queue!
-            .withArgument("x-dead-letter-exchange", DLX_EXCHANGE)
-            .withArgument("x-dead-letter-routing-key", "order.failed")
-            .withArgument("x-delivery-limit", 3)              // Quorum: max 3 deliveries
-            .build();
-    }
-    
-    @Bean
-    public Binding orderBinding() {
-        return BindingBuilder.bind(orderQueue())
-            .to(orderExchange())
-            .with(ORDER_ROUTING_KEY);
-    }
-    
-    // Message Converter: JSON
-    @Bean
-    public MessageConverter jsonMessageConverter() {
-        Jackson2JsonMessageConverter converter = new Jackson2JsonMessageConverter();
-        converter.setCreateMessageIds(true);  // auto-generate message_id
-        return converter;
-    }
-    
-    // RabbitTemplate
-    @Bean
-    public RabbitTemplate rabbitTemplate(ConnectionFactory connectionFactory) {
-        RabbitTemplate template = new RabbitTemplate(connectionFactory);
-        template.setMessageConverter(jsonMessageConverter());
-        template.setMandatory(true);
-        
-        template.setConfirmCallback((correlation, ack, reason) -> {
-            if (!ack) {
-                log.error("Publisher NACK: {}", reason);
-            }
-        });
-        
-        template.setReturnsCallback(returned -> {
-            log.error("Message returned from exchange {}: {}",
-                returned.getExchange(), returned.getReplyText());
-        });
-        
-        return template;
-    }
-}
+Queue orders = QueueBuilder.durable("orders.created")
+        .quorum()
+        .build();
 ```
 
-### 5.3 Consumer with @RabbitListener
+Nếu muốn một vhost mặc định tạo quorum queue khi client không truyền `x-queue-type`, cấu hình **default queue type** của vhost. Việc migrate classic queue sang quorum queue cần tạo queue mới rồi chuyển traffic/message có kiểm soát; không thể đổi tại chỗ.
 
-```java
-@Service
-@Slf4j
-public class OrderConsumer {
-    
-    @Autowired
-    private OrderService orderService;
-    
-    // Basic listener
-    @RabbitListener(
-        queues = RabbitMQConfig.ORDER_QUEUE,
-        containerFactory = "rabbitListenerContainerFactory"
-    )
-    public void processOrder(
-        @Payload Order order,
-        @Header(AmqpHeaders.DELIVERY_TAG) long deliveryTag,
-        @Header(AmqpHeaders.MESSAGE_ID) String messageId,
-        Channel channel
-    ) throws IOException {
-        log.info("Processing order: {} (messageId={})", order.getId(), messageId);
-        
-        try {
-            orderService.process(order);
-            channel.basicAck(deliveryTag, false);
-            log.info("Order {} processed successfully", order.getId());
-        } catch (RetryableException e) {
-            // Negative ack, requeue=false → DLX (with x-delivery-limit for quorum)
-            channel.basicNack(deliveryTag, false, false);
-            log.warn("Order {} failed (retryable): {}", order.getId(), e.getMessage());
-        } catch (PermanentException e) {
-            // Dead letter immediately
-            channel.basicNack(deliveryTag, false, false);
-            log.error("Order {} permanently failed: {}", order.getId(), e.getMessage());
-        }
-    }
-    
-    // Batch listener
-    @RabbitListener(queues = "batch_orders", containerFactory = "batchListenerFactory")
-    public void processBatch(List<Message> messages, Channel channel) throws IOException {
-        log.info("Processing batch of {} orders", messages.size());
-        
-        long lastDeliveryTag = 0;
-        List<Long> failed = new ArrayList<>();
-        
-        for (Message message : messages) {
-            long deliveryTag = (long) message.getMessageProperties().getDeliveryTag();
-            try {
-                Order order = objectMapper.readValue(message.getBody(), Order.class);
-                orderService.process(order);
-                lastDeliveryTag = deliveryTag;
-            } catch (Exception e) {
-                failed.add(deliveryTag);
-            }
-        }
-        
-        // Batch ack all successful
-        if (lastDeliveryTag > 0) {
-            channel.basicAck(lastDeliveryTag, true);  // multiple=true
-        }
-        // Nack failed individually
-        for (long failedTag : failed) {
-            channel.basicNack(failedTag, false, false);
-        }
-    }
-}
+### 3.3 Quản lý membership
 
-// Batch container factory
-@Bean
-public SimpleRabbitListenerContainerFactory batchListenerFactory(ConnectionFactory cf) {
-    SimpleRabbitListenerContainerFactory factory = new SimpleRabbitListenerContainerFactory();
-    factory.setConnectionFactory(cf);
-    factory.setBatchListener(true);
-    factory.setConsumerBatchEnabled(true);
-    factory.setBatchSize(50);
-    factory.setReceiveTimeout(2000L);   // wait up to 2s to fill batch
-    factory.setPrefetchCount(100);
-    factory.setAcknowledgeMode(AcknowledgeMode.MANUAL);
-    factory.setMessageConverter(new SimpleMessageConverter());
-    return factory;
-}
+Kiểm tra trước khi bảo trì:
+
+```bash
+rabbitmq-diagnostics cluster_status
+rabbitmq-queues quorum_status --vhost orders orders.created
 ```
 
-### 5.4 Publisher Service
+Thêm hoặc bỏ thành viên cho một queue:
 
-```java
-@Service
-@Slf4j
-public class OrderPublisher {
-    
-    @Autowired
-    private RabbitTemplate rabbitTemplate;
-    
-    @Autowired
-    private OutboxRepository outboxRepository;
-    
-    // Simple publish
-    public void publishOrderCreated(Order order) {
-        CorrelationData correlation = new CorrelationData(order.getId().toString());
-        
-        rabbitTemplate.convertAndSend(
-            RabbitMQConfig.ORDER_EXCHANGE,
-            "order.created",
-            order,
-            message -> {
-                message.getMessageProperties().setContentType("application/json");
-                message.getMessageProperties().setMessageId(order.getId().toString());
-                return message;
-            },
-            correlation
-        );
-    }
-    
-    // Reliable publish via Outbox
-    @Transactional
-    public void publishReliably(Order order) {
-        // Save outbox record in same TX as order
-        outboxRepository.save(OutboxMessage.builder()
-            .messageId(UUID.randomUUID().toString())
-            .exchange(RabbitMQConfig.ORDER_EXCHANGE)
-            .routingKey("order.created")
-            .payload(objectMapper.writeValueAsString(order))
-            .status(OutboxStatus.PENDING)
-            .build());
-    }
-    
-    // Background outbox publisher
-    @Scheduled(fixedDelay = 500)
-    @Transactional
-    public void flushOutbox() {
-        List<OutboxMessage> pending = outboxRepository
-            .findTop100ByStatusOrderByCreatedAtAsc(OutboxStatus.PENDING);
-        
-        pending.forEach(msg -> {
-            try {
-                CorrelationData cd = new CorrelationData(msg.getMessageId());
-                rabbitTemplate.convertAndSend(msg.getExchange(), msg.getRoutingKey(),
-                    msg.getPayload(), cd);
-                msg.setStatus(OutboxStatus.SENT);
-            } catch (Exception e) {
-                msg.incrementRetry();
-                if (msg.getRetryCount() >= 5) msg.setStatus(OutboxStatus.FAILED);
-                log.error("Failed to publish outbox message {}: {}", msg.getMessageId(), e.getMessage());
-            }
-        });
-        outboxRepository.saveAll(pending);
-    }
-}
+```bash
+rabbitmq-queues add_member --vhost orders orders.created rabbit@rabbit-4
+rabbitmq-queues delete_member --vhost orders orders.created rabbit@rabbit-2
 ```
+
+Sau khi thêm node, rebalance leader:
+
+```bash
+rabbitmq-queues rebalance quorum
+```
+
+RabbitMQ 4.3 có **Continuous Membership Reconciliation (CMR)** để tự đưa nhóm replica về target group size trong các trường hợp phù hợp. CMR giảm thao tác tay, nhưng operator vẫn phải xử lý node bị loại vĩnh viễn, theo dõi quá trình sync và kiểm tra dung lượng trước khi thay đổi hàng loạt.
+
+### 3.4 Bảo trì node an toàn
+
+Trước khi dừng một node, cần chắc rằng mỗi quorum queue/stream có replica trên node đó vẫn còn đủ thành viên online. Công cụ nâng cấp có lệnh chờ điều kiện “online quorum cộng thêm một”:
+
+```bash
+rabbitmq-upgrade -t 300 await_online_quorum_plus_one
+```
+
+Điều này tránh dừng node khi queue chỉ vừa đủ quorum. Nó không thay thế kiểm tra alarm, disk capacity và sync lag.
 
 ---
 
-## 6. Kubernetes Deployment
+## 4. Policy và operator policy
+
+### 4.1 Khi nào dùng policy
+
+Policy phù hợp với thuộc tính có thể thay đổi lúc runtime:
+
+- message TTL;
+- dead-letter exchange/routing key;
+- giới hạn length/bytes;
+- delivery limit;
+- federation;
+- một số thiết lập stream và quorum queue.
+
+Không dùng policy để đặt:
+
+- queue type;
+- số priority tối đa của classic queue;
+- thuộc tính bất biến từ lúc declare.
+
+Ví dụ áp TTL và DLX cho nhóm quorum queue:
+
+```bash
+rabbitmqctl set_policy \
+  -p orders \
+  orders-lifecycle \
+  '^orders\.' \
+  '{"message-ttl":86400000,"dead-letter-exchange":"orders.dlx"}' \
+  --apply-to quorum_queues \
+  --priority 10
+```
+
+Trong JSON của CLI policy dùng `message-ttl`, không dùng tiền tố `x-`. Client declaration tương ứng mới dùng `x-message-ttl`.
+
+### 4.2 Operator policy là guardrail
+
+Application policy mô tả nhu cầu nghiệp vụ. Operator policy bảo vệ cluster khỏi resource bị dùng không giới hạn, ví dụ giới hạn bytes của queue.
+
+```bash
+rabbitmqctl set_operator_policy \
+  -p orders \
+  queue-guardrails \
+  '.*' \
+  '{"max-length-bytes":10737418240}' \
+  --apply-to queues
+```
+
+Khi cùng một key xuất hiện ở nhiều nơi, operator policy có quyền ưu tiên cao nhất trong phạm vi RabbitMQ cho phép. Với nhiều giới hạn số học, RabbitMQ chọn giá trị hạn chế hơn. Vì điều này có thể thay đổi semantics của ứng dụng, hãy version-control policy, review như code và rollout theo từng nhóm queue.
+
+### 4.3 Topology as Code
+
+Có ba cách phổ biến:
+
+1. Application declare resource nó sở hữu.
+2. Import definitions khi deploy.
+3. Kubernetes Messaging Topology Operator quản lý resource.
+
+Chọn một owner rõ ràng cho mỗi resource. Nếu cả application, script và operator cùng sửa một policy, sự cố drift gần như chắc chắn sẽ xảy ra.
+
+---
+
+## 5. Chạy RabbitMQ trên Kubernetes
+
+### 5.1 Dùng RabbitMQ Cluster Operator
+
+Không nên tự viết StatefulSet và script clustering nếu không có yêu cầu đặc biệt. Cluster Operator quản lý:
+
+- StatefulSet, Service và peer discovery;
+- PVC;
+- rolling update;
+- TLS và plugin;
+- trạng thái quorum;
+- cấu hình RabbitMQ qua custom resource.
+
+Baseline tối giản:
 
 ```yaml
-# rabbitmq-cluster.yaml using RabbitMQ Cluster Operator
 apiVersion: rabbitmq.com/v1beta1
 kind: RabbitmqCluster
 metadata:
-  name: rabbitmq
-  namespace: messaging
+  name: production-rabbit
 spec:
   replicas: 3
-  image: rabbitmq:3.13-management
-  service:
-    type: ClusterIP
+  image: rabbitmq:4.3.4-management
+  persistence:
+    storageClassName: fast-durable
+    storage: 200Gi
   resources:
     requests:
-      cpu: 500m
-      memory: 1Gi
+      cpu: "2"
+      memory: 4Gi
     limits:
-      cpu: 2000m
-      memory: 2Gi
-  rabbitmq:
-    additionalConfig: |
-      vm_memory_high_watermark.relative = 0.5
-      disk_free_limit.absolute = 2GB
-      consumer_timeout = 1800000
-      log.console = true
-      log.console.level = info
-    additionalPlugins:
-      - rabbitmq_management
-      - rabbitmq_peer_discovery_k8s
-      - rabbitmq_prometheus
+      memory: 6Gi
   affinity:
     podAntiAffinity:
       requiredDuringSchedulingIgnoredDuringExecution:
         - labelSelector:
             matchLabels:
-              app.kubernetes.io/name: rabbitmq
+              app.kubernetes.io/name: production-rabbit
           topologyKey: kubernetes.io/hostname
-  persistence:
-    storageClassName: fast-ssd
-    storage: 20Gi
-  tls:
-    secretName: rabbitmq-tls
-    caSecretName: rabbitmq-ca
----
-# Service Monitor for Prometheus
-apiVersion: monitoring.coreos.com/v1
-kind: ServiceMonitor
-metadata:
-  name: rabbitmq
-  namespace: monitoring
-spec:
-  selector:
-    matchLabels:
-      app.kubernetes.io/name: rabbitmq
-  endpoints:
-    - port: prometheus
-      interval: 30s
-      path: /metrics
+  rabbitmq:
+    additionalConfig: |
+      disk_free_limit.absolute = 8GB
 ```
 
-```yaml
-# rabbitmq.conf via ConfigMap
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: rabbitmq-config
-data:
-  rabbitmq.conf: |
-    ## Cluster Formation
-    cluster_formation.peer_discovery_backend = rabbit_peer_discovery_k8s
-    cluster_formation.k8s.host = kubernetes.default.svc.cluster.local
-    cluster_formation.k8s.address_type = hostname
-    cluster_formation.node_cleanup.only_log_warning = true
-    cluster_partition_handling = pause_minority
-    
-    ## Memory
-    vm_memory_high_watermark.relative = 0.5
-    
-    ## Disk
-    disk_free_limit.absolute = 2GB
-    
-    ## Defaults
-    default_vhost = /
-    default_user = admin
-    loopback_users.guest = false
-    
-    ## Heartbeat
-    heartbeat = 60
-    
-    ## Management
-    management.tcp.port = 15672
-    management.load_definitions = /etc/rabbitmq/definitions.json
-```
+Đây là điểm bắt đầu để thảo luận, không phải cấu hình copy-paste cho mọi workload. Trong production:
+
+- pin patch version hoặc image digest đã kiểm thử;
+- phân tán Pod qua node và Availability Zone;
+- dùng PVC riêng, durable, latency thấp;
+- đặt PodDisruptionBudget phù hợp;
+- đủ spare capacity để reschedule một Pod và sync replica;
+- cấu hình NetworkPolicy cho client, management và inter-node traffic;
+- không sửa trực tiếp StatefulSet do Operator sinh ra;
+- kiểm tra `status.quorumStatus` trước rolling maintenance.
+
+CPU limit quá chặt có thể tạo latency spike do throttling. Memory limit phải chừa khoảng trống so với RabbitMQ memory watermark và nhu cầu của OS/page cache; nếu đặt hai ngưỡng sát nhau, container có thể bị OOM kill trước khi flow control bảo vệ hệ thống.
+
+### 5.2 Liveness không phải business readiness
+
+Một liveness probe chỉ nên trả lời: “process này có bị kẹt đến mức phải restart không?”. Không dùng alarm toàn cluster làm liveness, vì một disk alarm có thể khiến Kubernetes restart đồng loạt những node vẫn còn hoạt động và làm sự cố nặng hơn.
+
+Gợi ý phân lớp:
+
+| Probe/check | Mục đích |
+|---|---|
+| `rabbitmq-diagnostics -q ping` | Erlang runtime sống và CLI xác thực được |
+| `rabbitmq-diagnostics -q check_running` | RabbitMQ application đang chạy |
+| `rabbitmq-diagnostics -q check_port_connectivity` | Listener cục bộ nhận TCP connection |
+| `rabbitmq-diagnostics -q check_local_alarms` | Node có memory/disk alarm hay không |
+| Synthetic publish/consume | Kiểm tra đường đi nghiệp vụ end-to-end |
+
+Startup probe cần đủ rộng cho lúc node đồng bộ dữ liệu lớn. Readiness có thể chặt hơn liveness, nhưng hãy hiểu hậu quả của việc loại một node khỏi Service khi client vẫn có thể dùng nó.
+
+Không dùng `rabbitmq-diagnostics node_health_check`; health check này đã deprecated và ở phiên bản hiện đại là no-op.
 
 ---
 
-## 7. Monitoring
+## 6. Monitoring, SLI và alert
 
-### 7.1 Prometheus & Grafana
+RabbitMQ khuyến nghị Prometheus và Grafana cho production. Management UI hữu ích để điều tra tương tác, không phải kho metrics dài hạn.
+
+### 6.1 Endpoint Prometheus
+
+Plugin `rabbitmq_prometheus` mặc định mở metrics ở port `15692`:
 
 ```bash
-# Enable Prometheus plugin
 rabbitmq-plugins enable rabbitmq_prometheus
-
-# Metrics endpoint
-curl http://localhost:15692/metrics
-
-# Key metrics to monitor:
-# rabbitmq_queue_messages_ready          - messages waiting to be consumed
-# rabbitmq_queue_messages_unacked        - delivered but not acked
-# rabbitmq_queue_consumers               - number of consumers
-# rabbitmq_queue_messages_published_total - publish rate
-# rabbitmq_queue_messages_delivered_total - delivery rate
-# rabbitmq_connections                   - total connections
-# rabbitmq_channels                      - total channels
-# rabbitmq_node_mem_used                 - memory used
-# rabbitmq_node_disk_free                - free disk space
-# rabbitmq_node_proc_used               - Erlang process count
 ```
+
+- `/metrics`: metrics tổng hợp, phù hợp scrape thường xuyên.
+- `/metrics/detailed`: chỉ trả các metric family/vhost được yêu cầu.
+- `/metrics/memory-breakdown`: phân tích thành phần dùng memory.
+
+Ví dụ lấy đủ thông tin backlog và consumer mà không scrape mọi object:
+
+```text
+/metrics/detailed?family=queue_coarse_metrics&family=queue_consumer_count
+```
+
+Tránh bật per-object metrics toàn cục khi có hàng chục nghìn queue/connection. Cardinality và thời gian scrape có thể tự trở thành tải đáng kể.
+
+### 6.2 Dashboard nên trả lời được gì?
+
+| Nhóm | Tín hiệu quan trọng | Câu hỏi |
+|---|---|---|
+| Node | CPU, memory, disk free, disk latency, file descriptors, alarms | Node sắp cạn tài nguyên hay bị throttling? |
+| Cluster | node online, inter-node connectivity, metadata health | Có node rời cluster hoặc mất quorum? |
+| Queue | ready, unacked, ingress/deliver/ack rate, consumer count | Backlog đang tăng hay đang được drain? |
+| Quorum | leader, members online, replica/sync state | Queue có còn chịu thêm một lỗi node không? |
+| Publisher | confirm latency, nack, return, blocked time | Publish thật sự thành công và route đúng không? |
+| Consumer | processing latency, redelivery, nack/reject, DLQ rate | Consumer chậm, treo hay gặp poison message? |
+| Client | connection/channel count và churn | Ứng dụng có leak hoặc reconnect storm? |
+
+### 6.3 Alert theo tác động, không chỉ theo con số
+
+`messages_ready > 10_000` chưa chắc là lỗi: queue batch ban đêm có thể luôn như vậy. Tín hiệu tốt hơn:
+
+- backlog age vượt SLO;
+- ingress rate lớn hơn ack rate liên tục;
+- ước tính drain time vượt giới hạn;
+- consumer count về 0 trên queue bắt buộc có consumer;
+- quorum queue chỉ còn đúng số thành viên tối thiểu;
+- confirm latency hoặc returned message tăng đột biến;
+- memory/disk alarm;
+- disk free sẽ chạm watermark trước thời gian phản ứng của đội vận hành;
+- DLQ/redelivery rate vượt baseline.
+
+Ước tính đơn giản:
+
+```text
+drain_rate = ack_rate - ingress_rate
+drain_time = messages_ready / drain_rate
+```
+
+Nếu `drain_rate <= 0`, backlog chưa thể giảm bằng công suất hiện tại.
+
+---
+
+## 7. Capacity planning và performance
+
+### 7.1 Đầu vào cần đo
+
+Không sizing chỉ bằng “message/second”. Tối thiểu phải biết:
+
+- p50/p95/p99 message size;
+- peak publish và ack rate;
+- số queue, connection, channel và consumer;
+- prefetch và số delivery unacked;
+- tỷ lệ durable/persistent;
+- queue type và replication factor;
+- confirm strategy/batch size;
+- backlog tối đa khi consumer ngừng;
+- retention của stream;
+- TLS, compression và plugin;
+- disk latency/IOPS và network giữa node.
+
+Một queue nóng có giới hạn riêng dù cluster còn nhiều CPU. Scale ngang bằng cách chia workload thành nhiều queue/shard với routing key ổn định, nhưng chỉ làm vậy khi consumer có thể xử lý semantics phân vùng.
+
+### 7.2 Ước tính dung lượng disk
+
+Ước tính thô cho phần backlog:
+
+```text
+disk toàn cluster
+≈ ingress_bytes_per_second
+× thời_gian_consumer_có_thể_dừng
+× số_replica
+× hệ_số_an_toàn
+```
+
+Ví dụ ingress 20 MiB/s, cần giữ 2 giờ, ba replica và headroom 1.5:
+
+```text
+20 MiB/s × 7.200 s × 3 × 1,5 ≈ 633 GiB
+```
+
+Đây chưa gồm metadata, segment chưa compact, WAL, stream retention, filesystem overhead và nhu cầu đồng bộ replica. Luôn đo trên workload thật và overprovision disk.
+
+### 7.3 Storage và resource watermark
+
+- Ưu tiên local SSD/NVMe có latency ổn định.
+- Mỗi node dùng data directory riêng.
+- Không chia sẻ filesystem giữa các node.
+- Network-attached storage chỉ phù hợp khi đảm bảo semantics filesystem và latency ổn định.
+- Đặt `disk_free_limit` production đủ lớn; mặc định dành cho development thường quá thấp.
+- Không đẩy memory watermark quá cao; OS và page cache cũng cần RAM.
+- Theo dõi disk latency, không chỉ phần trăm disk đã dùng.
+- Tránh swap cho RabbitMQ node.
+
+### 7.4 Benchmark giống production
+
+Dùng PerfTest với:
+
+- đúng queue type và replica count;
+- payload distribution thật;
+- publisher confirm;
+- consumer ack và processing delay gần thật;
+- TLS nếu production dùng TLS;
+- test steady state, backlog build-up, drain và node failure;
+- đo p95/p99 latency, confirm latency, disk I/O và recovery time.
+
+Đừng bắt đầu bằng việc chỉnh Erlang scheduler, mailbox hoặc garbage collection flag. Giữ default, đo bottleneck rồi mới thay đổi từng biến có giả thuyết rõ ràng.
+
+---
+
+## 8. Security baseline
+
+### 8.1 Identity và quyền
+
+- Xóa hoặc vô hiệu hóa `guest` cho use case production; không mở remote access cho tài khoản mặc định.
+- Mỗi application có user riêng.
+- Tách vhost theo tenant hoặc boundary cần cô lập quyền.
+- Cấp `configure`, `write`, `read` bằng regex tối thiểu cần thiết.
+- Tách tài khoản quản trị khỏi tài khoản ứng dụng.
+- Rotate credential và certificate, đồng thời theo dõi ngày hết hạn.
+- Bảo vệ definitions export vì có thể chứa password hash và thông tin topology nhạy cảm.
+
+Vhost là namespace và permission boundary, không phải resource isolation cứng. Một tenant tạo quá nhiều queue vẫn có thể ảnh hưởng node chung; cần per-vhost/per-user limits và operator policy.
+
+### 8.2 Network và TLS
+
+- Dùng TLS cho client traffic; cân nhắc mTLS/x.509 khi phù hợp.
+- Không public Management UI/HTTP API ra Internet.
+- Chỉ node/CLI host được truy cập EPMD và inter-node distribution ports.
+- Dùng NetworkPolicy/firewall theo allow-list.
+- Có thể bật TLS cho inter-node traffic.
+- Lưu Erlang cookie và private key trong secret manager; không commit vào Git.
+- Alert certificate sắp hết hạn bằng `check_certificate_expiration` hoặc metrics tương ứng.
+
+TLS tốn CPU, vì vậy benchmark phải bật TLS giống production thay vì đo plaintext rồi suy ra.
+
+---
+
+## 9. Multi-cluster, Federation và Shovel
+
+### 9.1 Chọn công cụ
+
+| Công cụ | Phù hợp khi | Cần nhớ |
+|---|---|---|
+| **Federation** | Liên kết exchange/queue giữa cluster theo nhu cầu downstream | Tự quản lý link, phù hợp pub/sub và topology phân tán |
+| **Shovel** | Chủ động chuyển message từ source queue tới destination | Giống một message pump; dynamic shovel dễ tự động hóa hơn |
+| **Ứng dụng relay** | Cần transformation, audit hoặc rule nghiệp vụ phức tạp | Tự chịu trách nhiệm retry, idempotency và observability |
+
+Federation/Shovel:
+
+- dùng nhiều endpoint hoặc load balancer ở mỗi đầu;
+- dùng TLS và secret riêng có quyền tối thiểu;
+- giữ `ack-mode=on-confirm` khi ưu tiên data safety;
+- theo dõi link state, reconnect, lag và destination rejection;
+- giả định duplicate vẫn có thể xảy ra quanh failure/recovery;
+- ngăn loop khi cấu hình hai chiều.
+
+Chúng không tự biến hai cluster thành bản sao đồng bộ giống nhau. Exchange federation chuyển message theo liên kết và nhu cầu; Shovel chỉ chuyển luồng đã chỉ định. RPO/RTO phải được kiểm thử theo topology thực.
+
+---
+
+## 10. Backup, restore và Disaster Recovery
+
+### 10.1 Definitions không chứa message
+
+Export definitions:
+
+```bash
+rabbitmqctl export_definitions /secure-backup/rabbitmq-definitions.json
+```
+
+File này chứa topology/metadata như:
+
+- vhost, user và permission;
+- queue, exchange và binding;
+- policy và runtime parameter.
+
+Nó **không chứa message body**. Import definitions sẽ tái tạo broker có cùng schema, không đưa backlog cũ trở lại.
+
+Nên quản lý definitions dưới dạng IaC, backup định kỳ, mã hóa file và diễn tập import vào môi trường cô lập:
+
+```bash
+rabbitmqctl import_definitions /secure-backup/rabbitmq-definitions.json
+```
+
+### 10.2 Backup message store khó hơn
+
+Snapshot data directory của node đang chạy có thể không nhất quán. Theo hướng dẫn RabbitMQ:
+
+- dừng node trước khi backup message store;
+- với replicated queue, nên dừng cả cluster trong cửa sổ backup nhất quán;
+- backup data directory của từng node;
+- restore về đúng node name ban đầu;
+- dùng version/Erlang và đường nâng cấp tương thích;
+- không kỳ vọng đổi node name khi có quorum queue hoặc stream.
+
+Vì giới hạn này, file-system backup thường không phải cơ chế DR duy nhất cho hệ thống có RTO thấp.
+
+### 10.3 Thiết kế DR theo RPO/RTO
+
+| Khái niệm | Câu hỏi |
+|---|---|
+| **RPO** | Chấp nhận mất tối đa bao nhiêu phút message khi region hỏng? |
+| **RTO** | Phải phục vụ lại trong bao lâu? |
+
+Một kế hoạch DR thực tế có thể gồm:
+
+1. Cluster dự phòng ở region khác.
+2. Definitions/topology được deploy bằng IaC.
+3. Luồng quan trọng được Federation/Shovel hoặc application relay bất đồng bộ.
+4. Producer biết chuyển endpoint theo runbook.
+5. Consumer idempotent khi message được phát lại.
+6. Diễn tập failover và failback định kỳ.
+
+Không gọi cluster dự phòng là “sẵn sàng” trước khi đo được replication lag, RPO thực tế, thời gian đổi traffic và cách xử lý split-brain ở tầng ứng dụng.
+
+---
+
+## 11. Nâng cấp RabbitMQ an toàn
+
+### 11.1 Trước maintenance window
+
+- Đọc release notes của phiên bản nguồn và đích.
+- Kiểm tra bảng supported upgrade path; không tự ý bỏ qua minor series.
+- Kiểm tra Erlang/OTP compatibility.
+- Kiểm tra compatibility của community plugin.
+- Backup definitions và lưu cấu hình hiện tại.
+- Cluster không có alarm, node offline hoặc queue mất quorum.
+- Đủ disk/network capacity cho replica catch-up.
+- Enable mọi stable feature flag bắt buộc trên phiên bản hiện tại.
+- Với đường nâng cấp lên 4.3 từ release còn Mnesia, hoàn tất chuyển metadata sang Khepri theo đúng tài liệu trước khi chạy 4.3.
+
+Kiểm tra feature flag:
+
+```bash
+rabbitmqctl list_feature_flags name state stability
+rabbitmqctl enable_feature_flag all
+```
+
+Feature flag enable thường không thể đảo ngược. Chỉ chạy sau khi đã đọc release notes và xác nhận mọi node trong cluster hỗ trợ.
+
+### 11.2 Rolling upgrade
+
+Quy trình tổng quát:
+
+1. Chọn một node, chắc chắn các queue trên node đó còn “quorum + 1”.
+2. Drain/loại node khỏi client traffic nếu kiến trúc yêu cầu.
+3. Dừng node đúng cách.
+4. Nâng RabbitMQ/Erlang hoặc đổi image.
+5. Khởi động và chờ node join lại.
+6. Kiểm tra alarm, log, listener, queue replica và catch-up.
+7. Chỉ tiếp tục node kế tiếp khi node hiện tại ổn định.
+
+Sau khi tất cả node đã nâng cấp:
+
+```bash
+rabbitmqctl list_feature_flags name state stability
+rabbitmqctl enable_feature_flag all
+rabbitmq-queues rebalance quorum
+```
+
+Sau đó chạy smoke test publish → route → consume → ack, kiểm tra confirm/return và theo dõi ít nhất một chu kỳ tải cao.
+
+Rollback rolling upgrade không đơn giản như đổi image về bản cũ, nhất là sau khi bật feature flag hoặc thay metadata format. Kế hoạch rollback phải dựa trên upgrade guide của đúng cặp phiên bản và đã được diễn tập.
+
+---
+
+## 12. Spring AMQP trong production
+
+### 12.1 Cấu hình nền
 
 ```yaml
-# Prometheus alerting rules
-groups:
-  - name: rabbitmq
-    rules:
-      - alert: RabbitmqDown
-        expr: rabbitmq_identity_info == 0
-        for: 1m
-        annotations:
-          summary: "RabbitMQ node is down"
-
-      - alert: QueueDepthHigh
-        expr: rabbitmq_queue_messages_ready > 10000
-        for: 5m
-        annotations:
-          summary: "Queue {{ $labels.queue }} has {{ $value }} messages"
-
-      - alert: ConsumerAbsent
-        expr: rabbitmq_queue_consumers{queue!~".*dlq.*"} == 0
-        for: 2m
-        annotations:
-          summary: "No consumers on queue {{ $labels.queue }}"
-
-      - alert: HighUnackedMessages
-        expr: rabbitmq_queue_messages_unacked > 1000
-        for: 5m
-        annotations:
-          summary: "High unacked messages on {{ $labels.queue }}"
-
-      - alert: MemoryAlarm
-        expr: rabbitmq_alarms_memory_used_watermark > 0
-        annotations:
-          summary: "RabbitMQ memory alarm triggered - publishing blocked"
-
-      - alert: DiskAlarm
-        expr: rabbitmq_alarms_free_disk_space_watermark > 0
-        annotations:
-          summary: "RabbitMQ disk alarm triggered"
-
-      - alert: NodeNotClusterd
-        expr: rabbitmq_cluster_nodes < 3
-        annotations:
-          summary: "RabbitMQ cluster has only {{ $value }} nodes"
+spring:
+  rabbitmq:
+    addresses: rabbit-1:5672,rabbit-2:5672,rabbit-3:5672
+    requested-heartbeat: 30s
+    connection-timeout: 5s
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    template:
+      mandatory: true
+    listener:
+      simple:
+        acknowledge-mode: manual
+        prefetch: 50
+        default-requeue-rejected: false
 ```
 
-### 7.2 Health Checks
+Giá trị timeout, prefetch và concurrency phải đo theo workload; đây chỉ là ví dụ khởi đầu.
 
-```bash
-# HTTP health checks (for load balancer/K8s)
-# Basic alive check
-curl -f http://localhost:15672/api/healthchecks/node
-# → {"status":"ok"}
+Publisher cần xử lý hai tín hiệu độc lập:
 
-# Check specific vhost
-curl -u admin:pass http://localhost:15672/api/healthchecks/virtual-hosts
-curl -u admin:pass "http://localhost:15672/api/healthchecks/alarms"
-curl -u admin:pass "http://localhost:15672/api/healthchecks/protocol-listener/amqp091"
+- **Return**: message không route được tới queue.
+- **Confirm**: broker ack/nack việc nhận trách nhiệm cho publish.
 
-# CLI diagnostics
-rabbitmq-diagnostics check_running
-rabbitmq-diagnostics check_local_alarms
-rabbitmq-diagnostics check_port_connectivity
+Với Outbox, chỉ đánh dấu event đã gửi sau khi confirm ack và không có return. Gọi `convertAndSend()` thành công chỉ cho biết client đã thực hiện lệnh publish, chưa chứng minh broker đã lưu/route message.
 
-# K8s liveness/readiness probes
-# livenessProbe:
-#   exec:
-#     command: ["rabbitmq-diagnostics", "check_running"]
-#   initialDelaySeconds: 60
-#   periodSeconds: 30
+### 12.2 Consumer ack đúng thời điểm
 
-# readinessProbe:
-#   exec:
-#     command: ["rabbitmq-diagnostics", "check_port_connectivity"]
-#   initialDelaySeconds: 20
-#   periodSeconds: 10
+```java
+@RabbitListener(queues = "orders.created")
+public void handle(OrderCreated event, Message message, Channel channel)
+        throws IOException {
+    long tag = message.getMessageProperties().getDeliveryTag();
+
+    try {
+        orderInboxService.processOnce(event); // transaction DB + inbox
+        channel.basicAck(tag, false);
+    } catch (InvalidOrderException e) {
+        channel.basicNack(tag, false, false); // dead-letter nếu đã cấu hình DLX
+    }
+}
 ```
+
+Không dùng multi-ack cho một batch có delivery thất bại xen giữa; ack tới delivery tag cuối có thể vô tình xóa cả message lỗi. Không requeue vô hạn ngay lập tức: lỗi tạm thời cần delayed retry/backoff, lỗi vĩnh viễn cần DLQ.
+
+Khi shutdown:
+
+1. ngừng nhận traffic mới;
+2. dừng listener nhận delivery mới;
+3. chờ task đang xử lý trong giới hạn;
+4. ack/nack những delivery đã có kết quả;
+5. đóng channel/connection.
 
 ---
 
-## 8. Security
+## 13. Runbook sự cố
 
-```bash
-# 1. Remove default guest user
-rabbitmqctl delete_user guest
+### 13.1 Một node unavailable
 
-# 2. Create admin user
-rabbitmqctl add_user admin $(openssl rand -base64 32)
-rabbitmqctl set_user_tags admin administrator
-rabbitmqctl set_permissions -p / admin ".*" ".*" ".*"
+1. Xác định process chết, VM chết hay network partition.
+2. Kiểm tra `cluster_status` và queue quorum, không chỉ ping node.
+3. Dừng automation restart liên tục nếu node không thể rejoin.
+4. Kiểm tra disk, node name, cookie, DNS và log.
+5. Nếu node mất vĩnh viễn, làm quy trình remove/replace member có kiểm soát.
+6. Rebalance leader sau khi cluster ổn định.
 
-# 3. App user with minimal permissions
-rabbitmqctl add_user app_user "strongpassword"
-rabbitmqctl set_permissions -p production app_user \
-    "^(orders|notifications)\." \   # configure: can declare/delete matching
-    "^orders\." \                   # write: can publish to matching
-    "^(orders|notifications)\."     # read: can consume from matching
+### 13.2 Disk alarm
 
-# 4. TLS for AMQP
-# rabbitmq.conf
-# listeners.ssl.default = 5671
-# ssl_options.cacertfile = /etc/rabbitmq/certs/ca.pem
-# ssl_options.certfile   = /etc/rabbitmq/certs/server.pem
-# ssl_options.keyfile    = /etc/rabbitmq/certs/server.key
-# ssl_options.verify     = verify_peer
-# ssl_options.fail_if_no_peer_cert = true
+1. Xác định node và filesystem chạm watermark.
+2. Dừng/bóp traffic publisher phía upstream; đừng tạo reconnect storm.
+3. Giữ consumer hoạt động để drain nếu an toàn.
+4. Tìm queue/stream tạo footprint và nguyên nhân consumer lag.
+5. Mở rộng disk hoặc giảm retention/traffic bằng thay đổi đã review.
+6. Không xóa data directory hoặc queue production chỉ để “hết đỏ”.
 
-# 5. Network isolation
-# Only expose AMQP port internally
-# Management UI behind VPN or basic-auth proxy
+### 13.3 Backlog tăng
 
-# 6. Vhost isolation per environment
-rabbitmqctl add_vhost production
-rabbitmqctl add_vhost staging
-rabbitmqctl set_permissions -p production prod_user ".*" ".*" ".*"
-rabbitmqctl set_permissions -p staging staging_user ".*" ".*" ".*"
-# → prod_user cannot access staging vhost
-```
+1. So sánh publish rate và ack rate.
+2. Kiểm tra consumer count, processing latency, dependency downstream.
+3. Kiểm tra unacked và prefetch.
+4. Scale consumer nếu business side effect chịu được concurrency.
+5. Nếu queue là bottleneck, đánh giá sharding thay vì chỉ thêm broker node.
+6. Ước tính drain time và truyền đạt ETA.
 
----
+### 13.4 Queue mất quorum
 
-## 9. Performance Tuning
+1. Xác định thành viên nào offline.
+2. Ưu tiên khôi phục member cũ với data còn nguyên.
+3. Không force recovery/xóa member khi chưa hiểu nguy cơ mất dữ liệu.
+4. Nếu không thể phục hồi đa số, thực hiện disaster recovery theo runbook đã phê duyệt.
+5. Sau sự cố, bổ sung alert “quorum critical”, không chỉ alert queue unavailable.
 
-```bash
-# rabbitmq.conf production tuning
+### 13.5 DLQ hoặc redelivery tăng
 
-## Erlang VM settings
-RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS="+P 1048576 +Q 65536"
-# +P: max processes (default 1048576)
-# +Q: max ports
-
-## Memory
-vm_memory_high_watermark.relative = 0.4   # warn at 40% RAM
-vm_memory_high_watermark_paging_ratio = 0.5  # start paging at 50% of watermark
-
-## Disk
-disk_free_limit.relative = 1.5
-
-## Channel/Connection limits
-channel_max = 2047
-connection_max = infinity  # or specific number
-max_message_size = 134217728  # 128MB
-
-## Collect statistics less frequently under load
-collect_statistics_interval = 60000  # 60s (default 5s)
-
-## File descriptors (OS level)
-# ulimit -n 65536
-# /etc/security/limits.conf:
-# rabbitmq soft nofile 65536
-# rabbitmq hard nofile 65536
-
-## Network
-tcp_listen_options.backlog = 4096
-tcp_listen_options.sndbuf = 131072  # 128KB
-tcp_listen_options.recbuf = 131072
-
-## Quorum Queue options
-quorum_commands_soft_limit = 32    # commands in-flight limit
-```
+1. Dừng replay tự động.
+2. Phân loại lỗi schema, poison data, dependency tạm thời hay bug code.
+3. Giữ message ID, headers và `x-death` khi điều tra.
+4. Fix consumer hoặc dữ liệu.
+5. Replay theo batch nhỏ, có rate limit và idempotency.
+6. Theo dõi queue chính lẫn DLQ trong suốt replay.
 
 ---
 
-## 10. Production Checklist
+## 14. Production readiness checklist
 
-```
-Architecture:
-□ 3+ node cluster (odd number for quorum)
-□ Quorum Queues (not Classic mirrored)
-□ HAProxy/NLB in front of cluster
-□ Separate vhosts per environment
+### Kiến trúc
 
-Reliability:
-□ Durable exchanges + queues + persistent messages
-□ Publisher Confirms enabled
-□ Consumer manual ack (auto_ack=False)
-□ DLX configured for all critical queues
-□ x-delivery-limit on Quorum Queues (poison message protection)
-□ Outbox pattern for atomic DB+publish
-□ Consumer idempotency
+- [ ] Failure domain, SLO, RPO và RTO được viết rõ.
+- [ ] Cluster dùng số node lẻ và chỉ trải trong mạng có latency thấp.
+- [ ] Queue quan trọng dùng quorum queue/stream với số replica đã tính.
+- [ ] Client có nhiều endpoint và automatic recovery phù hợp.
+- [ ] Publish/consume dùng connection sống lâu và được tách khi cần.
 
-Security:
-□ guest user deleted
-□ TLS on AMQP (port 5671)
-□ TLS on Management UI (port 15671)
-□ Per-vhost user permissions (minimal access)
-□ Management UI not exposed publicly
+### Data safety
 
-Operations:
-□ Erlang cookie secret managed securely
-□ Policy for TTL, max-length, overflow
-□ Prometheus metrics enabled
-□ Grafana dashboards deployed
-□ Alerts for: queue depth, no consumers, memory/disk alarms
-□ Health check endpoints for K8s probes
-□ Backup strategy (definitions export)
+- [ ] Publisher confirm và mandatory return được xử lý.
+- [ ] Consumer ack sau business transaction.
+- [ ] Consumer idempotent; Outbox/Inbox dùng cho luồng quan trọng.
+- [ ] Retry có backoff, delivery limit và DLQ.
+- [ ] Definitions backup và DR failover đã diễn tập.
 
-Performance:
-□ prefetch_count tuned per consumer type
-□ file descriptor limit (ulimit -n) set high
-□ vm_memory_high_watermark configured
-□ disk_free_limit configured
-□ Lazy queues for large backlogs
-```
+### Hạ tầng
+
+- [ ] Node name, DNS, NTP và Erlang cookie ổn định.
+- [ ] Mỗi node có storage riêng, durable, đủ nhanh và đủ headroom.
+- [ ] Node/Pod phân tán qua failure domain.
+- [ ] Memory/disk watermark và OS limits đã review.
+- [ ] Có capacity để mất một node và sync replica trở lại.
+
+### Observability và vận hành
+
+- [ ] Prometheus/Grafana, log tập trung và application metrics đã bật.
+- [ ] Alert cho alarm, quorum, backlog age, confirm/return, consumer và DLQ.
+- [ ] Liveness dùng node-local check; synthetic test kiểm tra end-to-end.
+- [ ] Có runbook node loss, disk alarm, backlog, quorum loss và poison message.
+- [ ] Upgrade path, feature flag, plugin và rollback plan đã diễn tập.
+
+### Security
+
+- [ ] Không dùng `guest` làm tài khoản application production.
+- [ ] Mỗi service có user/quyền tối thiểu và secret được rotate.
+- [ ] TLS, firewall/NetworkPolicy và certificate alert đã cấu hình.
+- [ ] Management/inter-node ports không public.
+- [ ] Operator policy và resource limits bảo vệ cluster khỏi tenant lỗi.
 
 ---
 
-## Ghi chú – Topics tiếp theo
+## 15. Những anti-pattern cần tránh
 
-- **Stream Queue deep dive**: replay from offset, consumer groups → extension
-- **OAuth2 / JWT auth plugin**: modern auth → extension
-- **MQTT plugin**: IoT devices connecting via MQTT → extension
-- **WebSTOMP**: browser WebSocket clients → extension
-- **Tracing**: rabbitmq_tracing plugin, firehose → debugging
+- Kéo một RabbitMQ cluster qua nhiều region.
+- Dùng classic queue rồi nghĩ cluster tự replicate message.
+- Dùng RAM node, classic mirrored queue hoặc `cluster_partition_handling` từ hướng dẫn RabbitMQ 3.x.
+- Cấu hình queue type bằng policy.
+- Chỉ backup definitions rồi cho rằng đã backup message.
+- Mở/đóng connection cho từng publish.
+- Dùng `node_health_check` cũ làm liveness.
+- Restart Pod khi có cluster-wide disk alarm.
+- Đánh dấu Outbox `SENT` ngay sau `convertAndSend()`, trước confirm.
+- Requeue poison message vô hạn.
+- Nâng tất cả node cùng lúc hoặc bỏ qua minor series.
+- Tuning Erlang bằng một bộ flag copy từ Internet mà chưa đo bottleneck.
+
+---
+
+## 16. Tài liệu tham khảo chính thức
+
+- [RabbitMQ 4.3 Documentation](https://www.rabbitmq.com/docs)
+- [Clustering Guide](https://www.rabbitmq.com/docs/clustering)
+- [Quorum Queues](https://www.rabbitmq.com/docs/quorum-queues)
+- [Policies](https://www.rabbitmq.com/docs/policies)
+- [Production Deployment Guidelines](https://www.rabbitmq.com/docs/production-checklist)
+- [Monitoring](https://www.rabbitmq.com/docs/monitoring)
+- [Prometheus and Grafana](https://www.rabbitmq.com/docs/prometheus)
+- [Backup and Restore](https://www.rabbitmq.com/docs/backup)
+- [Rolling Upgrades](https://www.rabbitmq.com/docs/rolling-upgrade)
+- [Federation](https://www.rabbitmq.com/docs/federation)
+- [Shovel](https://www.rabbitmq.com/docs/shovel)
+- [RabbitMQ Cluster Kubernetes Operator](https://www.rabbitmq.com/kubernetes/operator/using-operator)
+- [Spring AMQP: RabbitTemplate](https://docs.spring.io/spring-amqp/reference/amqp/template.html)
+
+---
+
+## Tổng kết
+
+Production RabbitMQ không nằm ở một vài tham số “tối ưu”. Một hệ thống vận hành tốt cần đồng thời:
+
+1. cluster đặt đúng failure domain;
+2. queue type và replication đúng nhu cầu;
+3. publisher/consumer xử lý failure bằng confirm, ack và idempotency;
+4. storage/capacity đủ cho backlog và recovery;
+5. metrics, alert và runbook có thể hành động;
+6. backup, DR và upgrade được diễn tập.
+
+Khi sáu phần này rõ ràng, RabbitMQ mới là một thành phần có thể dự đoán được trong hệ thống, thay vì một “hộp đen” chỉ được chú ý lúc queue đầy.
+
+*Cập nhật lần cuối: 2026-07-29*

@@ -1,402 +1,379 @@
-# Spring Boot Testing – Deep Dive
+# Spring Boot Testing – Chiến lược kiểm thử từ Unit đến Production
 
-## Mục lục
-1. [Test Slices](#1-test-slices)
-2. [MockMvc Patterns](#2-mockmvc-patterns)
-3. [Testcontainers](#3-testcontainers)
-4. [WireMock – HTTP Mocking](#4-wiremock--http-mocking)
-5. [Security Testing](#5-security-testing)
-6. [Integration Test Strategy](#6-integration-test-strategy)
+> Phương pháp: What – How – Why – Components – When – Compare – Trade-offs – Production – Ghi chú
+>
+> Tra cứu nhanh thuật ngữ tại [Spring Boot Glossary](glossary.md).
 
 ---
 
-## 1. Test Slices
+## What – Spring Boot Testing là gì?
 
-### 1.1 @WebMvcTest — Controller Layer Only
+**Testing strategy** *(chiến lược kiểm thử)* là cách phân bổ nhiều loại test để phát hiện lỗi ở đúng ranh giới với chi phí hợp lý. Spring Boot cung cấp test slices, `MockMvc`, `WebTestClient`, Testcontainers và tích hợp Spring Security Test; chúng bổ sung cho JUnit/Mockito chứ không thay thế tư duy chọn phạm vi test.
+
+Một test tốt phải trả lời rõ:
+
+- behavior nào đang được bảo vệ;
+- boundary nào là thật, boundary nào được thay bằng mock/stub;
+- loại lỗi nào test có thể và không thể phát hiện;
+- state được cô lập và dọn dẹp bằng cách nào;
+- tốc độ/độ ổn định có phù hợp với tầng CI đang chạy hay không.
+
+> 💡 **Giải thích dễ hiểu:**
+> Kiểm thử giống kiểm tra một chiếc xe: unit test kiểm từng chi tiết trên bàn, slice test kiểm riêng hệ thống phanh, integration test cho các cụm thật chạy cùng nhau, còn end-to-end test lái cả xe trên đường. Không một bài kiểm tra nào thay thế được tất cả bài còn lại.
+
+---
+
+## Why – Vì sao không chỉ dùng `@SpringBootTest` cho mọi thứ?
+
+`@SpringBootTest` tăng **fidelity** *(mức độ giống môi trường chạy thật)* nhưng khởi tạo nhiều bean, kết nối và hạ tầng hơn. Nếu mọi test đều load toàn bộ context, suite sẽ chậm, khó xác định lỗi thuộc layer nào và dễ tạo nhiều biến thể context làm mất cache.
+
+Ngược lại, mock mọi dependency khiến test nhanh nhưng có thể bỏ sót mapping, validation, serialization, SQL dialect, security filter hoặc protocol thật. Mục tiêu không phải “mock nhiều nhất” hay “dùng container nhiều nhất”, mà là chọn test nhỏ nhất vẫn chứng minh được rủi ro cần bảo vệ.
+
+---
+
+## Components – Các tầng kiểm thử
+
+```text
+          E2E / smoke                 ít, chậm, kiểm hệ thống đã deploy
+       Contract / component           kiểm boundary HTTP/message
+    Integration + real services       Spring context + container
+          Test slices                 một phần auto-configuration
+             Unit                     nhiều, nhanh, không Spring
+```
+
+| Tầng | Boundary thật | Phát hiện tốt |
+|---|---|---|
+| Unit test | Một class/hàm | Business branch, algorithm, mapping thuần |
+| Slice test | Một phần Spring | MVC binding, JSON, repository query, HTTP client mapping |
+| Integration test | Nhiều layer + hạ tầng thật | Wiring, transaction, migration, protocol/driver |
+| Contract test | Consumer/provider contract | Request/response/event không tương thích |
+| E2E/smoke | Hệ thống đã chạy | Routing, deployment, identity, critical journey |
+
+> 💡 **Giải thích dễ hiểu:**
+> Các tầng test giống lưới có mắt từ nhỏ đến lớn. Lưới nhỏ bắt lỗi logic rẻ và nhanh; lưới lớn bắt lỗi nối hệ thống nhưng tốn thời gian. Chỉ dùng một cỡ lưới sẽ để lọt một nhóm lỗi hoặc làm chi phí quá cao.
+
+---
+
+## How – Unit Test không khởi động Spring
+
+**Unit test** *(kiểm thử một đơn vị logic cô lập)* nên gọi object thật trực tiếp, dùng mock cho collaborator có side effect hoặc boundary chậm. Không cần `@SpringBootTest`, `@ExtendWith(SpringExtension.class)` hay Spring context nếu class chỉ có constructor dependency.
 
 ```java
-// Loads: Controllers, @ControllerAdvice, @JsonComponent, Filter, WebMvcConfigurer
-// Does NOT load: @Service, @Repository, @Component, full Spring context
-@WebMvcTest(UserController.class)
-class UserControllerTest {
+@ExtendWith(MockitoExtension.class)
+class PriceCalculatorTest {
+
+    @Mock
+    private DiscountPolicy discountPolicy;
+
+    @InjectMocks
+    private PriceCalculator calculator;
+
+    @Test
+    void calculate_vipCustomer_appliesDiscount() {
+        given(discountPolicy.percentageFor("VIP")).willReturn(new BigDecimal("0.10"));
+
+        Money result = calculator.calculate(
+            new BigDecimal("100.00"), "VIP");
+
+        assertThat(result.amount()).isEqualByComparingTo("90.00");
+    }
+}
+```
+
+Ưu tiên assert output/state/observable interaction quan trọng. Verify mọi lời gọi nội bộ làm test gắn chặt implementation và vỡ khi refactor dù behavior không đổi. Với value object, mapper hoặc domain rule thuần, dùng object thật thường rõ hơn mock.
+
+---
+
+## How – Test Slices
+
+**Test slice** *(Spring context thu gọn theo một capability)* chỉ bật nhóm auto-configuration và component cần cho một layer. Slice nhanh hơn full context nhưng vẫn kiểm tra framework behavior như binding, converter, repository proxy hoặc JSON module.
+
+| Slice | Nạp chính | Không tự nạp |
+|---|---|---|
+| `@WebMvcTest` | MVC infrastructure, controller, advice, filter phù hợp | Service/repository thông thường |
+| `@WebFluxTest` | WebFlux controller/codec | Reactive service/repository thông thường |
+| `@DataJpaTest` | Entity, JPA repository, Hibernate, test transaction | Service/web layer |
+| `@DataRedisTest` | Redis data infrastructure/repository | Component tùy chỉnh ngoài slice |
+| `@JsonTest` | Jackson/Gson/Jsonb support | Web/service/data layer |
+| `@RestClientTest` | JSON + `RestClient.Builder`/`RestTemplateBuilder` + mock server | Full application |
+| `@JdbcTest`, `@DataR2dbcTest`, `@JooqTest` | Data technology tương ứng | Layer khác |
+
+Slice không scan mọi `@Configuration` hoặc `@Component`. Nếu subject cần một converter/config/component cụ thể, thêm có chủ đích bằng `@Import` hoặc `@EnableConfigurationProperties`; đừng đổi ngay thành `@SpringBootTest` chỉ vì thiếu một bean.
+
+### Boot 3.5 và Boot 4.1
+
+- Boot 3.5 vẫn có các annotation slice quen thuộc, nhưng `@MockBean`/`@SpyBean` đã deprecated từ 3.4 để loại bỏ ở 4.0.
+- Dùng `@MockitoBean`/`@MockitoSpyBean` của Spring Framework cho code mới; các ví dụ bên dưới theo API này.
+- Boot 4.x tách thêm các focused `*-test` module theo capability. `spring-boot-starter-test` vẫn kéo general-purpose test support và các module phù hợp; dependency cụ thể phải theo BOM của dòng Boot đang chạy.
+- Không copy package/class từ tài liệu Boot 4.1 vào project 3.5 mà chưa kiểm migration guide; semantics cần học là slice boundary, không phải ghi nhớ một import duy nhất.
+
+> 💡 **Giải thích dễ hiểu:**
+> Slice test giống bật riêng khu bếp để kiểm món ăn thay vì mở cả nhà hàng. Nếu cần thêm một chiếc máy xay, hãy đưa đúng máy vào khu bếp; mở luôn quầy lễ tân, kho và bãi xe chỉ vì thiếu máy xay sẽ làm bài kiểm tra nặng không cần thiết.
+
+### `@WebMvcTest` – MVC boundary
+
+`@WebMvcTest` dùng `DispatcherServlet` và mock Servlet request/response, nên kiểm được route, binding, validation, Jackson, `@ControllerAdvice` và security filter được cấu hình. Đây là slice/integration test cho web boundary, không phải unit test controller thuần.
+
+```java
+@WebMvcTest(OrderController.class)
+@Import({ApiExceptionHandler.class, SecurityConfig.class})
+class OrderControllerTest {
 
     @Autowired
     private MockMvc mockMvc;
-    
-    @MockBean  // registers mock in Spring context
-    private UserService userService;
-    
+
     @Autowired
     private ObjectMapper objectMapper;
-    
+
+    @MockitoBean
+    private OrderApplicationService service;
+
+    @MockitoBean
+    private JwtDecoder jwtDecoder;
+
     @Test
-    void createUser_validInput_returns201() throws Exception {
-        CreateUserRequest req = new CreateUserRequest("John", "john@example.com", "password123");
-        UserResponse response = new UserResponse(1L, "John", "john@example.com");
-        
-        given(userService.create(any())).willReturn(response);
-        
-        mockMvc.perform(post("/api/v1/users")
+    void create_validRequest_returns201AndLocation() throws Exception {
+        CreateOrderRequest request = validRequest();
+        OrderResponse response = new OrderResponse(42L, "PENDING");
+        given(service.create(any())).willReturn(response);
+
+        mockMvc.perform(post("/api/orders")
+                .with(jwt().authorities(new SimpleGrantedAuthority("SCOPE_order.write")))
+                .with(csrf())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content(objectMapper.writeValueAsString(req)))
+                .content(objectMapper.writeValueAsBytes(request)))
             .andExpect(status().isCreated())
-            .andExpect(jsonPath("$.data.id").value(1L))
-            .andExpect(jsonPath("$.data.name").value("John"))
-            .andExpect(header().string("Location", containsString("/api/v1/users/1")));
+            .andExpect(header().string(HttpHeaders.LOCATION, "/api/orders/42"))
+            .andExpect(jsonPath("$.id").value(42))
+            .andExpect(jsonPath("$.status").value("PENDING"));
     }
-    
+
     @Test
-    void createUser_blankName_returns400() throws Exception {
-        CreateUserRequest req = new CreateUserRequest("", "john@example.com", "password123");
-        
-        mockMvc.perform(post("/api/v1/users")
+    void create_invalidQuantity_returnsProblemDetail() throws Exception {
+        CreateOrderRequest request = requestWithQuantity(0);
+
+        mockMvc.perform(post("/api/orders")
+                .with(jwt())
+                .with(csrf())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content(objectMapper.writeValueAsString(req)))
+                .content(objectMapper.writeValueAsBytes(request)))
             .andExpect(status().isBadRequest())
-            .andExpect(jsonPath("$.errors[0].field").value("name"))
-            .andExpect(jsonPath("$.errors[0].message").exists());
-    }
-    
-    @Test
-    void getUser_notFound_returns404() throws Exception {
-        given(userService.findById(99L))
-            .willThrow(new EntityNotFoundException("User 99 not found"));
-        
-        mockMvc.perform(get("/api/v1/users/99"))
-            .andExpect(status().isNotFound())
-            .andExpect(jsonPath("$.message").value("User 99 not found"));
+            .andExpect(content().contentTypeCompatibleWith(
+                MediaType.APPLICATION_PROBLEM_JSON))
+            .andExpect(jsonPath("$.type").exists())
+            .andExpect(jsonPath("$.status").value(400))
+            .andExpect(jsonPath("$.errors").isArray());
+
+        then(service).shouldHaveNoInteractions();
     }
 }
 ```
 
-### 1.2 @DataJpaTest — JPA Layer Only
+Security auto-configuration có thể được đưa vào slice khi Spring Security ở classpath, nhưng custom `SecurityFilterChain`, converter hoặc advice không phải lúc nào cũng được scan theo cách bạn giả định. Import đúng production config cần kiểm tra thay vì vô hiệu hóa filter để test “dễ pass”.
+
+### `@DataJpaTest` – repository với database thật
+
+Mặc định `@DataJpaTest` scan entity/repository, dùng embedded database nếu có và rollback test transaction. H2 không tái hiện đầy đủ PostgreSQL/MySQL về type, index, locking, JSON, SQL syntax; query phụ thuộc dialect nên chạy với container đúng engine.
 
 ```java
-// Loads: @Entity, @Repository, embedded H2 (or Testcontainers with @AutoConfigureTestDatabase)
-// Rolls back each test by default
-// Does NOT load: @Service, @Component, web layer
 @DataJpaTest
-@AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE) // use real DB
 @Testcontainers
-class UserRepositoryTest {
+@AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
+class OrderRepositoryTest {
 
     @Container
-    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
-    
-    @DynamicPropertySource
-    static void configureProperties(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", postgres::getJdbcUrl);
-        registry.add("spring.datasource.username", postgres::getUsername);
-        registry.add("spring.datasource.password", postgres::getPassword);
-    }
-    
+    @ServiceConnection
+    static PostgreSQLContainer<?> postgres =
+        new PostgreSQLContainer<>("postgres:16.6-alpine");
+
     @Autowired
-    private UserRepository userRepository;
-    
+    private OrderRepository repository;
+
     @Autowired
     private TestEntityManager entityManager;
-    
+
     @Test
-    void findByEmail_existingUser_returnsUser() {
-        User user = entityManager.persistAndFlush(
-            User.builder().firstName("John").email("john@test.com").active(true).build()
-        );
-        entityManager.clear(); // clear 1st-level cache
-        
-        Optional<User> found = userRepository.findByEmail("john@test.com");
-        
-        assertThat(found).isPresent();
-        assertThat(found.get().getFirstName()).isEqualTo("John");
-    }
-    
-    @Test
-    void findActiveUsers_returnsOnlyActive() {
-        entityManager.persist(User.builder().email("a@test.com").active(true).build());
-        entityManager.persist(User.builder().email("b@test.com").active(false).build());
+    void findPendingByCustomer_returnsOnlyMatchingRows() {
+        entityManager.persist(order(7L, OrderStatus.PENDING));
+        entityManager.persist(order(7L, OrderStatus.SHIPPED));
+        entityManager.persist(order(8L, OrderStatus.PENDING));
         entityManager.flush();
-        
-        List<User> active = userRepository.findByActiveTrue();
-        
-        assertThat(active).hasSize(1);
-        assertThat(active.get(0).getEmail()).isEqualTo("a@test.com");
-    }
-    
-    @Test
-    void specification_findsCorrectUsers() {
-        entityManager.persist(User.builder().firstName("Alice").email("alice@test.com")
-            .department("IT").active(true).build());
-        entityManager.persist(User.builder().firstName("Bob").email("bob@test.com")
-            .department("HR").active(true).build());
-        entityManager.flush();
-        
-        Specification<User> spec = UserSpecs.inDepartment("IT").and(UserSpecs.isActive());
-        List<User> result = userRepository.findAll(spec);
-        
-        assertThat(result).hasSize(1);
-        assertThat(result.get(0).getFirstName()).isEqualTo("Alice");
+        entityManager.clear(); // buộc query database, không đọc L1 cache
+
+        List<Order> result = repository.findByCustomerIdAndStatus(
+            7L, OrderStatus.PENDING);
+
+        assertThat(result).singleElement()
+            .extracting(Order::getCustomerId)
+            .isEqualTo(7L);
     }
 }
 ```
 
-### 1.3 @DataRedisTest
+`flush()` làm lỗi constraint/SQL xuất hiện trong test; `clear()` tránh persistence context che query hoặc lazy-loading issue. Ngoài happy path, test unique constraint, optimistic locking, custom query, pagination và migration tương thích engine thật.
+
+### `@DataRedisTest` và component ngoài slice
 
 ```java
 @DataRedisTest
+@Import(SessionStore.class)
 @Testcontainers
-class RedisSessionRepositoryTest {
+class SessionStoreTest {
 
     @Container
-    static GenericContainer<?> redis = new GenericContainer<>("redis:7-alpine")
-        .withExposedPorts(6379);
-    
-    @DynamicPropertySource
-    static void props(DynamicPropertyRegistry registry) {
-        registry.add("spring.data.redis.host", redis::getHost);
-        registry.add("spring.data.redis.port", () -> redis.getMappedPort(6379));
-    }
-    
+    @ServiceConnection(name = "redis")
+    static GenericContainer<?> redis =
+        new GenericContainer<>("redis:7.4-alpine").withExposedPorts(6379);
+
     @Autowired
-    private StringRedisTemplate redisTemplate;
-    
-    @Autowired
-    private SessionRepository sessionRepository; // component under test
-    
+    private SessionStore sessionStore;
+
     @Test
-    void createAndRetrieveSession() {
-        String sessionId = sessionRepository.create("user:123", Duration.ofHours(1));
-        
-        Optional<Session> session = sessionRepository.findById(sessionId);
-        
-        assertThat(session).isPresent();
-        assertThat(session.get().getUserId()).isEqualTo("user:123");
+    void save_setsValueAndExpiry() {
+        sessionStore.save("s-1", "user-42", Duration.ofMinutes(30));
+
+        assertThat(sessionStore.find("s-1")).contains("user-42");
+        assertThat(sessionStore.ttl("s-1")).isPositive();
     }
 }
 ```
 
-### 1.4 @JsonTest
+`@Import(SessionStore.class)` là cần thiết nếu `SessionStore` là component tùy chỉnh không thuộc whitelist của slice. Với `GenericContainer`, `name="redis"` giúp Boot chọn đúng `ConnectionDetails` factory.
+
+### `@JsonTest` – serialization contract
 
 ```java
-// Tests JSON serialization/deserialization only
 @JsonTest
-class UserResponseTest {
+class OrderResponseJsonTest {
 
     @Autowired
-    private JacksonTester<UserResponse> json;
-    
+    private JacksonTester<OrderResponse> json;
+
     @Test
-    void serialize_includesAllFields() throws Exception {
-        UserResponse response = new UserResponse(1L, "John", "john@test.com",
-            LocalDateTime.of(2024, 1, 1, 0, 0));
-        
-        JsonContent<UserResponse> content = json.write(response);
-        
-        assertThat(content).hasJsonPathNumberValue("$.id", 1L);
-        assertThat(content).hasJsonPathStringValue("$.name", "John");
-        assertThat(content).hasJsonPathStringValue("$.email", "john@test.com");
-        assertThat(content).hasJsonPathStringValue("$.createdAt", "2024-01-01T00:00:00");
-        assertThat(content).doesNotHaveJsonPath("$.password"); // sensitive field hidden
-    }
-    
-    @Test
-    void deserialize_handlesAllFormats() throws Exception {
-        String jsonStr = """
-            {"id": 1, "name": "John", "email": "john@test.com"}
-            """;
-        
-        UserResponse response = json.parseObject(jsonStr);
-        
-        assertThat(response.getId()).isEqualTo(1L);
+    void serialize_usesPublicContractAndHidesInternalField() throws Exception {
+        OrderResponse response = responseWithSecret();
+
+        JsonContent<OrderResponse> content = json.write(response);
+
+        assertThat(content).hasJsonPathNumberValue("$.id", 42);
+        assertThat(content).hasJsonPathStringValue("$.createdAt",
+            "2026-07-27T09:00:00Z");
+        assertThat(content).doesNotHaveJsonPath("$.internalCost");
     }
 }
 ```
 
-### 1.5 Other Slices
+Test JSON nên bảo vệ field name, enum/time format, null policy và dữ liệu nhạy cảm; không cần assert whitespace hoặc toàn bộ JSON nếu điều đó làm test dễ vỡ vô ích.
+
+### `@RestClientTest` – outbound client mapping
 
 ```java
-@DataMongoTest    // MongoDB repositories
-@DataR2dbcTest    // R2DBC repositories (reactive)
-@RestClientTest   // @HttpExchange clients / RestClient
-@WebFluxTest      // WebFlux controllers
-@JdbcTest         // JdbcTemplate / Spring JDBC
-@JooqTest         // jOOQ DSLContext
-
-// @RestClientTest example
 @RestClientTest(WeatherClient.class)
 class WeatherClientTest {
-    
+
     @Autowired
-    private WeatherClient weatherClient;
-    
+    private WeatherClient client;
+
     @Autowired
-    private MockRestServiceServer server;  // auto-configured
-    
+    private MockRestServiceServer server;
+
     @Test
-    void getWeather_returnsCorrectData() {
-        server.expect(requestTo("https://api.weather.com/current?city=Hanoi"))
+    void current_success_mapsResponse() {
+        server.expect(requestTo("https://weather.example/current?city=Hanoi"))
+            .andExpect(method(HttpMethod.GET))
             .andRespond(withSuccess(
-                """
-                {"city":"Hanoi","temp":30,"unit":"C"}
-                """, MediaType.APPLICATION_JSON));
-        
-        WeatherDto weather = weatherClient.getWeather("Hanoi");
-        
-        assertThat(weather.getTemp()).isEqualTo(30);
+                """{"city":"Hanoi","temperature":30}""",
+                MediaType.APPLICATION_JSON));
+
+        Weather weather = client.current("Hanoi");
+
+        assertThat(weather.temperature()).isEqualTo(30);
         server.verify();
     }
 }
 ```
 
+Test này chứng minh request construction và response/error mapping của `RestClient`; nó không kiểm DNS, TLS, connection pool hay provider thật. Boot 4.1 có focused support cho WebClient test; với Boot 3.5, chọn công cụ được dòng đó hỗ trợ hoặc dùng mock HTTP server/WireMock.
+
 ---
 
-## 2. MockMvc Patterns
+## How – `MockMvc`, `WebTestClient` và Live Server
 
-### 2.1 MockMvc Setup Options
+### Ba mức setup MVC
 
-```java
-// Option 1: Standalone (fastest, no Spring context)
-@ExtendWith(MockitoExtension.class)
-class UserControllerUnitTest {
-    
-    @InjectMocks
-    private UserController userController;
-    
-    @Mock
-    private UserService userService;
-    
-    private MockMvc mockMvc;
-    
-    @BeforeEach
-    void setup() {
-        mockMvc = MockMvcBuilders
-            .standaloneSetup(userController)
-            .setControllerAdvice(new GlobalExceptionHandler())
-            .addFilter(new CharacterEncodingFilter("UTF-8", true))
-            .build();
-    }
-}
+| Setup | Có gì thật | Khi dùng |
+|---|---|---|
+| Gọi controller method trực tiếp | Chỉ object Java | Unit test branch trong controller rất mỏng |
+| `standaloneSetup` | `MockMvc` + controller/advice tự cung cấp | Test cấu hình nhỏ, chấp nhận không giống full MVC config |
+| `@WebMvcTest` | MVC slice của Spring Boot | Test HTTP boundary một controller/nhóm controller |
+| `@SpringBootTest(MOCK)` + `@AutoConfigureMockMvc` | Full application context, không mở port | Wiring nhiều layer nhưng không cần network thật |
+| `@SpringBootTest(RANDOM_PORT)` | Server thật trên port ngẫu nhiên | Filter/container/network behavior và E2E trong process |
 
-// Option 2: @WebMvcTest (controller layer with Spring context)
-@WebMvcTest(UserController.class)
-class UserControllerWebTest {
-    @Autowired
-    private MockMvc mockMvc; // auto-configured
-}
-
-// Option 3: Full integration test
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.MOCK)
-@AutoConfigureMockMvc
-class UserControllerIntegrationTest {
-    @Autowired
-    private MockMvc mockMvc;
-}
-```
-
-### 2.2 Request Builders
+`MockMvc` chạy đầy đủ Spring MVC request handling bằng mock Servlet API nhưng **không mở server socket**. Vì vậy nó kiểm MVC tốt, nhưng không chứng minh TLS, HTTP/2, reverse proxy hoặc container-specific networking.
 
 ```java
-// GET with params
-mockMvc.perform(get("/api/users")
-    .param("page", "0")
-    .param("size", "10")
-    .param("sort", "createdAt,desc")
-    .header("Authorization", "Bearer " + token)
-    .accept(MediaType.APPLICATION_JSON));
-
-// POST with JSON body
-mockMvc.perform(post("/api/users")
-    .contentType(MediaType.APPLICATION_JSON)
-    .content(objectMapper.writeValueAsString(request))
-    .with(csrf())); // for forms with CSRF
-
-// Multipart file upload
-mockMvc.perform(multipart("/api/files")
-    .file(new MockMultipartFile("file", "test.csv",
-        MediaType.TEXT_PLAIN_VALUE, "col1,col2\nval1,val2".getBytes()))
-    .param("description", "test file"));
-
-// DELETE
-mockMvc.perform(delete("/api/users/{id}", 1L)
-    .header("Authorization", "Bearer " + token));
-```
-
-### 2.3 Result Matchers
-
-```java
-mockMvc.perform(get("/api/users/1"))
-    // Status
+mockMvc.perform(get("/api/orders/{id}", 42)
+        .with(jwt().authorities(new SimpleGrantedAuthority("SCOPE_order.read")))
+        .accept(MediaType.APPLICATION_JSON))
     .andExpect(status().isOk())
-    
-    // Headers
-    .andExpect(header().string("Content-Type", startsWith("application/json")))
-    .andExpect(header().exists("X-Request-Id"))
-    
-    // JSON path matchers
-    .andExpect(jsonPath("$.data.id").value(1L))
-    .andExpect(jsonPath("$.data.name").value("John"))
-    .andExpect(jsonPath("$.data.items").isArray())
-    .andExpect(jsonPath("$.data.items").value(hasSize(3)))
-    .andExpect(jsonPath("$.data.items[0].name").value("Item 1"))
-    .andExpect(jsonPath("$.data.active").value(true))
-    .andExpect(jsonPath("$.data.createdAt").exists())
-    .andExpect(jsonPath("$.data.password").doesNotExist())
-    
-    // Full body
-    .andExpect(content().json("""
-        {"data": {"id": 1, "name": "John"}}
-        """))
-    
-    // Logging (useful for debugging)
-    .andDo(print());
+    .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+    .andExpect(header().exists("X-Trace-Id"))
+    .andExpect(jsonPath("$.id").value(42))
+    .andExpect(jsonPath("$.internalCost").doesNotExist());
 ```
 
-### 2.4 MockMvc Result Handlers & Custom Matchers
+`andDo(print())` hữu ích khi debug, nhưng không nên in mọi response/token/PII trong CI log. Có thể chỉ print khi test fail hoặc dùng output có redaction.
+
+### Async MVC
+
+Controller trả `Callable`, `DeferredResult` hoặc reactive type trong MVC có thể cần assert hai pha:
 
 ```java
-// Result handler — print for debug
-.andDo(print())
-.andDo(document("user-create")) // Spring REST Docs
-
-// Capture result for further assertions
-MvcResult result = mockMvc.perform(post("/api/users")
-    .contentType(MediaType.APPLICATION_JSON)
-    .content(objectMapper.writeValueAsString(req)))
-    .andExpect(status().isCreated())
+MvcResult result = mockMvc.perform(get("/api/reports/42"))
+    .andExpect(request().asyncStarted())
     .andReturn();
 
-String location = result.getResponse().getHeader("Location");
-String responseBody = result.getResponse().getContentAsString();
-UserResponse response = objectMapper.readValue(responseBody,
-    new TypeReference<ApiResponse<UserResponse>>() {}).getData();
+mockMvc.perform(asyncDispatch(result))
+    .andExpect(status().isOk())
+    .andExpect(jsonPath("$.id").value(42));
 ```
 
-### 2.5 Parameterized Tests
+### WebFlux với `WebTestClient`
 
 ```java
-@ParameterizedTest
-@MethodSource("invalidRequests")
-void createUser_invalidInput_returns400(CreateUserRequest req, String expectedField) 
-        throws Exception {
-    mockMvc.perform(post("/api/users")
-            .contentType(MediaType.APPLICATION_JSON)
-            .content(objectMapper.writeValueAsString(req)))
-        .andExpect(status().isBadRequest())
-        .andExpect(jsonPath("$.errors[?(@.field == '" + expectedField + "')]").exists());
-}
+@WebFluxTest(UserController.class)
+class UserControllerWebFluxTest {
 
-static Stream<Arguments> invalidRequests() {
-    return Stream.of(
-        Arguments.of(new CreateUserRequest("", "j@test.com", "pass123"), "name"),
-        Arguments.of(new CreateUserRequest("John", "invalid-email", "pass123"), "email"),
-        Arguments.of(new CreateUserRequest("John", "j@test.com", "short"), "password")
-    );
+    @Autowired
+    private WebTestClient webTestClient;
+
+    @MockitoBean
+    private ReactiveUserService service;
+
+    @Test
+    void get_existingUser_returnsBody() {
+        given(service.findById(7L)).willReturn(Mono.just(new User(7L, "Alice")));
+
+        webTestClient.get().uri("/users/7")
+            .exchange()
+            .expectStatus().isOk()
+            .expectBody()
+            .jsonPath("$.id").isEqualTo(7)
+            .jsonPath("$.name").isEqualTo("Alice");
+    }
 }
 ```
+
+`WebTestClient` có thể bind vào WebFlux application context hoặc gọi live server. Với service-level Reactor pipeline, dùng `StepVerifier` để kiểm value, completion, error và virtual time. Không gọi `.block()` chỉ để biến mọi reactive test thành imperative nếu mục tiêu là kiểm non-blocking behavior.
+
+> 💡 **Giải thích dễ hiểu:**
+> `MockMvc` giống diễn tập đầy đủ ở quầy lễ tân nhưng chưa mở cửa ra đường; live-server test cho khách thật đi qua cổng mạng. Diễn tập trong nhà nhanh và ổn định, còn đi qua cổng thật mới phát hiện cấu hình cổng, nhưng tốn chi phí hơn.
 
 ---
 
-## 3. Testcontainers
+## How – Testcontainers và `@ServiceConnection`
 
-### 3.1 Setup (Spring Boot 3.1+)
+**Testcontainers** *(chạy dependency thật trong container tạm cho test)* tăng parity với production database, Redis, Kafka hoặc broker khác. Spring Boot 3.1+ hỗ trợ `@ServiceConnection` để tạo `ConnectionDetails` tự động; connection detail có ưu tiên hơn property kết nối thông thường.
 
 ```xml
 <dependency>
@@ -406,612 +383,420 @@ static Stream<Arguments> invalidRequests() {
 </dependency>
 <dependency>
     <groupId>org.testcontainers</groupId>
-    <artifactId>junit-jupiter</artifactId>
-    <scope>test</scope>
-</dependency>
-<dependency>
-    <groupId>org.testcontainers</groupId>
     <artifactId>postgresql</artifactId>
     <scope>test</scope>
 </dependency>
-<dependency>
-    <groupId>org.testcontainers</groupId>
-    <artifactId>kafka</artifactId>
-    <scope>test</scope>
-</dependency>
 ```
-
-### 3.2 Spring Boot 3.1 @ServiceConnection
-
-```java
-// Automatic property wiring — no @DynamicPropertySource needed!
-@SpringBootTest
-@Testcontainers
-class IntegrationTest {
-
-    @Container
-    @ServiceConnection  // Spring Boot 3.1+ — auto-configures spring.datasource.*
-    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
-    
-    @Container
-    @ServiceConnection
-    static RedisContainer redis = new RedisContainer("redis:7-alpine");
-    
-    @Container
-    @ServiceConnection
-    static KafkaContainer kafka = new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.5.0"));
-    
-    // Tests use the containers automatically
-}
-```
-
-### 3.3 Shared Container (Singleton Pattern — faster tests)
-
-```java
-// AbstractIntegrationTest.java
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@Testcontainers
-public abstract class AbstractIntegrationTest {
-
-    // static = shared across all test classes (singleton)
-    @Container
-    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine")
-        .withDatabaseName("testdb")
-        .withUsername("test")
-        .withPassword("test")
-        .withInitScript("init-test.sql");
-    
-    @Container
-    static GenericContainer<?> redis = new GenericContainer<>("redis:7-alpine")
-        .withExposedPorts(6379);
-    
-    @Container
-    static KafkaContainer kafka = new KafkaContainer(
-        DockerImageName.parse("confluentinc/cp-kafka:7.5.0"))
-        .withEnv("KAFKA_AUTO_CREATE_TOPICS_ENABLE", "true");
-    
-    @DynamicPropertySource
-    static void registerProperties(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", postgres::getJdbcUrl);
-        registry.add("spring.datasource.username", postgres::getUsername);
-        registry.add("spring.datasource.password", postgres::getPassword);
-        registry.add("spring.data.redis.host", redis::getHost);
-        registry.add("spring.data.redis.port", () -> redis.getMappedPort(6379));
-        registry.add("spring.kafka.bootstrap-servers", kafka::getBootstrapServers);
-    }
-}
-
-// All integration tests extend this
-class OrderServiceIntegrationTest extends AbstractIntegrationTest {
-    @Autowired
-    private OrderService orderService;
-    
-    @Test
-    void placeOrder_savesAndPublishesEvent() { ... }
-}
-```
-
-### 3.4 Testcontainers for Kafka
 
 ```java
 @SpringBootTest
 @Testcontainers
-@EmbeddedKafka(partitions = 1, topics = {"orders", "payments"})  // Alternative: embedded Kafka
-class KafkaIntegrationTest {
+class OrderIntegrationTest {
 
-    @Autowired
-    private OrderEventPublisher publisher;
-    
-    @Autowired
-    private KafkaListenerEndpointRegistry kafkaListenerRegistry;
-    
-    // Or use real Kafka with Testcontainers
     @Container
     @ServiceConnection
-    static KafkaContainer kafka = new KafkaContainer(
-        DockerImageName.parse("confluentinc/cp-kafka:7.5.0"));
-    
+    static PostgreSQLContainer<?> postgres =
+        new PostgreSQLContainer<>("postgres:16.6-alpine");
+
     @Test
-    @Timeout(30) // fail if consumer doesn't receive within 30s
-    void publishOrderEvent_consumerReceivesIt() throws Exception {
-        CountDownLatch latch = new CountDownLatch(1);
-        List<OrderCreatedEvent> received = new CopyOnWriteArrayList<>();
-        
-        // Register a test consumer
-        kafkaTemplate.setConsumerRebalanceListener(...);
-        
-        publisher.sendOrderCreated(new OrderCreatedEvent(1L, 42L, new BigDecimal("100.00")));
-        
-        assertThat(latch.await(10, TimeUnit.SECONDS)).isTrue();
-        assertThat(received).hasSize(1);
+    void placeOrder_commitsOrderAndOutboxEvent() {
+        // test application service với database thật
     }
 }
 ```
 
-### 3.5 Database Cleanup Between Tests
+`@ServiceConnection` giảm boilerplate và chọn config theo container type/image. Nếu technology chưa có factory, dùng fallback:
 
 ```java
-@SpringBootTest
-@Testcontainers
-@Transactional  // rollback each test — simplest approach
-class TransactionalIntegrationTest { ... }
-
-// Or: use @Sql to reset state
-@Test
-@Sql(scripts = "/test-data/users.sql")
-@Sql(scripts = "/test-data/cleanup.sql", executionPhase = Sql.ExecutionPhase.AFTER_TEST_METHOD)
-void testWithSetupAndCleanup() { ... }
-
-// Or: programmatic cleanup
-@BeforeEach
-void cleanDb(@Autowired UserRepository userRepo, @Autowired OrderRepository orderRepo) {
-    orderRepo.deleteAll();
-    userRepo.deleteAll();
+@DynamicPropertySource
+static void registerProperties(DynamicPropertyRegistry registry) {
+    registry.add("thirdparty.base-url", thirdParty::getEndpoint);
 }
 ```
+
+Không khai báo đồng thời `@ServiceConnection` và các property trùng nhau nếu không có lý do; precedence khác nhau làm test khó đọc.
+
+### Container dùng chung và lifecycle
+
+Static `@Container` thường dùng chung cho các method trong **một test class**. Chia sẻ container qua nhiều class cần gắn lifecycle với context/suite cẩn thận; base class + static container có thể bị stop trong khi Spring cached context vẫn giữ connection cũ.
+
+Cách Spring-managed theo context:
+
+```java
+@TestConfiguration(proxyBeanMethods = false)
+class ContainersConfiguration {
+
+    @Bean
+    @ServiceConnection
+    PostgreSQLContainer<?> postgresContainer() {
+        return new PostgreSQLContainer<>("postgres:16.6-alpine");
+    }
+}
+
+@SpringBootTest
+@Import(ContainersConfiguration.class)
+class CheckoutIntegrationTest { }
+```
+
+Spring Boot quản lý start/stop container bean theo application context. Có thể dùng `@ImportTestcontainers` cho container declaration class. Dù chọn cách nào, pin image version/digest, không dùng `latest`, và xác định rõ state reset giữa test.
+
+> 💡 **Giải thích dễ hiểu:**
+> Testcontainers giống thuê một căn bếp thật cho buổi thử món rồi trả lại. `@ServiceConnection` tự đưa đúng địa chỉ bếp cho đầu bếp. Nếu bếp đã bị trả nhưng Spring vẫn cache địa chỉ cũ, lớp test sau sẽ chạy tới một căn bếp không còn tồn tại.
+
+### Cleanup database
+
+| Cách | Khi phù hợp | Cạm bẫy |
+|---|---|---|
+| Test transaction rollback | Slice/MOCK test cùng thread/transaction | Không đại diện commit; không rollback live server thread |
+| `@Sql` setup/cleanup | Dataset SQL rõ và nhỏ | Script phải giữ đúng FK/order |
+| Truncate/schema-per-test | Integration cần commit thật | Tốn setup; cần tool an toàn |
+| Container-per-test/class | Isolation mạnh | Chậm hơn |
+| Repository `deleteAll()` | Dataset nhỏ, đơn giản | Chậm, callback/FK/order có thể gây nhiễu |
+
+Không bật Flyway clean hoặc lệnh phá dữ liệu bằng profile có thể trỏ nhầm môi trường. Test database phải có credential/hostname tách biệt và guardrail rõ.
 
 ---
 
-## 4. WireMock – HTTP Mocking
+## How – WireMock cho HTTP Boundary
 
-### 4.1 Setup
-
-```xml
-<dependency>
-    <groupId>org.springframework.cloud</groupId>
-    <artifactId>spring-cloud-contract-wiremock</artifactId>
-    <scope>test</scope>
-</dependency>
-```
-
-### 4.2 Basic Usage
+**WireMock** *(HTTP stub server có thể lập trình response)* phù hợp kiểm outbound client, timeout, retry, error mapping và request shape mà không phụ thuộc provider thật. Spring Cloud Contract cung cấp `@AutoConfigureWireMock`.
 
 ```java
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@AutoConfigureWireMock(port = 0)  // random port
+@SpringBootTest(
+    properties = "clients.payment.base-url=http://localhost:${wiremock.server.port}")
+@AutoConfigureWireMock(port = 0)
 class PaymentClientTest {
 
-    @Value("${wiremock.server.port}")
-    private int wireMockPort;
-    
     @Autowired
-    private PaymentClient paymentClient;  // @FeignClient or WebClient-based
-    
-    @BeforeEach
-    void setup() {
-        // Override URL to point to WireMock
-    }
-    
+    private PaymentClient client;
+
     @Test
-    void chargeCard_success_returnsPaymentId() {
-        // Stubbing
-        stubFor(post(urlEqualTo("/api/payments/charge"))
-            .withHeader("Content-Type", equalTo("application/json"))
+    void charge_success_sendsIdempotencyKeyAndMapsBody() {
+        stubFor(post(urlEqualTo("/payments"))
+            .withHeader("Idempotency-Key", matching(".+"))
             .withRequestBody(matchingJsonPath("$.amount", equalTo("100.00")))
-            .willReturn(aResponse()
-                .withStatus(200)
-                .withHeader("Content-Type", "application/json")
-                .withBody("""
-                    {"paymentId": "pay_123", "status": "SUCCESS"}
-                    """)));
-        
-        PaymentResult result = paymentClient.charge(new ChargeRequest("card_token", new BigDecimal("100.00")));
-        
-        assertThat(result.getPaymentId()).isEqualTo("pay_123");
-        
-        // Verify the request was made
-        verify(postRequestedFor(urlEqualTo("/api/payments/charge"))
-            .withHeader("Authorization", matching("Bearer .+")));
+            .willReturn(okJson("""
+                {"paymentId":"pay-123","status":"AUTHORIZED"}
+                """)));
+
+        PaymentResult result = client.charge(request("100.00"));
+
+        assertThat(result.paymentId()).isEqualTo("pay-123");
+        verify(1, postRequestedFor(urlEqualTo("/payments")));
     }
-    
+
     @Test
-    void chargeCard_serviceUnavailable_throwsException() {
-        stubFor(post(urlEqualTo("/api/payments/charge"))
-            .willReturn(serviceUnavailable()
-                .withFixedDelay(100)));
-        
-        assertThatThrownBy(() -> paymentClient.charge(new ChargeRequest("token", BigDecimal.TEN)))
-            .isInstanceOf(PaymentServiceException.class);
-    }
-    
-    @Test
-    void chargeCard_networkTimeout_retriesAndFails() {
-        // Simulate network delay beyond client timeout
-        stubFor(post(urlEqualTo("/api/payments/charge"))
-            .willReturn(aResponse()
-                .withFixedDelay(5000)  // 5 second delay
-                .withStatus(200)));
-        
-        assertThatThrownBy(() -> paymentClient.charge(...))
+    void charge_slowProvider_timesOut() {
+        stubFor(post(urlEqualTo("/payments"))
+            .willReturn(aResponse().withFixedDelay(5_000).withStatus(200)));
+
+        assertThatThrownBy(() -> client.charge(request("100.00")))
             .isInstanceOf(PaymentTimeoutException.class);
     }
 }
 ```
 
-### 4.3 WireMock with Scenarios (State Machine)
+`port=0` tránh xung đột port và công bố `wiremock.server.port`. WireMock context có thể được cache; mặc định listener reset theo test class, và property `wiremock.reset-mappings-after-each-test=true` hữu ích khi từng method phải cách ly scenario/mapping.
 
-```java
-@Test
-void retryLogic_succeedsOnSecondAttempt() {
-    // First call fails
-    stubFor(post(urlEqualTo("/api/payments/charge"))
-        .inScenario("Retry Test")
-        .whenScenarioStateIs(Scenario.STARTED)
-        .willReturn(serverError())
-        .willSetStateTo("First attempt failed"));
-    
-    // Second call succeeds
-    stubFor(post(urlEqualTo("/api/payments/charge"))
-        .inScenario("Retry Test")
-        .whenScenarioStateIs("First attempt failed")
-        .willReturn(aResponse().withStatus(200)
-            .withBody("{\"paymentId\": \"pay_456\"}")));
-    
-    PaymentResult result = paymentClient.chargeWithRetry(request);
-    assertThat(result.getPaymentId()).isEqualTo("pay_456");
-    verify(2, postRequestedFor(urlEqualTo("/api/payments/charge")));
-}
-```
+Stateful scenario có thể test retry “lần đầu 500, lần sau 200”, nhưng phải verify số request và giới hạn retry để phát hiện retry storm. WireMock không chứng minh DNS, TLS certificate, provider rate limit hoặc contract provider thực sự; bổ sung contract test/sandbox smoke khi rủi ro cần.
 
-### 4.4 WireMock from File Stubs
-
-```
-test/resources/
-└── __files/
-    └── responses/
-        ├── payment_success.json
-        └── payment_failure.json
-└── mappings/
-    └── payment_charge.json
-```
-
-```json
-// mappings/payment_charge.json
-{
-  "request": {
-    "method": "POST",
-    "url": "/api/payments/charge"
-  },
-  "response": {
-    "status": 200,
-    "bodyFileName": "responses/payment_success.json",
-    "headers": {
-      "Content-Type": "application/json"
-    }
-  }
-}
-```
+> 💡 **Giải thích dễ hiểu:**
+> WireMock giống diễn viên đóng vai đối tác: có thể cố ý trả lời chậm, báo lỗi rồi thành công để đội mình luyện phản ứng. Diễn viên giúp diễn tập ổn định, nhưng không chứng minh đối tác thật ngoài đời sẽ nói đúng kịch bản.
 
 ---
 
-## 5. Security Testing
+## How – Spring Security Test
 
-### 5.1 @WithMockUser
+Spring Security Test cung cấp annotation, request post-processor và matcher cho authentication/authorization, CSRF, OAuth2/JWT.
+
+### User/role và CSRF
 
 ```java
-@WebMvcTest(UserController.class)
+@WebMvcTest(AdminController.class)
 @Import(SecurityConfig.class)
-class UserControllerSecurityTest {
+class AdminSecurityTest {
 
     @Autowired
     private MockMvc mockMvc;
-    
-    @MockBean
-    private UserService userService;
-    
+
+    @MockitoBean
+    private AdminService service;
+
+    @MockitoBean
+    private JwtDecoder jwtDecoder;
+
     @Test
-    @WithMockUser(roles = "USER")
-    void getProfile_authenticated_returns200() throws Exception {
-        given(userService.findById(1L)).willReturn(mockUser());
-        
-        mockMvc.perform(get("/api/users/me"))
-            .andExpect(status().isOk());
-    }
-    
-    @Test
-    @WithMockUser(roles = "ADMIN")
-    void deleteUser_admin_returns204() throws Exception {
-        mockMvc.perform(delete("/api/users/1"))
-            .andExpect(status().isNoContent());
-    }
-    
-    @Test
-    void getProfile_unauthenticated_returns401() throws Exception {
-        mockMvc.perform(get("/api/users/me"))
+    void delete_anonymous_returns401() throws Exception {
+        mockMvc.perform(delete("/api/admin/users/7").with(csrf()))
             .andExpect(status().isUnauthorized());
     }
-    
+
     @Test
     @WithMockUser(roles = "USER")
-    void deleteUser_insufficientRole_returns403() throws Exception {
-        mockMvc.perform(delete("/api/users/1"))
+    void delete_userRole_returns403() throws Exception {
+        mockMvc.perform(delete("/api/admin/users/7").with(csrf()))
+            .andExpect(status().isForbidden());
+    }
+
+    @Test
+    @WithMockUser(roles = "ADMIN")
+    void delete_admin_returns204() throws Exception {
+        mockMvc.perform(delete("/api/admin/users/7").with(csrf()))
+            .andExpect(status().isNoContent());
+    }
+
+    @Test
+    @WithMockUser(roles = "ADMIN")
+    void delete_invalidCsrf_returns403() throws Exception {
+        mockMvc.perform(delete("/api/admin/users/7")
+                .with(csrf().useInvalidToken()))
             .andExpect(status().isForbidden());
     }
 }
 ```
 
-### 5.2 JWT Token Testing
+Chỉ thêm `csrf()` nếu production security bật CSRF cho request đó. Test không nên “rắc csrf cho pass” mà không hiểu session/cookie hay bearer-token architecture.
+
+### JWT Resource Server
 
 ```java
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@AutoConfigureMockMvc
-class JwtSecurityIntegrationTest {
-
-    @Autowired
-    private MockMvc mockMvc;
-    
-    @Autowired
-    private JwtTokenProvider jwtProvider;
-    
-    private String generateToken(String username, String... roles) {
-        return jwtProvider.generateToken(UserDetails.builder()
-            .username(username)
-            .authorities(Arrays.stream(roles)
-                .map(SimpleGrantedAuthority::new)
-                .collect(Collectors.toList()))
-            .build());
-    }
-    
-    @Test
-    void accessProtectedResource_validJwt_returns200() throws Exception {
-        String token = generateToken("john", "ROLE_USER");
-        
-        mockMvc.perform(get("/api/users/me")
-                .header("Authorization", "Bearer " + token))
-            .andExpect(status().isOk());
-    }
-    
-    @Test
-    void accessProtectedResource_expiredJwt_returns401() throws Exception {
-        // Generate expired token
-        String token = Jwts.builder()
-            .subject("john")
-            .issuedAt(new Date(System.currentTimeMillis() - 7200_000))
-            .expiration(new Date(System.currentTimeMillis() - 3600_000))
-            .signWith(Keys.hmacShaKeyFor(secret.getBytes()))
-            .compact();
-        
-        mockMvc.perform(get("/api/users/me")
-                .header("Authorization", "Bearer " + token))
-            .andExpect(status().isUnauthorized())
-            .andExpect(jsonPath("$.error").value("Token expired"));
-    }
-    
-    @Test
-    void accessAdminEndpoint_userRole_returns403() throws Exception {
-        String token = generateToken("john", "ROLE_USER");
-        
-        mockMvc.perform(get("/api/admin/users")
-                .header("Authorization", "Bearer " + token))
-            .andExpect(status().isForbidden());
-    }
-}
-```
-
-### 5.3 Custom @WithMockJwtUser
-
-```java
-// Custom security context factory
-@Retention(RetentionPolicy.RUNTIME)
-@WithSecurityContext(factory = WithMockJwtUserSecurityContextFactory.class)
-public @interface WithMockJwtUser {
-    String username() default "testUser";
-    String[] roles() default {"ROLE_USER"};
-    long userId() default 1L;
-}
-
-public class WithMockJwtUserSecurityContextFactory
-        implements WithSecurityContextFactory<WithMockJwtUser> {
-    
-    @Override
-    public SecurityContext createSecurityContext(WithMockJwtUser annotation) {
-        SecurityContext context = SecurityContextHolder.createEmptyContext();
-        
-        List<GrantedAuthority> authorities = Arrays.stream(annotation.roles())
-            .map(SimpleGrantedAuthority::new)
-            .collect(Collectors.toList());
-        
-        // Custom JWT principal
-        JwtUser principal = new JwtUser(annotation.userId(), annotation.username(), authorities);
-        UsernamePasswordAuthenticationToken auth =
-            new UsernamePasswordAuthenticationToken(principal, null, authorities);
-        
-        context.setAuthentication(auth);
-        return context;
-    }
-}
-
-// Usage
 @Test
-@WithMockJwtUser(userId = 42L, username = "alice", roles = {"ROLE_ADMIN"})
-void adminAction_withJwtUser_succeeds() throws Exception {
-    mockMvc.perform(delete("/api/users/1"))
-        .andExpect(status().isNoContent());
+void readOrder_scopePresent_returns200() throws Exception {
+    mockMvc.perform(get("/api/orders/42")
+            .with(jwt()
+                .jwt(jwt -> jwt
+                    .subject("alice")
+                    .claim("tenant", "acme"))
+                .authorities(new SimpleGrantedAuthority("SCOPE_order.read"))))
+        .andExpect(status().isOk());
+}
+
+@Test
+void readOrder_scopeMissing_returns403() throws Exception {
+    mockMvc.perform(get("/api/orders/42").with(jwt()))
+        .andExpect(status().isForbidden());
 }
 ```
 
+`jwt()` tạo `JwtAuthenticationToken` giả và **không yêu cầu JWT hợp lệ**, vì vậy nó kiểm authorization/controller behavior, không kiểm signature, issuer, audience, expiry hoặc `JwtDecoder`.
+
+Muốn kiểm claim-to-authority converter/filter chain, mock `JwtDecoder.decode("token")` trả `Jwt` mong muốn rồi gửi `Authorization: Bearer token`. Muốn kiểm crypto/issuer/JWK rotation, dùng test riêng với key/test authorization server hoặc signed fixture đúng cấu hình production.
+
+Nếu tự dựng `MockMvc` bằng `standaloneSetup`, phải `.apply(springSecurity())` hoặc thêm `FilterChainProxy`; `@WebMvcTest`/Boot auto-configuration thường làm phần wiring này. Luôn có negative tests: anonymous `401`, authenticated thiếu quyền `403`, tenant/ownership, invalid token và CORS/CSRF nếu áp dụng.
+
+> 💡 **Giải thích dễ hiểu:**
+> `jwt()` giống đưa cho bảo vệ một thẻ test đã được hệ thống công nhận để kiểm cửa nào được mở. Nó không mang thẻ qua máy soi chữ ký. Vì vậy cần một nhóm test kiểm quyền cửa và một nhóm khác kiểm máy soi thẻ thật.
+
 ---
 
-## 6. Integration Test Strategy
+## How – Integration Test Strategy
 
-### 6.1 Test Pyramid
+### Chọn `webEnvironment`
 
-```
-         /\
-        /  \
-       / E2E\        ← Few, slow, expensive (Playwright/Selenium)
-      /------\
-     /        \
-    / Integration\   ← Some, medium speed (@SpringBootTest + Testcontainers)
-   /------------\
-  /              \
- /   Unit Tests   \  ← Many, fast, isolated (JUnit + Mockito)
-/------------------\
-```
+| Mode | Server | Client phù hợp | Transaction behavior |
+|---|---|---|---|
+| `MOCK` | Không mở port | `MockMvc`/bound client | Test và handler thường cùng test-managed context |
+| `RANDOM_PORT` | Server thật, port ngẫu nhiên | `RestTestClient`, `WebTestClient` hoặc client phù hợp Boot version | Client/server khác thread và transaction |
+| `DEFINED_PORT` | Server thật, port cố định | HTTP client | Dễ xung đột port, hiếm cần trong CI |
+| `NONE` | Không web environment | Gọi bean trực tiếp | Dành cho non-web integration |
 
-### 6.2 Integration Test Base
+Điểm rất quan trọng: `@Transactional` trên test `RANDOM_PORT` chỉ rollback transaction của test thread. Request HTTP chạy ở server thread, nên transaction do ứng dụng commit **không tự rollback**. Phải cleanup rõ hoặc cấp database/schema riêng.
 
 ```java
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@AutoConfigureMockMvc
-@ActiveProfiles("test")
-@Transactional
-public abstract class BaseIntegrationTest {
+@AutoConfigureRestTestClient
+@Import(ContainersConfiguration.class)
+class OrderFlowIntegrationTest {
 
-    @Container
-    @ServiceConnection
-    static final PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
-    
-    @Container
-    @ServiceConnection
-    static final GenericContainer<?> redis = new GenericContainer<>("redis:7-alpine")
-        .withExposedPorts(6379);
-    
     @Autowired
-    protected MockMvc mockMvc;
-    
+    private RestTestClient client; // Boot 4.x; chọn live client tương ứng ở Boot 3.5
+
     @Autowired
-    protected ObjectMapper objectMapper;
-    
-    // Utility helpers
-    protected String toJson(Object obj) {
-        try {
-            return objectMapper.writeValueAsString(obj);
-        } catch (JsonProcessingException e) {
-            throw new RuntimeException(e);
-        }
+    private OrderRepository orders;
+
+    @AfterEach
+    void cleanDatabase() {
+        orders.deleteAllInBatch();
     }
-    
-    protected <T> T fromJson(String json, Class<T> type) {
-        try {
-            return objectMapper.readValue(json, type);
-        } catch (JsonProcessingException e) {
-            throw new RuntimeException(e);
-        }
-    }
-    
-    protected String bearerToken(String username, String... roles) {
-        // generate test JWT
-        return "Bearer " + jwtProvider.generateToken(username, List.of(roles));
-    }
-}
-```
 
-### 6.3 Full Order Flow Integration Test
-
-```java
-class OrderFlowIntegrationTest extends BaseIntegrationTest {
-
-    @Autowired
-    private UserRepository userRepository;
-    @Autowired
-    private OrderRepository orderRepository;
-    
     @Test
-    void fullOrderFlow_happyPath() throws Exception {
-        // Arrange: create a user
-        User user = userRepository.save(User.builder()
-            .email("customer@test.com").password("hash").active(true).build());
-        String token = bearerToken(user.getEmail(), "ROLE_USER");
-        
-        // Act: place an order
-        CreateOrderRequest req = new CreateOrderRequest(
-            List.of(new OrderItemRequest(1L, 2, new BigDecimal("50.00")))
-        );
-        
-        MvcResult result = mockMvc.perform(post("/api/orders")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(toJson(req))
-                .header("Authorization", token))
-            .andExpect(status().isCreated())
-            .andExpect(jsonPath("$.data.status").value("PENDING"))
-            .andReturn();
-        
-        Long orderId = fromJson(result.getResponse().getContentAsString(),
-            ApiResponse.class).getData().getId();
-        
-        // Assert: order exists in DB
-        Optional<Order> savedOrder = orderRepository.findById(orderId);
-        assertThat(savedOrder).isPresent();
-        assertThat(savedOrder.get().getTotal()).isEqualByComparingTo("100.00");
-        
-        // Assert: can retrieve it
-        mockMvc.perform(get("/api/orders/{id}", orderId)
-                .header("Authorization", token))
-            .andExpect(status().isOk())
-            .andExpect(jsonPath("$.data.id").value(orderId));
+    void createThenReadOrder() {
+        String location = client.post().uri("/api/orders")
+            .body(validRequest())
+            .exchange()
+            .expectStatus().isCreated()
+            .returnResult()
+            .getResponseHeaders().getLocation().toString();
+
+        client.get().uri(location)
+            .exchange()
+            .expectStatus().isOk()
+            .expectBody()
+            .jsonPath("$.status").isEqualTo("PENDING");
     }
 }
 ```
 
-### 6.4 application-test.yml
+`RestTestClient` là API hiện hành trong Boot 4.x. Ở Boot 3.5, dùng `TestRestTemplate` hoặc `WebTestClient` theo dependency/application stack; đừng đưa import Boot 4 vào branch 3.5.
 
-```yaml
-# src/test/resources/application-test.yml
-spring:
-  jpa:
-    show-sql: true
-    properties:
-      hibernate:
-        format_sql: true
-  flyway:
-    clean-disabled: false  # allow flyway clean in tests
-    
-logging:
-  level:
-    org.springframework.web: DEBUG
-    org.hibernate.SQL: DEBUG
+### Context cache và test performance
 
-# Override external service URLs for WireMock
-payment:
-  service:
-    url: http://localhost:${wiremock.server.port}
-```
+Spring TestContext cache `ApplicationContext` theo cấu hình. Các tổ hợp property/profile/import/mock khác nhau tạo cache key khác nhau. Giữ annotation/property nhất quán giữa test class giúp reuse context.
 
-### 6.5 Test Performance Tips
+- Tránh `@DirtiesContext` trừ khi test thực sự làm context không thể tái sử dụng.
+- Đặt tên field `@MockitoBean` nhất quán; qualifier/name khác có thể làm phát sinh context khác.
+- Không tạo một base class khổng lồ khiến mọi test nạp Kafka, Redis và PostgreSQL dù không dùng.
+- Theo dõi context cache hit/miss và thời gian container/context startup trước khi “tối ưu” bằng singleton toàn cục.
+
+### Parallel execution
+
+Chỉ bật parallel khi test không dùng shared mutable database, broker, filesystem, WireMock scenario, `@DirtiesContext` hoặc mock/context có thể va chạm. Random port không tự đảm bảo data isolation. Tách namespace/schema/topic/key theo test hoặc giữ nhóm stateful chạy tuần tự.
+
+### Async và eventual consistency
+
+Không dùng `Thread.sleep()` với thời gian tùy ý. Dùng polling có deadline như Awaitility, `StepVerifier`, latch hoặc consumer probe; assert cả timeout để test fail hữu hạn.
 
 ```java
-// 1. Reuse Spring context with @DirtiesContext sparingly
-// 2. Use @TestConfiguration to override beans without full reload
-@TestConfiguration
-static class TestConfig {
-    @Bean
-    @Primary
-    public EmailService mockEmailService() {
-        return Mockito.mock(EmailService.class);
-    }
-}
-
-// 3. Profile-based test config
-@SpringBootTest(properties = {
-    "feature.notifications.enabled=false",
-    "async.processing.enabled=false"
-})
-
-// 4. Parallel test execution
-// src/test/resources/junit-platform.properties
-// junit.jupiter.execution.parallel.enabled=true
-// junit.jupiter.execution.parallel.config.strategy=dynamic
-
-// 5. Reuse containers with static fields (already covered above)
-// Static containers = one Docker container for all tests in the class hierarchy
+await().atMost(Duration.ofSeconds(10))
+    .pollInterval(Duration.ofMillis(100))
+    .untilAsserted(() ->
+        assertThat(outboxRepository.findPublished(orderId)).isPresent());
 ```
+
+> 💡 **Giải thích dễ hiểu:**
+> Context cache giống giữ lại một căn phòng đã setup cho lớp sau. Mỗi test đổi một kiểu bàn ghế sẽ buộc dựng phòng mới. Parallel test giống cho nhiều đội dùng chung phòng cùng lúc: chỉ nhanh nếu họ không sửa hoặc giành cùng đồ vật.
 
 ---
 
-## Summary: Testing Cheatsheet
+## When – Dùng loại test nào?
 
-| Annotation | Loads | Use For |
-|------------|-------|---------|
-| `@WebMvcTest` | Controllers + Security | Controller unit tests |
-| `@DataJpaTest` | JPA + Hibernate | Repository tests |
-| `@DataRedisTest` | Redis repositories | Redis component tests |
-| `@JsonTest` | Jackson | Serialization tests |
-| `@RestClientTest` | HTTP clients | REST client tests |
-| `@SpringBootTest` | Full context | Integration tests |
-| `@MockBean` | N/A | Mock Spring bean in context |
-| `@SpyBean` | N/A | Spy (partial mock) on Spring bean |
-| `@WithMockUser` | N/A | Fake authenticated user |
-| `@Transactional` on test | N/A | Auto-rollback after each test |
-| `@Sql` | N/A | Execute SQL before/after test |
-| `@DirtiesContext` | N/A | Force context reload (expensive!) |
+| Rủi ro cần chứng minh | Test nhỏ nhất phù hợp |
+|---|---|
+| Domain calculation/branch | Unit test, object thật |
+| Route, validation, ProblemDetail, JSON | `@WebMvcTest`/`@WebFluxTest` |
+| Custom JPA query/constraint/dialect | `@DataJpaTest` + DB Testcontainer |
+| Redis TTL/serialization | `@DataRedisTest` + Redis container |
+| `RestClient` request/response mapping | `@RestClientTest` |
+| Timeout/retry/error của HTTP dependency | WireMock/mock HTTP server |
+| Security route/method authorization | Security Test với user/jwt/csrf |
+| JWT signature/issuer/audience | Integration với `JwtDecoder`/key thật |
+| Full transaction + migration + event | `@SpringBootTest` + containers |
+| Consumer/provider compatibility | Contract test/stub artifact |
+| Deployment/routing/identity thật | E2E hoặc smoke sau deploy |
+
+Không nâng test lên full context chỉ để tăng cảm giác an toàn. Mỗi test phải có failure mode mục tiêu; cùng behavior có thể được bảo vệ ở nhiều tầng chỉ khi mỗi tầng bắt một loại lỗi khác nhau.
+
+---
+
+## Compare – Những lựa chọn dễ nhầm
+
+### Mock, fake, stub server và container
+
+| Double/hạ tầng | Đặc điểm | Bắt được | Không bắt được |
+|---|---|---|---|
+| Mockito mock | Behavior lập trình trong process | Branch và interaction | Serialization/protocol thật |
+| Fake | Implementation đơn giản có state | Workflow nhanh | Khác production implementation |
+| WireMock | HTTP server giả | Request/response, delay, retry | Provider implementation/TLS thực |
+| Testcontainer | Service thật trong container | Driver/protocol/dialect/migration | Managed-cloud behavior đầy đủ |
+
+### H2 và PostgreSQL Testcontainer
+
+| | H2 embedded | PostgreSQL container |
+|---|---|---|
+| Tốc độ startup | Nhanh | Chậm hơn |
+| Dialect/type/index/locking | Có khác biệt | Gần production PostgreSQL |
+| Phù hợp | Query rất đơn giản, prototype | Repository/migration production-critical |
+
+### MockMvc và live HTTP
+
+| | `MockMvc` | `RANDOM_PORT` |
+|---|---|---|
+| Server socket | Không | Có |
+| MVC mapping/validation | Có | Có |
+| Network/container/TLS | Không | Một phần hoặc có tùy setup |
+| Tốc độ | Nhanh hơn | Chậm hơn |
+| Test transaction rollback | Có thể cùng transaction | Server transaction tách biệt |
+
+### Embedded Kafka và Kafka Testcontainer
+
+Embedded broker thường khởi động nhanh hơn và tiện cho Spring Kafka test. Kafka container gần runtime/distribution thực hơn. Chọn **một** cho mục tiêu test; không gắn `@EmbeddedKafka` và Kafka container vào cùng class rồi không biết client đang nối broker nào.
+
+---
+
+## Trade-offs
+
+- Unit test nhanh và định vị lỗi tốt, nhưng không phát hiện wiring/protocol.
+- Slice test cân bằng tốc độ/fidelity, nhưng import quá nhiều bean sẽ biến nó thành full context trá hình.
+- Testcontainers tăng production parity, đổi lại cần Docker, image pull, CPU/RAM và cleanup tốt.
+- WireMock tạo failure scenario dễ, nhưng stub drift khỏi provider có thể cho cảm giác an toàn giả.
+- Security request post-processor làm test authorization đơn giản, nhưng có thể bypass token validation thực.
+- Rollback làm test data sạch nhanh, nhưng che lỗi chỉ xuất hiện lúc commit hoặc ở transaction khác.
+- Parallel execution giảm wall-clock time, nhưng tăng flaky test nếu có shared mutable state.
+- E2E bắt lỗi deployment, nhưng chậm và khó chẩn đoán; không nên là nơi duy nhất kiểm business rule.
+
+---
+
+## Production – Chiến lược CI/CD và chất lượng test
+
+### Pipeline gợi ý
+
+```text
+Pull request:
+  compile/static analysis → unit → slices → selected integration/contract
+
+Main branch:
+  full integration + Testcontainers → package/image → security scan
+
+Pre-production:
+  migration test → E2E critical journey → resilience/load test có chọn lọc
+
+Post-deploy:
+  smoke/readiness → synthetic critical path → progressive rollout gates
+```
+
+### Checklist production-grade
+
+- Pin Testcontainers/WireMock stub/image version; dùng BOM, không dùng floating `latest`.
+- CI bắt buộc integration test phải có Docker/runtime; không silently skip rồi báo xanh.
+- Test migration từ schema gần production, không chỉ database rỗng.
+- Mỗi test tự sở hữu data/key/topic hoặc cleanup xác định; không phụ thuộc thứ tự.
+- Time/UUID/random được kiểm soát bằng `Clock`, seed hoặc matcher đúng mức.
+- Không gọi service Internet/shared staging không ổn định từ unit/integration suite.
+- Capture container log, application log, request/response đã redaction khi fail.
+- Không che flaky test bằng retry vô hạn; tìm shared state, race, timeout hoặc resource starvation.
+- Coverage là tín hiệu, không phải mục tiêu; mutation/branch/critical-path quality quan trọng hơn một phần trăm đơn lẻ.
+- Security negative tests, contract breaking-change check và migration rollback/forward path nằm trong pipeline.
+- Theo dõi test duration, context cache miss và flaky rate để suite không xuống cấp âm thầm.
+
+> 💡 **Giải thích dễ hiểu:**
+> Test suite production giống hệ thống kiểm soát chất lượng của nhà máy: kiểm nhanh ngay trên dây chuyền, kiểm chuyên sâu theo lô, rồi chạy thử sản phẩm hoàn chỉnh. Nếu một máy kiểm thường xuyên báo sai mà chỉ bấm “chạy lại”, sớm muộn hàng lỗi thật cũng lọt qua.
+
+---
+
+## Nguồn chính thức
+
+- [Spring Boot – Testing](https://docs.spring.io/spring-boot/reference/testing/index.html)
+- [Spring Boot – Testing Spring Boot Applications và Test Slices](https://docs.spring.io/spring-boot/reference/testing/spring-boot-applications.html)
+- [Spring Boot – Testcontainers và Service Connections](https://docs.spring.io/spring-boot/reference/testing/testcontainers.html)
+- [Spring Boot 3.5 – `@MockBean` deprecation](https://docs.spring.io/spring-boot/3.5/api/java/org/springframework/boot/test/mock/mockito/MockBean.html)
+- [Spring Framework – `@MockitoBean` và `@MockitoSpyBean`](https://docs.spring.io/spring-framework/reference/testing/annotations/integration-spring/annotation-mockitobean.html)
+- [Spring Framework – MockMvc](https://docs.spring.io/spring-framework/reference/testing/mockmvc.html)
+- [Spring Framework – Test-managed Transactions](https://docs.spring.io/spring-framework/reference/testing/testcontext-framework/tx.html)
+- [Spring Security – MockMvc Test Integration](https://docs.spring.io/spring-security/reference/servlet/test/mockmvc/)
+- [Spring Security – OAuth2/JWT Testing](https://docs.spring.io/spring-security/reference/servlet/test/mockmvc/oauth2.html)
+- [Spring Cloud Contract – WireMock](https://docs.spring.io/spring-cloud-contract/docs/current/reference/htmlsingle/)
+
+---
+
+## Ghi chú – Chủ đề tiếp theo
+
+- REST/ProblemDetail/Security boundary: [Spring Boot Web](springboot_web.md).
+- JPA, transaction, migration, Redis: [Spring Boot Data](springboot_data.md).
+- Kafka/event integration test: [Spring Boot Messaging](springboot_messaging.md).
+- Observability, Actuator và deployment: [Spring Boot Production](springboot_production.md).
+
+> Keywords: test pyramid, test slice, `@WebMvcTest`, `@WebFluxTest`, `@DataJpaTest`, `@DataRedisTest`, `@JsonTest`, `@RestClientTest`, `@MockitoBean`, `MockMvc`, `WebTestClient`, `RestTestClient`, Testcontainers, `@ServiceConnection`, `ConnectionDetails`, `@DynamicPropertySource`, WireMock, `@AutoConfigureWireMock`, Spring Security Test, `@WithMockUser`, `jwt()`, `csrf()`, TestContext cache, `@DirtiesContext`, test-managed transaction, contract test, smoke test, flaky test.
+
+---
+
+*Cập nhật lần cuối: 2026-07-27*

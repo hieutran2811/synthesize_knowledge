@@ -3,6 +3,8 @@
 > Phương pháp: What – How – Why – Components – Compare – Trade-offs – Real-world – Ghi chú
 >
 > 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
+>
+> Phạm vi đối chiếu chính: Apache Kafka Streams 4.3. Những cluster/client cũ hơn cần kiểm tra lại API, config và rebalance protocol.
 
 ---
 
@@ -25,7 +27,7 @@ Use cases:
   - Event-driven microservices (consume-process-produce)
 ```
 
-Kafka Streams phù hợp khi dữ liệu đã ở Kafka và topology cần scale cùng consumer group. Flink/Spark có thể phù hợp hơn khi cần nhiều nguồn ngoài Kafka, batch lớn hoặc runtime quản lý tập trung. Không nên kết luận công cụ nào luôn có latency thấp/cao hơn; phải benchmark theo workload, state và topology thực tế.
+Kafka Streams phù hợp khi dữ liệu đã ở Kafka và topology cần scale bằng group coordination tích hợp với broker. Flink/Spark có thể phù hợp hơn khi cần nhiều nguồn ngoài Kafka, batch lớn hoặc runtime quản lý tập trung. Không nên kết luận công cụ nào luôn có latency thấp/cao hơn; phải benchmark theo workload, state và topology thực tế.
 
 > 💡 **Giải thích dễ hiểu:**
 > Kafka Streams giống thư viện bếp đặt ngay trong từng cửa hàng; Flink/Spark giống thuê một bếp trung tâm riêng. Bếp tại cửa hàng giảm hạ tầng phải vận hành, còn bếp trung tâm có thể phục vụ nhiều loại nguyên liệu và quy trình hơn.
@@ -187,7 +189,7 @@ KTable<String, Order> latestOrderByCustomer = groupedByCustomer.reduce(
 
 ```java
 // Time window: fixed-size tumbling/hopping/sliding windows
-// Requires records to have timestamps (EventTimeExtractor or log append time)
+// Timestamp đến từ record hoặc custom TimestampExtractor.
 
 // Tumbling window: non-overlapping, fixed size
 KTable<Windowed<String>, Long> ordersPerMinute = groupedByCustomer
@@ -222,10 +224,35 @@ ordersPerMinute.toStream()
     .to("windowed-order-counts");
 ```
 
-Kafka Streams dùng record timestamp để tiến **stream-time** *(thời gian suy ra từ dữ liệu đang xử lý)*. Với window có grace, record đến muộn vẫn được nhận khi `stream_time < window_end + grace`; sau mốc đó record bị coi là late và bỏ qua. `retention` của window store phải đủ chứa toàn bộ vòng đời window (`window size + grace`, cùng phần đệm cần thiết), không chỉ thời lượng window.
+Kafka Streams dùng record timestamp để tiến **stream-time** *(thời gian suy ra từ dữ liệu đang xử lý)*. Stream-time tiến theo timestamp lớn nhất task đã thấy và không lùi lại. Với window có grace, record đến muộn vẫn được nhận khi `stream_time < window_end + grace`; sau mốc đó record bị coi là late và bỏ qua. `retention` của window store phải đủ chứa toàn bộ vòng đời window (`window size + grace`, cùng phần đệm cần thiết), không chỉ thời lượng window.
+
+Với task có nhiều input partition, `max.task.idle.ms` cho phép chờ partition tạm chưa có record để giảm out-of-order khi join/merge. Chờ lâu hơn có thể cải thiện time ordering nhưng tăng latency; nó không sửa timestamp sai từ producer.
 
 > 💡 **Giải thích dễ hiểu:**
 > Window là một ca tính tiền kéo dài một giờ; grace là khoảng thời gian chờ hóa đơn đến trễ. Đóng sổ quá sớm thì đúng giờ nhưng thiếu hóa đơn, chờ quá lâu thì tốn chỗ lưu và kết quả xuất hiện muộn hơn.
+
+### Phát kết quả cuối bằng `suppress()`
+
+Windowed aggregation mặc định có thể phát nhiều update cho cùng key/window. Nếu downstream chỉ muốn kết quả sau khi window đã đóng:
+
+```java
+KTable<Windowed<String>, Long> finalOrdersPerMinute =
+    ordersPerMinute.suppress(
+        Suppressed.untilWindowCloses(
+            Suppressed.BufferConfig
+                .maxBytes(256L * 1024 * 1024)
+                .shutDownWhenFull()
+        ).withName("final-orders-per-minute")
+    );
+
+finalOrdersPerMinute.toStream()
+    .to("final-windowed-order-counts");
+```
+
+“Final” ở đây nghĩa stream-time đã vượt `window end + grace`; record tới sau grace vẫn bị bỏ. `suppress()` giữ buffer trong memory, không chuyển sang RocksDB. Bounded strict buffer chọn tính đúng bằng cách shutdown khi đầy thay vì âm thầm phát sớm; vì vậy phải sizing, giữ changelog mặc định hoặc cấu hình logging có chủ đích, monitor memory và kiểm thử restore. `unbounded()` dễ dùng nhưng có nguy cơ OOM nếu stream-time không tiến hoặc cardinality/window quá lớn.
+
+> 💡 **Giải thích dễ hiểu:**
+> Aggregation mặc định giống bảng điểm cập nhật sau mỗi lượt. `suppress()` che bảng cho tới khi hết giờ khiếu nại rồi mới công bố một kết quả cuối; nếu phòng chờ kết quả đầy, hệ thống phải dừng thay vì lén công bố bản chưa chốt.
 
 ---
 
@@ -344,7 +371,7 @@ Interactive Queries chỉ đọc state local mà instance đang sở hữu; `act
 
 ```java
 Properties props = new Properties();
-props.put(StreamsConfig.APPLICATION_ID_CONFIG, "order-processor");     // consumer group ID + prefix internal topics
+props.put(StreamsConfig.APPLICATION_ID_CONFIG, "order-processor"); // group identity + prefix internal topics
 props.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, "broker1:9092");
 props.put(StreamsConfig.DEFAULT_KEY_SERDE_CLASS_CONFIG, Serdes.String().getClass());
 props.put(StreamsConfig.DEFAULT_VALUE_SERDE_CLASS_CONFIG, Serdes.String().getClass());
@@ -356,8 +383,12 @@ props.put(StreamsConfig.NUM_STREAM_THREADS_CONFIG, 4);    // threads per instanc
 // State store
 props.put(StreamsConfig.STATE_DIR_CONFIG, "/var/kafka-streams"); // mỗi instance trên cùng host cần thư mục riêng
 props.put(StreamsConfig.STATESTORE_CACHE_MAX_BYTES_CONFIG, 10 * 1024 * 1024L);  // 10MB; cache không phải nguồn dữ liệu bền vững
-props.put(StreamsConfig.NUM_STANDBY_REPLICAS_CONFIG, 1); // state backup trên instance khác
+props.put(StreamsConfig.NUM_STANDBY_REPLICAS_CONFIG, 1); // chỉ áp dụng classic protocol
 props.put(StreamsConfig.APPLICATION_SERVER_CONFIG, "streams-1:8080"); // unique host:port cho Interactive Queries
+props.put(StreamsConfig.MAX_TASK_IDLE_MS_CONFIG, 1000L); // đánh đổi 1s latency để chờ input khác
+
+// Bật sau khi đã đặt Named/Materialized/Repartitioned cho MỌI internal resource:
+// props.put("ensure.explicit.internal.resource.naming", true);
 
 // Reliability
 props.put(StreamsConfig.PROCESSING_GUARANTEE_CONFIG, StreamsConfig.EXACTLY_ONCE_V2);
@@ -386,6 +417,59 @@ Runtime.getRuntime().addShutdownHook(
 ```
 
 `REPLACE_THREAD` chỉ phù hợp lỗi có thể khôi phục và không làm mất invariant/state; deserialization schema lỗi, topology bug hoặc transaction/configuration fatal nên chuyển sang `SHUTDOWN_CLIENT`/`SHUTDOWN_APPLICATION` và alert. Graceful shutdown cần timeout đủ để commit transaction, flush state và hoàn tất rebalance handoff.
+
+Kafka Streams 4.3 có nhiều error boundary:
+
+| Boundary | Cấu hình/hook | Câu hỏi cần quyết định |
+|---|---|---|
+| Đọc bytes thành object | `deserialization.exception.handler` | Fail hay bỏ record không giải mã được |
+| Code processor/DSL ném lỗi | `processing.exception.handler` | Fail hay tiếp tục với record lỗi |
+| Ghi output/internal topic lỗi | `production.exception.handler` | Retry/fail hay bỏ output |
+| Lỗi thoát khỏi stream thread | `StreamsUncaughtExceptionHandler` | Replace thread, shutdown client hay shutdown toàn application |
+
+Handler kiểu “log and continue” có thể biến lỗi thành data loss im lặng. Chỉ skip khi có metric, DLT/audit phù hợp, ownership và quy trình replay; global KTable/store còn có giới hạn xử lý exception khác regular task theo version.
+
+`ensure.explicit.internal.resource.naming=true` làm ứng dụng từ chối start nếu topology còn state store/repartition/changelog resource dùng tên tự sinh. Đây là fail-fast hữu ích: thêm một operator ở giữa topology có thể đổi tên auto-generated và khiến rolling upgrade hiểu nhầm resource cũ/mới.
+
+### Streams Rebalance Protocol (Kafka 4.2+)
+
+Kafka 4.2 bổ sung protocol dành riêng cho Streams, nơi broker liên tục tính task assignment. Feature này được bật mặc định trên cluster mới từ 4.2, nhưng **client vẫn mặc định `classic`** cho tới khi cấu hình:
+
+```java
+props.put("group.protocol", "streams");
+```
+
+| Tiêu chí | `classic` | `streams` |
+|---|---|---|
+| Nơi tính task assignment | Client leader của group | Group coordinator trên broker |
+| Group type/tooling | Consumer group | Streams group, `kafka-streams-groups.sh` |
+| Rebalance | Có global synchronization point | Broker-driven, incremental reconciliation |
+| Standby/session/heartbeat config | Chủ yếu trên client | Group-level config trên broker |
+| Migration | Protocol cũ hiện hành | Chỉ offline migration trong Kafka 4.3 |
+
+Cả broker và client phải từ Kafka 4.2 trở lên. Với cluster đã nâng cấp, kiểm tra/bật feature:
+
+```bash
+kafka-features.sh --bootstrap-server localhost:9092 \
+  upgrade --feature streams.version=1
+
+# Client đã group.protocol=streams: đặt config theo application.id ở cấp group.
+kafka-configs.sh --bootstrap-server localhost:9092 \
+  --alter --entity-type groups --entity-name order-processor \
+  --add-config streams.num.standby.replicas=1
+
+kafka-streams-groups.sh --bootstrap-server localhost:9092 \
+  --describe --group order-processor
+```
+
+Khi dùng `streams`, các client config như `num.standby.replicas`, `session.timeout.ms`, `heartbeat.interval.ms`, `task.assignor.class` và một số warmup/rack-aware option bị bỏ qua; dùng group-level/broker config tương ứng. Không copy nguyên tuning của classic protocol rồi giả định đã có hiệu lực.
+
+Migration hiện là **offline**: dừng toàn bộ instance, chờ group empty/explicit leave, đổi `group.protocol`, rồi khởi động lại. Committed offsets và internal topics vẫn còn, còn group assignment metadata được dựng lại. Dùng maintenance window và xác minh state restore/readiness trước khi mở traffic.
+
+Với protocol mới, theo dõi broker metric `streams-group-count` theo state và `streams-group-rebalance-rate/count`; trạng thái `NOT_READY`/`RECONCILING` kéo dài cần được điều tra cùng restore lag và broker coordinator health.
+
+> 💡 **Giải thích dễ hiểu:**
+> Classic protocol giống các chi nhánh tự họp để chia ca; Streams protocol giống phòng điều phối trung tâm liên tục cập nhật lịch. Đổi cơ chế khi mọi người vẫn đang làm sẽ tạo hai cách chia ca cùng lúc, nên Kafka 4.3 yêu cầu đóng ca rồi mới chuyển.
 
 ### Topology Test & Deployment
 
@@ -516,8 +600,8 @@ Metrics names and scopes vary by Kafka version and client; alert on trends and c
 ## Ghi chú – Chủ đề tiếp theo
 > [connect.md](connect.md): Kafka Connect architecture, source/sink connectors, SMTs (Single Message Transforms), Debezium CDC, MirrorMaker2 cross-cluster replication, connector management API
 >
-> Tài liệu Apache Kafka nên đối chiếu: [Streams Developer Guide](https://kafka.apache.org/41/streams/developer-guide/), [Configuring a Streams Application](https://kafka.apache.org/41/streams/developer-guide/config-streams/) và [Kafka Streams Configs](https://kafka.apache.org/41/configuration/kafka-streams-configs/).
+> Tài liệu Apache Kafka nên đối chiếu: [Streams Developer Guide](https://kafka.apache.org/43/streams/developer-guide/), [Configuring a Streams Application](https://kafka.apache.org/43/streams/developer-guide/config-streams/), [Kafka Streams Configs](https://kafka.apache.org/43/configuration/kafka-streams-configs/) và [Streams Rebalance Protocol](https://kafka.apache.org/43/streams/developer-guide/streams-rebalance-protocol/).
 
 ---
 
-*Cập nhật lần cuối: 2026-07-22*
+*Cập nhật lần cuối: 2026-07-27*

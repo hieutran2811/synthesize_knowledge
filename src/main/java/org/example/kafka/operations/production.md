@@ -3,6 +3,8 @@
 > Phương pháp: What – How – Why – Components – Compare – Trade-offs – Real-world – Ghi chú
 >
 > 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
+>
+> Phạm vi phiên bản: Apache Kafka 4.3/KRaft. Tên metric sau khi qua JMX exporter và khả năng dynamic update của từng config phải được kiểm tra trên đúng binary đang chạy.
 
 ---
 
@@ -99,6 +101,7 @@ num.recovery.threads.per.data.dir=2
 default.replication.factor=3
 min.insync.replicas=2
 unclean.leader.election.enable=false
+controlled.shutdown.enable=true
 auto.leader.rebalance.enable=true
 leader.imbalance.check.interval.seconds=300
 leader.imbalance.per.broker.percentage=10
@@ -169,9 +172,17 @@ CLUSTER HEALTH:
     → Mỗi controller node có 0 hoặc 1; tổng theo đúng một cluster phải là 1
     → 0 kéo dài: không có active controller; >1 thường cần kiểm tra label/scrape/stale data
 
-  kafka.controller:type=KafkaController,name=OfflinePartitionCount
+  kafka.controller:type=KafkaController,name=OfflinePartitionsCount
     → 0: all good
     → > 0: partitions unavailable (CRITICAL ALERT)
+
+  kafka.controller:type=KafkaController,name=ActiveBrokerCount
+  kafka.controller:type=KafkaController,name=FencedBrokerCount
+    → So sánh với inventory mong đợi; broker bị fenced không phục vụ leadership/client traffic
+
+  kafka.controller:type=ControllerEventManager,name=EventQueueTimeMs
+  kafka.controller:type=ControllerEventManager,name=EventQueueProcessingTimeMs
+    → Queue cao: controller chờ xử lý; processing cao: bản thân operation/metadata xử lý chậm
 
   kafka.server:type=ReplicaManager,name=UnderReplicatedPartitions
     → 0: all replicas in sync
@@ -194,15 +205,23 @@ LATENCY:
   kafka.network:type=RequestMetrics,name=RequestsPerSec,request=Produce
   kafka.network:type=RequestMetrics,name=TotalTimeMs,request=Produce
   kafka.network:type=RequestMetrics,name=TotalTimeMs,request=FetchConsumer
+  kafka.network:type=RequestMetrics,name=RequestQueueTimeMs,request=Produce
+  kafka.network:type=RequestMetrics,name=LocalTimeMs,request=Produce
+  kafka.network:type=RequestMetrics,name=RemoteTimeMs,request=Produce
+  kafka.network:type=RequestMetrics,name=ResponseQueueTimeMs,request=Produce
+  kafka.network:type=RequestMetrics,name=ResponseSendTimeMs,request=Produce
 
 RESOURCE:
+  kafka.network:type=SocketServer,name=NetworkProcessorAvgIdlePercent
   kafka.server:type=KafkaRequestHandlerPool,name=RequestHandlerAvgIdlePercent
-    → thấp kéo dài: request handler bão hòa; ngưỡng phải theo baseline/SLO
+    → thấp kéo dài: network/request handler bão hòa; ngưỡng phải theo baseline/SLO
   java.lang:type=Memory,HeapMemoryUsage (used/max)
   kafka.log:type=LogFlushStats,name=LogFlushRateAndTimeMs
 ```
 
-Đừng chỉ nhìn một ảnh chụp. Cảnh báo tốt kết hợp **symptom** *(triệu chứng người dùng thấy)* như request p99/timeout với **cause** *(nguyên nhân)* như disk saturation, ISR shrink hoặc network queue. Metric controller phải được lọc theo `cluster_id` để không cộng nhiều cluster vào cùng biểu đồ.
+`TotalTimeMs` được tách thành thời gian chờ request queue, xử lý local, chờ remote/follower, chờ response queue và gửi response. Với Produce `acks=all`, `RemoteTimeMs` tăng thường gợi ý follower/replication chậm; `RequestQueueTimeMs` tăng cùng idle percent giảm gợi ý thread pool đang bão hòa; `LocalTimeMs` tăng cần đối chiếu disk, conversion và broker CPU. Đây là hướng khoanh vùng, không phải kết luận từ một metric.
+
+Đừng chỉ nhìn một ảnh chụp. Cảnh báo tốt kết hợp **symptom** *(triệu chứng người dùng thấy)* như request p99/timeout với **cause** *(nguyên nhân)* như disk saturation, ISR shrink hoặc network queue. Metric controller phải được lọc theo `cluster_id`; với histogram còn phải giữ đúng label node/quantile để không cộng percentile của nhiều instance thành một con số vô nghĩa.
 
 > 💡 **Giải thích dễ hiểu:**
 > Một đồng hồ đỏ chưa chắc là cháy nhà. Consumer lag tăng có thể do traffic vừa tăng, còn lag cao nhưng đang giảm có thể đang hồi phục. Hãy nhìn độ lớn, tốc độ thay đổi và thời gian kéo dài cùng nhau.
@@ -250,7 +269,8 @@ groups:
           summary: "Consumer lag is growing continuously"
 
       - alert: KafkaOfflinePartitions
-        expr: kafka_controller_kafkacontroller_offlinepartitioncount > 0
+        # Tên dưới đây giả định exporter chuyển OfflinePartitionsCount sang lowercase.
+        expr: kafka_controller_kafkacontroller_offlinepartitionscount > 0
         for: 1m
         labels:
           severity: critical
@@ -264,6 +284,31 @@ groups:
 
 > 💡 **Giải thích dễ hiểu:**
 > Lag giống số đơn chưa được xác nhận giao xong. Chỉ đếm số đơn có thể gây hiểu lầm khi đơn lớn nhỏ khác nhau; cần biết hàng đang ùn thêm hay đang rút xuống, đơn cũ nhất chờ bao lâu và consumer có lỗi hay không.
+
+### Alert theo SLO và quy trình triage
+
+**SLO** mô tả kết quả người dùng cần, ví dụ “99,9% Produce request hoàn tất dưới 100 ms trong 30 ngày”. **Error budget** *(ngân sách lỗi)* là phần không đạt được phép tiêu thụ; **burn rate** *(tốc độ đốt ngân sách lỗi)* cho biết hệ thống đang tiêu phần đó nhanh đến mức nào. Page nên dựa trên symptom/SLO burn nhanh; cause metric hỗ trợ chẩn đoán hoặc tạo ticket khi kéo dài.
+
+| Tín hiệu | Điều nó thực sự nói | Đối chiếu trước khi hành động |
+|----------|---------------------|-------------------------------|
+| Produce/Fetch p99 hoặc error rate vượt SLO | Client đang thấy chậm/lỗi | Request-time breakdown, error code, broker/client nào, thay đổi gần nhất |
+| `OfflinePartitionsCount > 0` | Có partition không phục vụ được | Active/fenced broker, leader/ISR/ELR, controller health; page ngay |
+| `UnderMinIsrPartitionCount > 0` | Một số partition dưới ngưỡng durability | `acks=all` có thể bị từ chối; tìm broker/disk/network lỗi trước khi đổi `minISR` |
+| `UnderReplicatedPartitions > 0` | Có follower chưa nằm trong ISR | Tốc độ tăng/giảm, replica lag, reassignment/restart đang diễn ra |
+| Disk usage tăng và thời gian đầy ngắn | Broker có nguy cơ hết chỗ | Retention/segment, traffic growth, replica movement, offline log directory |
+| Consumer lag age/growth vượt SLO | Dữ liệu nghiệp vụ đến chậm | Consumer error/rate, partition skew, broker fetch latency, downstream |
+| Controller queue/processing time tăng | Metadata operation đang chờ hoặc xử lý chậm | Election, reassignment/topic churn, metadata error, controller CPU/disk |
+
+Quy trình triage ngắn:
+
+1. Xác nhận impact theo client/SLO và phạm vi cluster, topic, partition, broker.
+2. Đóng băng change/reassignment không thiết yếu; ghi timeline và thay đổi gần nhất.
+3. Phân loại bottleneck bằng request-time breakdown, replication, disk/network/CPU và controller metrics.
+4. Chọn hành động làm giảm impact có rollback rõ ràng; không “chữa” bằng tắt durability hay nhảy offset nếu chưa duyệt mất dữ liệu.
+5. Xác minh symptom đã hồi phục, backlog đang giảm và không tạo lỗi thứ cấp; sau đó lưu bằng chứng/postmortem.
+
+> 💡 **Giải thích dễ hiểu — chuông báo cháy và bảng điện có vai trò khác nhau:**
+> Khói trong phòng khách là lý do đánh thức đội trực; dòng điện tăng ở một máy là manh mối tìm nguyên nhân. Nếu mọi đồng hồ nội bộ đều gọi điện lúc nửa đêm, đội sẽ mệt và bỏ lỡ sự cố thật.
 
 ---
 
@@ -418,6 +463,56 @@ Cần test cả luồng startup, produce, consume, transaction và admin vì m�
 
 ---
 
+## How – Thay đổi cấu hình và xoay certificate an toàn
+
+Kafka phân loại broker config theo khả năng cập nhật: `read-only` cần restart; `per-broker` có thể đổi riêng một broker; `cluster-wide` có thể đặt default động và đôi khi override theo broker. Giá trị hiệu lực có thứ tự:
+
+```text
+dynamic per-broker
+  > dynamic cluster-wide default
+    > server.properties
+      > Kafka default
+```
+
+Vì vậy sửa `server.properties` nhưng thấy broker không đổi thường do dynamic override cũ đang thắng. Trước và sau change phải lưu cả static config, dynamic default và per-broker override.
+
+```bash
+# Inventory dynamic config trước khi đổi
+kafka-configs.sh --bootstrap-server broker1:9094 \
+  --command-config admin.properties \
+  --entity-type brokers --entity-default --describe
+
+kafka-configs.sh --bootstrap-server broker1:9094 \
+  --command-config admin.properties \
+  --entity-type brokers --entity-name 1 --describe
+
+# Canary một config có Update Mode phù hợp trên broker 1
+kafka-configs.sh --bootstrap-server broker1:9094 \
+  --command-config admin.properties \
+  --entity-type brokers --entity-name 1 --alter \
+  --add-config 'log.cleaner.threads=2'
+
+# Rollback override để trở về static/cluster default; không đặt bừa một giá trị cũ
+kafka-configs.sh --bootstrap-server broker1:9094 \
+  --command-config admin.properties \
+  --entity-type brokers --entity-name 1 --alter \
+  --delete-config 'log.cleaner.threads'
+```
+
+Kafka cho phép cập nhật động keystore/truststore theo từng listener bằng prefix `listener.name.<listener-lowercase>.`. Rotation cùng CA có thể thay keystore từng broker mà không restart; nếu đổi CA, phải có giai đoạn hai CA cùng được tin cậy:
+
+1. Phân phối truststore chứa **CA cũ + CA mới**, cập nhật từng broker và client, rồi kiểm tra kết nối mới.
+2. Xoay keystore/certificate từng broker; SAN, hostname, chain và `serverAuth`/`clientAuth` usage phải đúng.
+3. Xoay client certificate và xác nhận không còn principal dùng CA cũ.
+4. Chỉ sau cửa sổ quan sát mới loại CA cũ khỏi truststore; giữ rollback artifact có giới hạn quyền.
+
+Với inter-broker listener, Kafka kiểm tra keystore mới có được truststore hiện tại tin cậy và truststore mới có tin keystore hiện tại hay không. Không tắt hostname verification để “sửa nhanh”; hãy sửa SAN/DNS/advertised listener. Đồng thời alert trước ngày hết hạn certificate, vì traffic đang giữ connection có thể vẫn chạy trong khi mọi connection mới đã bắt đầu thất bại.
+
+> 💡 **Giải thích dễ hiểu — đổi CA giống thay mẫu hộ chiếu:**
+> Trước hết cửa khẩu phải nhận cả mẫu cũ lẫn mới, sau đó mọi người đổi hộ chiếu, cuối cùng mới ngừng nhận mẫu cũ. Bỏ mẫu cũ trước khi đội cuối cùng đổi xong sẽ tự khóa một phần cluster.
+
+---
+
 ## How – Operational Runbooks
 
 Runbook *(quy trình xử lý vận hành)* phải ghi rõ precondition, người phê duyệt, lệnh quan sát, tiêu chí dừng/rollback và bằng chứng sau thay đổi. Luôn dùng `--command-config` trên cluster bảo mật và thử ở staging/canary trước.
@@ -457,10 +552,22 @@ kafka-reassign-partitions.sh --bootstrap-server localhost:9092 \
 # --verify sẽ gỡ throttle khi reassignment hoàn tất.
 # Kiểm tra lại broker- và topic-level throttled configs; không xóa entity-default mù quáng.
 
-# 4. Drain broker before maintenance
+# 4. Drain broker before maintenance (Kafka 4.3)
+# Cordon để broker không nhận thêm log directory assignment mới.
+kafka-configs.sh --bootstrap-server localhost:9092 \
+  --command-config admin.properties \
+  --alter --add-config 'cordoned.log.dirs=*' \
+  --entity-type brokers --entity-name 1
+
 # Reassign replicas/leaders khỏi broker, lưu current assignment để rollback.
 # Chờ --verify hoàn tất; OfflinePartitions=0, UnderMinISR=0 và replication lag ổn.
 # Dừng broker bằng SIGTERM/controlled shutdown; làm từng broker, chờ cluster hồi phục.
+# Cordon không tự di chuyển replica hiện có và không thay thế reassignment.
+# Sau maintenance và khi broker đã khỏe, xóa cordon:
+kafka-configs.sh --bootstrap-server localhost:9092 \
+  --command-config admin.properties \
+  --alter --delete-config 'cordoned.log.dirs' \
+  --entity-type brokers --entity-name 1
 ```
 
 > 💡 **Giải thích dễ hiểu:**
@@ -562,12 +669,23 @@ Monitoring dashboard must-haves:
 
 ---
 
-## Ghi chú – Chủ đề tiếp theo
+## Nguồn tham khảo chính thức
 
-> Chủ đề nên đào sâu tiếp: capacity planning theo retention/RF, KRaft controller quorum, quota, rack awareness, rolling upgrade, certificate/credential rotation, SLO-based alerting, MM2 offset translation và game day DR.
+- [Apache Kafka 4.3 – Monitoring](https://kafka.apache.org/43/operations/monitoring/): broker/client/KRaft metrics và request-time breakdown.
+- [Apache Kafka 4.3 – Basic Kafka Operations](https://kafka.apache.org/43/operations/basic-kafka-operations/): graceful shutdown, leadership, rack awareness, cordon và reassignment.
+- [Apache Kafka 4.3 – Broker Configs](https://kafka.apache.org/43/configuration/broker-configs/): update mode, precedence, dynamic keystore/truststore và listener config.
+- [Apache Kafka 4.3 – SSL/TLS](https://kafka.apache.org/43/security/encryption-and-authentication-using-ssl/) và [SASL](https://kafka.apache.org/43/security/authentication-using-sasl/): certificate, hostname verification và authentication mechanisms.
+- [Apache Kafka 4.3 – Authorization & ACLs](https://kafka.apache.org/43/security/authorization-and-acls/): principal, operation, resource pattern và authorizer.
+- [Apache Kafka 4.3 – MirrorMaker 2](https://kafka.apache.org/43/operations/geo-replication-cross-cluster-data-mirroring/): replication flow, checkpoints và offset sync.
 
-> Tài liệu chính thức: [Kafka Monitoring](https://kafka.apache.org/43/operations/monitoring/), [Basic Kafka Operations](https://kafka.apache.org/43/operations/basic-kafka-operations/), [SASL authentication](https://kafka.apache.org/43/security/authentication-using-sasl/), [Authorization & ACLs](https://kafka.apache.org/43/security/authorization-and-acls/), [MirrorMaker 2 geo-replication](https://kafka.apache.org/43/operations/geo-replication-cross-cluster-data-mirroring/). Khi chạy phiên bản khác, mở tài liệu đúng version vì metric/config có thể đổi.
+Khi chạy phiên bản khác, mở tài liệu đúng version vì metric, tên MBean và khả năng dynamic update có thể đổi.
 
 ---
 
-*Cập nhật lần cuối: 2026-07-22*
+## Ghi chú – Chủ đề tiếp theo
+
+> Tiếp theo: [cluster_operations.md](cluster_operations.md) — Kafka Day-2 operations nâng cao: capacity planning, quota, cordon/drain, partition reassignment, rolling upgrade, Cruise Control và chiến lược multi-cluster.
+
+---
+
+*Cập nhật lần cuối: 2026-07-27*

@@ -3,6 +3,8 @@
 > Phương pháp: What – How – Why – Components – Compare – Trade-offs – Real-world – Ghi chú
 >
 > 📖 Tra cứu thuật ngữ: xem [glossary.md](../glossary.md)
+>
+> Phạm vi đối chiếu chính: Apache Kafka 4.3 chạy KRaft. Phần ZooKeeper chỉ dùng để hiểu cluster Kafka 3.9 trở về trước.
 
 ---
 
@@ -74,6 +76,7 @@ High-water mark (HWM):
   Ranh giới offset mà protocol xem là committed/safe để trả cho consumer
   Leader suy ra từ tiến độ replica; follower nhận HWM qua fetch response
   Consumer không đọc phần log vượt quá ranh giới committed của replica đang phục vụ
+  Với strict min ISR, HWM không tiến khi ISR nhỏ hơn min.insync.replicas
 
 Log End Offset (LEO):
   Offset kế tiếp sẽ được append ở một replica (không phải offset của record cuối)
@@ -134,13 +137,38 @@ KRaft mode:
   4. Followers apply metadata change
   Thời gian failover phụ thuộc session/heartbeat timeout, controller load, partition count và network; không có số cố định cho mọi cluster
 
-Clean election:
-  Controller chọn replica đủ điều kiện, thường từ ISR
-  Kafka/KRaft mới có thể dùng Eligible Leader Replicas (ELR) khi feature được bật
-  Nếu không có replica an toàn: partition offline hoặc unclean election tùy config/operator
+Election order khi ELR được bật:
+  1. Chọn replica trong ISR nếu còn
+  2. Nếu ISR rỗng, chọn ELR chưa bị fenced
+  3. Nếu không còn ELR, xét last known leader chưa bị fenced
+  4. Nếu không có ứng viên hợp lệ: partition offline hoặc unclean election theo policy
 ```
 
-**ELR (Eligible Leader Replicas)** *(replica ngoài ISR nhưng được controller chứng minh vẫn an toàn để làm leader theo protocol mới)* không đồng nghĩa với unclean replica bất kỳ. Hành vi này phụ thuộc Kafka/metadata version và cấu hình cluster; khi vận hành mixed version phải theo upgrade guide tương ứng.
+### Eligible Leader Replicas (ELR)
+
+ELR xuất hiện từ Kafka 4.0 và được bật mặc định cho cluster mới từ Kafka 4.1. Khi strict `min.insync.replicas` khiến HWM không thể tiến vì ISR đã nhỏ hơn min ISR, một replica vừa rời ISR vẫn có thể được controller chứng minh không thiếu committed data. KRaft lưu replica đó trong ELR để có thêm ứng viên failover an toàn.
+
+```text
+ISR = replica đang in-sync theo lag/session rule
+ELR = replica ngoài ISR nhưng vẫn đủ an toàn theo committed boundary
+Unclean candidate = replica ngoài hai tập trên, có thể thiếu committed record
+```
+
+ELR không làm tăng RF và không biến replica stale bất kỳ thành an toàn. Trước/sau nâng cấp cần kiểm tra feature level:
+
+```bash
+kafka-features.sh --bootstrap-server localhost:9092 --describe
+# eligible.leader.replicas.version phải phù hợp kế hoạch upgrade/downgrade
+```
+
+Thay đổi `min.insync.replicas` ở cluster hoặc topic sẽ xóa ELR state liên quan vì bằng chứng an toàn được xây dựng dựa trên min ISR cũ. Đây là thay đổi vận hành, không nên chỉnh min ISR giữa incident mà không đánh giá ảnh hưởng election.
+
+| Loại election | Ứng viên | Mục tiêu | Rủi ro chính |
+|---|---|---|---|
+| Clean từ ISR | Replica trong ISR | Failover an toàn thông thường | Có thể unavailable nếu ISR rỗng |
+| ELR election | ELR chưa fenced | Khôi phục availability mà vẫn giữ committed data | Phụ thuộc feature/version và ELR state còn hợp lệ |
+| Last known leader | Leader gần nhất chưa fenced | Phương án sau ISR/ELR theo protocol ELR | Phải hiểu đúng version và trạng thái fencing |
+| Unclean election | Replica ngoài ISR/ELR | Ưu tiên availability cuối cùng | Có thể rollback log và mất committed record |
 
 Không nên dự đoán failover chỉ từ “KRaft nhanh hơn ZooKeeper”. Đo thời gian phát hiện lỗi, election, metadata propagation và client recovery trên chính partition count/cấu hình của cluster.
 
@@ -225,7 +253,14 @@ Clean election không đồng nghĩa “không bao giờ mất dữ liệu”: c
 # Per-topic unclean election
 kafka-configs.sh --alter --entity-type topics --entity-name app-metrics \
   --add-config unclean.leader.election.enable=true
+
+# KRaft kiểm tra election định kỳ; nếu incident đã được phê duyệt mất dữ liệu,
+# operator có thể yêu cầu ngay thay vì chờ chu kỳ.
+kafka-leader-election.sh --bootstrap-server localhost:9092 \
+  --election-type unclean --topic app-metrics --partition 0
 ```
+
+Lệnh unclean phía trên là thao tác phá vỡ durability và cần approval, snapshot trạng thái, phạm vi partition rõ ràng cùng kế hoạch đối soát dữ liệu. Không chạy `--all-topic-partitions` như phản xạ đầu tiên.
 
 ---
 
@@ -300,7 +335,8 @@ kafka-topics.sh --bootstrap-server localhost:9092 --describe
 # Partition: 0  Leader: 1  Replicas: 1,2,3  Isr: 1,2,3
 
 # Log dirs and sizes
-kafka-log-dirs.sh --bootstrap-server localhost:9092 --topic-list orders
+kafka-log-dirs.sh --bootstrap-server localhost:9092 \
+  --describe --topic-list orders
 
 # Replica lag (JMX)
 # kafka.server:type=ReplicaFetcherManager,name=MaxLag,clientId=Replica
@@ -317,6 +353,20 @@ JMX Metrics to monitor:
   ReplicationBytesInPerSec:    replication traffic
   FetcherLag/MaxLag:           follower/reassignment progress (tên metric tùy version)
 ```
+
+KRaft có bộ metric riêng cho **metadata log**, không phải data partition:
+
+| MBean | Metric/attribute trong tài liệu Kafka | Ý nghĩa |
+|---|---|---|
+| `kafka.server:type=raft-metrics` | Current Leader, Current Epoch | Quorum có leader ổn định hay election liên tục |
+| `kafka.server:type=raft-metrics` | High Watermark, Log End Offset | Tiến độ commit/replicate của metadata log |
+| `kafka.server:type=raft-metrics` | Average/Maximum Commit Latency | Độ trễ commit metadata |
+| `kafka.server:type=raft-metrics` | Average/Maximum Election Latency | Thời gian bầu active controller |
+| `kafka.server:type=broker-metadata-metrics` | Last Applied Record Lag Ms | Broker chậm áp dụng metadata bao lâu |
+| `kafka.server:type=broker-metadata-metrics` | Metadata Load/Apply Error Count | Lỗi load/apply metadata |
+
+Hai metric High Watermark/Log End Offset trong `raft-metrics` nói về metadata partition của controller quorum. Không dùng chúng thay cho HWM/LEO hoặc lag của các topic-partition dữ liệu.
+Exporter có thể chuẩn hóa tên attribute thành format khác; đối chiếu MBean thực tế của đúng Kafka/JMX exporter version trước khi viết alert rule.
 
 Alert cần phân biệt maintenance dự kiến với sự cố kéo dài. Một URP trong vài giây khi rolling restart khác hoàn toàn hàng nghìn URP tăng dần do disk/network saturation; ghép metric với ISR size, broker health, disk latency, network và reassignment state.
 
@@ -401,7 +451,7 @@ RF=3 + min.insync.replicas=3:
 replica.lag.time.max.ms:
   Low (10s):  ISR shrinks/expands more aggressively (GC pauses cause false shrinks)
   High (60s): tolerates slow followers, but lag detection slower
-  → Default thay đổi theo client/broker line; tune sau khi đo GC/disk/network và recovery objective
+  → Kafka 4.3 mặc định 30s; tune sau khi đo GC/disk/network và recovery objective
 
 Leader election speed:
   Phụ thuộc heartbeat/session timeout, controller quorum, partition count và client metadata refresh
@@ -439,11 +489,12 @@ MirrorMaker2 (disaster recovery, multi-datacenter):
 
 ### Tài liệu Apache Kafka chính thức
 
-- [Kafka replication design](https://kafka.apache.org/41/design/design/#replication)
-- [KRaft operations](https://kafka.apache.org/41/operations/kraft/)
-- [Eligible Leader Replicas](https://kafka.apache.org/41/operations/eligible-leader-replicas/)
+- [Kafka 4.3 replication design](https://kafka.apache.org/43/design/design/#replication)
+- [Kafka 4.3 broker configs](https://kafka.apache.org/43/configuration/broker-configs/)
+- [Kafka 4.3 monitoring](https://kafka.apache.org/43/operations/monitoring/)
+- [Eligible Leader Replicas](https://kafka.apache.org/43/operations/eligible-leader-replicas/)
 - [KIP-392: fetch from closest replica](https://cwiki.apache.org/confluence/spaces/KAFKA/pages/95653762/KIP-392%2BAllow%2Bconsumers%2Bto%2Bfetch%2Bfrom%2Bclosest%2Breplica)
 
 ---
 
-*Cập nhật lần cuối: 2026-07-22*
+*Cập nhật lần cuối: 2026-07-27*
