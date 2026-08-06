@@ -609,9 +609,11 @@ argocd app list -p production -o name | xargs -I{} argocd app sync {}
 argocd app logs myapp-production --follow
 ```
 
-### Ghi chú – Chủ đề tiếp theo
-> Autoscaling Deep – VPA admission controller, Cluster Autoscaler, Karpenter NodePool provisioning
+### Học tiếp
+
+1. [Platform Engineering Security](../../security/platform/platform_engineering_security.md) – GitOps controller trust, renderer isolation, self-service authorization, fleet rollout và policy ownership.
+2. [Container & Kubernetes Runtime Security](../../security/runtime/container_kubernetes_runtime_security.md) – admission, workload isolation, node boundary và runtime response.
 
 ---
 
-*Cập nhật lần cuối: 2026-05-06*
+*Cập nhật lần cuối: 2026-08-02.*

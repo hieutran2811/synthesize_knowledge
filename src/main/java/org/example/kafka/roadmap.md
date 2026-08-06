@@ -22,12 +22,19 @@
 | 11 | Event-Driven Architecture & Data Modeling (Kafka-native) – topic design/naming, **partition & key strategy** (ordering/throughput/hot partition), event design (notification/state-transfer/sourcing), delivery semantics + **idempotent consumer**, patterns (CQRS/Outbox/Saga/DLQ-retry topics/compacted table), anti-patterns | `patterns/event_driven_architecture.md` | ✅ |
 | 12 | Cluster Operations Advanced (Day-2) – reassignment/dual throttle, broker cordon/drain, dynamic KRaft quorum, Cruise Control, client quota, rack-aware fetching, 4.3 rolling upgrade/finalization, recovery capacity & multi-cluster | `operations/cluster_operations.md` | ✅ |
 
+### Observability chuyên sâu
+
+| # | Topic | File | Status |
+|---|-------|------|--------|
+| 13 | Messaging & Kafka Observability – producer/broker/consumer signals, lag theo thời gian, end-to-end freshness, tracing, retry/DLQ và incident workflow | [`messaging_kafka_observability.md`](../prometheus_grafana/observability/messaging_kafka_observability.md) | ✅ |
+
 ## Learning Path
 
 ```
 Cơ bản:   architecture → producers → consumers
 Trung cấp: storage → replication → connect → schema_registry
 Nâng cao:  kafka_streams → ksqldb → event_driven_architecture → production → cluster_operations
+Vận hành:  cluster_operations → messaging_kafka_observability
 ```
 
-*Hoàn thành nền tảng (1–8): 2026-05-06; bổ sung (9–12): 2026-06-04; rà soát Storage, Replication, Streams, Connect, Production & Cluster Operations: 2026-07-27*
+*Hoàn thành nền tảng (1–8): 2026-05-06; bổ sung (9–12): 2026-06-04; rà soát Storage, Replication, Streams, Connect, Production & Cluster Operations: 2026-07-27; bổ sung Observability: 2026-07-30*

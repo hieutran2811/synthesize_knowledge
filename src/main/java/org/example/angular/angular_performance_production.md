@@ -678,7 +678,7 @@ describe('User Management', () => {
 ### Observability
 - [ ] Error tracking (Sentry, Datadog)
 - [ ] Analytics events on key interactions
-- [ ] Performance monitoring (Core Web Vitals — LCP, FID, CLS)
+- [ ] Performance monitoring (Core Web Vitals hiện hành — LCP, INP, CLS)
 - [ ] Angular error handler override (ErrorHandler)
 ```
 
@@ -687,4 +687,5 @@ describe('User Management', () => {
 ## Ghi chú – Topics tiếp theo
 
 - **Security**: XSS, CSRF, Auth interceptor → `angular_security_best_practices.md`
+- **Observability chuyên sâu**: [Frontend & Real User Monitoring](../prometheus_grafana/observability/frontend_rum_observability.md)
 - **Keywords**: APP_INITIALIZER, APP_BOOTSTRAP_LISTENER, ApplicationInitStatus, NgZone.runOutsideAngular(), ChangeDetectorRef.detach/reattach, NgZone.onMicrotaskEmpty, Profiler API (Angular DevTools), ApplicationRef.tick(), TransferState, makeStateKey, PLATFORM_ID, isPlatformBrowser/Server, prerender discoverRoutes, provideServiceWorker, SwUpdate, ServiceWorkerModule, withDebugTracing (router), enableDebugTools

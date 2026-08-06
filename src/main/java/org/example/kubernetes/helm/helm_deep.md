@@ -618,9 +618,11 @@ helm get values myapp -n production
 helm get manifest myapp -n production
 ```
 
-### Ghi chú – Chủ đề tiếp theo
-> ArgoCD & GitOps Deep – ApplicationSet generators, multi-cluster management, Flux comparison, image updater
+### Học tiếp
+
+1. [Argo CD & GitOps Deep Dive](../gitops/argocd_gitops.md) – reconciliation, ApplicationSet, multi-cluster và promotion.
+2. [Platform Engineering Security](../../security/platform/platform_engineering_security.md) – quản trị chart/template như supply chain, guardrail và golden path có lifecycle.
 
 ---
 
-*Cập nhật lần cuối: 2026-05-06*
+*Cập nhật lần cuối: 2026-08-02.*

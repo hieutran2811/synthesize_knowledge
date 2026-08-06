@@ -4,8 +4,8 @@
 > từ kernel tới observability backend như thế nào, đánh giá privilege/overhead và vận
 > hành eBPF an toàn trong production.
 >
-> Baseline tham chiếu ngày 2026-07-29: tài liệu Linux eBPF hiện hành,
-> **bpftrace 0.24**, **Cilium/Hubble 1.19.6** và
+> Baseline tham chiếu ngày 2026-07-30: tài liệu Linux eBPF hiện hành,
+> **bpftrace 0.24**, **Cilium/Hubble 1.20** và
 > **OpenTelemetry eBPF Instrumentation – OBI 0.10**.
 >
 > Bài này không thay thế kiến thức Linux performance, Kubernetes networking hoặc
@@ -1952,7 +1952,7 @@ Không rollout DaemonSet privileged toàn cluster chỉ vì lab một node chạ
 
 ### Cilium, Hubble và OpenTelemetry
 
-- [Cilium 1.19 network observability với Hubble](https://docs.cilium.io/en/stable/observability/hubble/)
+- [Cilium network observability với Hubble](https://docs.cilium.io/en/stable/observability/hubble/)
 - [Hubble internals](https://docs.cilium.io/en/stable/internals/hubble/)
 - [Cilium L7 protocol visibility và redaction](https://docs.cilium.io/en/stable/observability/visibility/)
 - [OpenTelemetry eBPF Instrumentation – OBI](https://opentelemetry.io/docs/zero-code/obi/)

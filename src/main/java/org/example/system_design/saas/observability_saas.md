@@ -1,5 +1,12 @@
 # SaaS Observability – Giám sát hệ thống SaaS đa thuê bao
 
+> **Lưu ý production:** các ví dụ gắn trực tiếp `tenant_id` hoặc `user_id` vào Prometheus
+> label/MDC trong bài này chỉ minh họa nhu cầu tenant context; không áp dụng nguyên xi khi tập
+> giá trị lớn hoặc dữ liệu nhạy cảm. Hãy ưu tiên metric aggregate theo dimension bounded,
+> trace/log/event được phân quyền, heavy-hitter và diagnostic có TTL. Xem
+> [Multi-Tenant & SaaS Observability](../../prometheus_grafana/observability/multi_tenant_saas_observability.md)
+> để thiết kế cardinality, isolation, privacy và access control cho production.
+
 ## What – SaaS Observability là gì?
 
 **SaaS Observability** là khả năng hiểu **trạng thái nội tại** của hệ thống từ các tín hiệu bên ngoài (metrics, logs, traces), với context đặc thù của SaaS: **per-tenant visibility, cost attribution, và business metrics**.

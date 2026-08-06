@@ -584,9 +584,11 @@ conftest test --policy policy/ ./infra/main.tf
 # - False positive rate per scanner
 ```
 
-### Ghi chú – Chủ đề tiếp theo
-> CTF Techniques – Web CTF (SQLi/XSS/SSRF/deserialization challenges), Crypto CTF (classical + modern), Forensics CTF (steganography, memory, network), Pwn cơ bản (Buffer Overflow, ret2win)
+### Học tiếp
+
+1. [Software Supply Chain Security](../supply_chain/software_supply_chain_security.md) – dependency policy, build isolation, SLSA provenance, signing, SBOM/VEX và admission verification.
+2. [Threat Modeling & Secure Architecture](../architecture/threat_modeling_secure_architecture.md) – xác định asset, trust boundary, abuse case và security requirement có thể kiểm chứng.
 
 ---
 
-*Cập nhật lần cuối: 2026-05-06*
+*Cập nhật lần cuối: 2026-08-02.*

@@ -1828,9 +1828,10 @@ Object storage console không phải công cụ sửa TSDB thông thường.
 
 Sau Grafana Mimir, chủ đề mở rộng tiếp theo là:
 
-> **Telemetry Governance & FinOps – ownership, data contracts, cardinality budgets,
-> retention, chargeback/showback, privacy và cost controls cho observability.**
+> [**Telemetry Governance & FinOps – ownership, data contracts, cardinality budgets,
+> retention, chargeback/showback, privacy và cost controls cho
+> observability.**](telemetry_governance_finops.md)
 
 ---
 
-*Cập nhật lần cuối: 2026-07-29*
+*Cập nhật lần cuối: 2026-07-30*

@@ -1,353 +1,811 @@
-# Distributed Transactions – Giao dịch phân tán
+# Distributed Transactions – giữ đúng dữ liệu qua nhiều ranh giới
 
-## What – Vấn đề của Distributed Transactions?
-
-Trong microservices, một business operation span qua **nhiều services với nhiều databases**. Cần đảm bảo: **tất cả hoàn thành** hoặc **tất cả rollback**.
-
-```
-Ví dụ: Đặt hàng
-1. Order Service: Tạo order → Orders DB
-2. Inventory Service: Trừ tồn kho → Inventory DB
-3. Payment Service: Charge thẻ → Payment DB
-4. Notification Service: Gửi email
-
-Nếu bước 3 fail sau khi bước 1+2 đã success?
-→ Inconsistent state: có order, không có tiền, tồn kho bị trừ
-```
+> Transaction phân tán không chỉ là bài toán “commit hay rollback”. Khi network có
+> thể mất phản hồi, service có thể crash và tác động ngoài không thể đảo ngược,
+> mục tiêu thực tế là đưa workflow tới một **trạng thái nghiệp vụ hợp lệ, có thể
+> giải thích và phục hồi**.
 
 ---
 
-## Two-Phase Commit (2PC)
+## 1. Bài toán thật: invariant vượt qua nhiều service
 
-### How
-Giao thức cổ điển để đảm bảo distributed consistency.
+Ví dụ checkout:
 
-**Phase 1: Prepare (Voting)**
-```
-Coordinator → "Prepare?"
-                ↓
-Service A: lock resources → "Ready" ✅
-Service B: lock resources → "Ready" ✅
-Service C: lock resources → "Ready" ✅
+```text
+Order DB      : tạo đơn
+Inventory DB  : giữ hàng
+Payment API   : thu tiền
+Shipping DB   : tạo vận đơn
 ```
 
-**Phase 2: Commit (hoặc Rollback)**
+Các invariant cần bảo vệ:
+
+- order chỉ `CONFIRMED` khi đã giữ hàng và thu tiền;
+- một order không bị thu tiền hai lần;
+- một đơn bị hủy không giữ tồn kho mãi;
+- mọi trạng thái “không biết kết quả” phải được đối soát.
+
+Trong một database, ACID transaction có thể bảo vệ invariant. Qua nhiều database,
+broker hoặc API bên ngoài, không có transaction local nào bao phủ toàn bộ.
+
+```text
+BEGIN
+  INSERT order       ✅
+  reserve inventory  ✅ ở service khác
+  charge provider    ? mất response
+COMMIT/ROLLBACK nào có thể đảo ngược cả ba?
 ```
-If all Ready:
-Coordinator → "Commit!"
-  Service A → Commit ✅
-  Service B → Commit ✅
-  Service C → Commit ✅
 
-If any Abort:
-Coordinator → "Rollback!"
-  Service A → Rollback
-  Service B → Rollback
-  Service C → Rollback
-```
-
-### Vấn đề với 2PC
-| Issue | Description |
-|-------|-------------|
-| **Blocking Protocol** | Resources bị lock trong cả 2 phases → latency tăng |
-| **Coordinator SPOF** | Coordinator crash giữa phase 2 → participants bị block mãi |
-| **Availability** | Nếu 1 participant down → toàn transaction fail |
-| **Scale** | Không phù hợp microservices (cross-DB, cross-team) |
-
-**2PC phù hợp khi:** Same database technology, single organization, không cần high availability (e.g., monolith với distributed DB).
+Đây là bài toán **coordination + failure recovery**, không chỉ là cú pháp transaction.
 
 ---
 
-## SAGA Pattern
+## 2. Câu hỏi đầu tiên: có thể tránh transaction phân tán không?
 
-**SAGA** chia transaction lớn thành nhiều **local transactions nhỏ**, mỗi local transaction publish event/message trigger next step. Nếu fail → chạy **compensating transactions** (rollback logic).
+Trước khi chọn 2PC hay Saga:
 
-```
-T1 (Order Service)    → [order.created]
-T2 (Inventory Svc)   → [inventory.reserved]
-T3 (Payment Svc)     → [payment.processed]
-T4 (Notification Svc) → [email.sent]
+1. Có thể đặt các dữ liệu cần atomic vào cùng aggregate/service không?
+2. Có thể đổi invariant mạnh thành reservation có thời hạn không?
+3. Có thể xử lý một bước sau theo asynchronous workflow không?
+4. Có thể dùng một source of truth rồi phát read model không?
+5. Có thể chấp nhận trạng thái trung gian hiển thị rõ cho người dùng không?
 
-Nếu T3 fail:
-C3 (skip, payment not done)
-C2 (Inventory Svc): release reservation
-C1 (Order Service): cancel order
-```
+```text
+❌ Order Service và OrderLine Service tách DB
+   nhưng mọi thay đổi order luôn cần atomic với order line
 
-### SAGA Choreography (Event-based)
-
-Mỗi service lắng nghe events, tự biết làm gì và publish event tiếp theo.
-
-```
-OrderSvc           InventorySvc       PaymentSvc          NotifSvc
-    │                   │                  │                  │
-    │ Create Order       │                  │                  │
-    │─────────────────→[order.created]      │                  │
-    │                   │                  │                  │
-    │              Reserve Stock            │                  │
-    │                   │──[inventory.reserved]────────────────→
-    │                   │                  │                  │
-    │                   │             Charge Card             │
-    │                   │                  │──[payment.done]─→│
-    │                   │                  │
-    ←────────────[order.confirmed]──────────
+✅ Cùng Order aggregate/service
+   transaction local bảo vệ invariant
 ```
 
-**Compensation flow (if payment fails):**
-```
-PaymentSvc: charge fail → publish [payment.failed]
-InventorySvc: on [payment.failed] → release reservation → publish [inventory.released]
-OrderSvc: on [inventory.released] → cancel order
-```
-
-### SAGA Orchestration (Orchestrator-based)
-
-```java
-@Saga
-public class OrderSaga {
-    private String orderId;
-    
-    @StartSaga
-    @SagaEventHandler(associationProperty = "orderId")
-    public void on(OrderCreatedEvent event) {
-        this.orderId = event.getOrderId();
-        
-        // Send command to Inventory
-        commandGateway.send(new ReserveInventoryCommand(
-            event.getOrderId(), event.getItems()
-        ));
-    }
-    
-    @SagaEventHandler(associationProperty = "orderId")
-    public void on(InventoryReservedEvent event) {
-        // Inventory OK → charge payment
-        commandGateway.send(new ProcessPaymentCommand(
-            event.getOrderId(), event.getAmount()
-        ));
-    }
-    
-    @SagaEventHandler(associationProperty = "orderId")
-    public void on(PaymentProcessedEvent event) {
-        // All done → confirm order
-        commandGateway.send(new ConfirmOrderCommand(orderId));
-        SagaLifecycle.end();
-    }
-    
-    // Compensation
-    @SagaEventHandler(associationProperty = "orderId")
-    public void on(PaymentFailedEvent event) {
-        // Rollback: release inventory
-        commandGateway.send(new ReleaseInventoryCommand(orderId));
-    }
-    
-    @SagaEventHandler(associationProperty = "orderId")
-    public void on(InventoryReleasedEvent event) {
-        // Rollback complete: cancel order
-        commandGateway.send(new CancelOrderCommand(orderId));
-        SagaLifecycle.end();
-    }
-}
-```
+Transaction local là primitive dễ hiểu và mạnh nhất. Đừng dùng pattern phân tán để
+che một service boundary sai.
 
 ---
 
-## Idempotency – Xử lý duplicate messages
+## 3. “Unknown outcome” – trạng thái nguy hiểm nhất
 
-Trong distributed systems, messages có thể được delivered **nhiều lần** (at-least-once delivery). Consumer phải idempotent.
+Timeout không có nghĩa thao tác thất bại:
 
-### Why duplicate messages xảy ra?
-```
-Producer → send msg → Kafka (stored)
-           → crash trước khi nhận ack
-Producer → retry → send msg again → Kafka (duplicate)
-```
+```text
+Payment Service ──charge──▶ Provider
+                ◀── response bị mất
 
-### Idempotency Key
-
-```java
-@Transactional
-public void processPayment(PaymentCommand cmd) {
-    String idempotencyKey = cmd.getIdempotencyKey(); // UUID từ producer
-    
-    // Check if already processed
-    if (processedPaymentRepo.existsByKey(idempotencyKey)) {
-        log.info("Payment {} already processed, skipping", idempotencyKey);
-        return; // Idempotent: same result, no duplicate charge
-    }
-    
-    // Process payment
-    Payment payment = stripeService.charge(cmd.getAmount(), cmd.getCardToken());
-    
-    // Record as processed (same transaction)
-    processedPaymentRepo.save(new ProcessedPayment(idempotencyKey, payment.getId()));
-}
+Payment Service thấy timeout
+Provider có thể đã charge thành công
 ```
 
-### Idempotency trong Kafka (Exactly-once)
+Ba kết quả quan trọng:
 
-```java
-// Producer: enable idempotence
-props.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true);
-props.put(ProducerConfig.ACKS_CONFIG, "all");
+| Kết quả | Ý nghĩa |
+|---|---|
+| Success | Biết chắc tác động đã hoàn tất |
+| Failure | Biết chắc tác động không xảy ra |
+| Unknown | Không biết tác động có xảy ra hay không |
 
-// Consumer: transactional processing
-@KafkaListener(topics = "orders")
-@Transactional("kafkaTransactionManager")
-public void processOrder(OrderEvent event) {
-    // DB update + Kafka ack trong cùng 1 transaction
-    orderRepo.save(mapToOrder(event));
-    // If this fails → Kafka offset NOT committed → retry
-}
-```
+Retry mù trong trạng thái `UNKNOWN` có thể thu tiền hai lần. Cần idempotency key,
+query trạng thái theo business reference và reconciliation.
 
 ---
 
-## Outbox Pattern (Anti-dual-write)
+## 4. Phổ giải pháp
 
-Đã mô tả trong `event_driven_architecture.md`. Tóm tắt:
+| Cơ chế | Consistency | Availability | Độ phức tạp | Dùng khi |
+|---|---|---|---|---|
+| Một local transaction | Mạnh | Cao trong một DB | Thấp | Cùng boundary |
+| Optimistic concurrency | Mạnh theo record/version | Cao | Thấp–vừa | Xung đột đồng thời |
+| 2PC/XA | Atomic commit | Phụ thuộc mọi participant | Cao | Resource hỗ trợ, phạm vi kiểm soát |
+| Saga | Eventual, business-level | Cao hơn 2PC | Cao | Workflow dài, có compensation |
+| TCC/reservation | Eventual có giữ tài nguyên | Vừa | Cao | Booking, inventory, quota |
+| Outbox + idempotent consumer | Reliable message handoff | Cao | Vừa | DB + broker |
+| Reconciliation | Hội tụ sau sai lệch | Cao | Vừa | External side effect/payment |
 
-```
-@Transactional
-public void createOrder(OrderRequest req) {
-    Order order = orderRepo.save(new Order(req)); // DB write
-    outboxRepo.save(new OutboxEvent("order.created", order)); // Same TX
-}
-// Outbox publisher (async): reads outbox → publishes to Kafka
-```
-
----
-
-## Try-Confirm/Cancel (TCC)
-
-Variant của 2PC nhưng không blocking:
-
-**Try phase:** Reserve resources (soft lock, không commit)
-**Confirm phase:** Commit all reserved resources
-**Cancel phase:** Release all reserved resources
-
-```
-Try:
-  Order Service: create order (status=PENDING)
-  Inventory: reserve stock (status=RESERVED)
-  Payment: hold funds (status=HELD)
-
-Confirm (if all Try succeeded):
-  Order Service: confirm order (status=CONFIRMED)
-  Inventory: deduct stock (status=DEDUCTED)
-  Payment: capture charge (status=CAPTURED)
-
-Cancel (if any Try failed):
-  Order Service: cancel order
-  Inventory: release reservation
-  Payment: release hold
-```
-
-**Dùng khi:** Cần performance tốt hơn 2PC, nhưng cần eventually consistent (hotel booking, ticket reservation).
+Không có pattern nào miễn phí. Quyết định phải bắt đầu từ invariant, thời gian cho
+phép bất nhất và khả năng bù.
 
 ---
 
-## Comparison
+## 5. Two-Phase Commit (2PC)
 
-| | 2PC | SAGA | TCC |
-|--|-----|------|-----|
-| **Consistency** | Strong | Eventual | Eventual |
-| **Availability** | Low | High | High |
-| **Performance** | Slow | Fast | Medium |
-| **Complexity** | Medium | High | High |
-| **Lock duration** | Long | None (compensate) | Short (Try) |
-| **Rollback** | Automatic | Manual (compensation) | Cancel phase |
-| **Best for** | Same DB, monolith | Microservices | High-performance |
+### 5.1 Giao thức
+
+```text
+Phase 1 – PREPARE
+Coordinator ─prepare(tx-7)─▶ DB A: ghi log, giữ lock, vote YES
+            ─prepare(tx-7)─▶ DB B: ghi log, giữ lock, vote YES
+
+Phase 2 – DECIDE
+Nếu tất cả YES:
+Coordinator ghi COMMIT decision bền vững
+            ─commit(tx-7)──▶ DB A
+            ─commit(tx-7)──▶ DB B
+Nếu có NO: gửi ROLLBACK
+```
+
+Sau khi participant vote `YES`, nó đã hứa có thể commit và thường phải giữ lock/
+resource cho tới khi biết quyết định cuối. Nếu mất liên lạc với coordinator, nó ở
+trạng thái **in-doubt**, không được tự ý rollback nếu coordinator đã quyết commit.
+
+### 5.2 Điều 2PC bảo đảm và không bảo đảm
+
+2PC cung cấp atomic commit khi transaction manager và participants triển khai đúng,
+log quyết định bền vững và recovery hoàn tất. Nó không:
+
+- làm dependency luôn available;
+- bao phủ email hoặc API không hỗ trợ prepare/commit;
+- loại bỏ lock contention;
+- tự giải quyết transaction bị bỏ quên;
+- biến workflow dài thành lựa chọn tốt.
+
+### 5.3 Failure modes
+
+| Sự cố | Hậu quả |
+|---|---|
+| Participant không vote | Toàn transaction không thể commit |
+| Coordinator mất sau prepare | Participant giữ prepared state/lock chờ recovery |
+| Network partition | Availability giảm vì không thể biết quyết định |
+| Transaction kéo dài | Lock, MVCC garbage, pool và throughput bị ảnh hưởng |
+| Operator xóa sai prepared transaction | Phá atomicity toàn cục |
+
+PostgreSQL cảnh báo prepared transaction giữ lock và cản trở `VACUUM`; tính năng
+này dành cho external transaction manager, không nên gọi trực tiếp từ business code.
+
+### 5.4 Khi 2PC hợp lý
+
+- mọi resource thực sự hỗ trợ XA/prepare;
+- transaction ngắn;
+- cùng một tổ chức quản lý participant và transaction manager;
+- atomicity mạnh quan trọng hơn availability;
+- có monitoring/recovery cho transaction `PREPARED`.
+
+2PC không “xấu”; nó là đánh đổi coordination mạnh. Nhưng trong microservices đa
+database, cloud API và workflow dài, điều kiện trên thường không tồn tại.
 
 ---
 
-## Distributed Transaction Anti-patterns
+## 6. Saga: transaction ở mức nghiệp vụ
 
-### 1. Distributed Monolith
-```
-❌ Service A → BEGIN DISTRIBUTED TX
-             → Call Service B (HTTP trong TX)
-             → Call Service C (HTTP trong TX)
-             → COMMIT
-```
-Tạo tight coupling, distributed locking nightmare.
+Saga chia workflow thành local transaction:
 
-### 2. Cross-service Queries trong Transaction
-```
-❌ OrderService.createOrder():
-   inventoryService.checkStock(itemId); // HTTP call IN transaction
-   paymentService.checkBalance(userId); // HTTP call IN transaction
-   orderRepo.save(order);               // DB write
+```text
+T1 CreateOrder
+ → T2 ReserveInventory
+   → T3 CapturePayment
+     → T4 ConfirmOrder
 ```
 
-**Fix:** Validate trước transaction, hoặc dùng eventual consistency.
+Nếu T3 thất bại:
 
-### 3. Long-running Transactions
-Transaction giữ lock quá lâu → block khác → deadlock risk.
+```text
+C2 ReleaseInventory
+ → C1 CancelOrder
+```
 
-**Fix:** SAGA, break into small local transactions.
+Saga không khôi phục database về đúng byte như trước. Compensation tạo một trạng
+thái nghiệp vụ mới: payment được `REFUNDED`, order được `CANCELLED`; lịch sử vẫn còn.
 
 ---
 
-## Real-world Production
+## 7. Ba loại bước trong Saga
 
-### Stripe (Payment Idempotency)
-```
-POST /v1/charges
-Idempotency-Key: {client_generated_uuid}
-→ Same key = same result (không charge 2 lần)
-→ Stripe store results per idempotency key 24h
-```
+| Loại | Ý nghĩa | Ví dụ |
+|---|---|---|
+| **Compensable** | Có hành động bù hợp lệ | Reserve → Release |
+| **Pivot** | Điểm không thể/không nên quay lại | Vé đã phát hành, hàng đã bàn giao |
+| **Retryable** | Sau pivot phải tiến tới thành công | Ghi ledger nội bộ, gửi trạng thái |
 
-### Axon Framework (Java SAGA)
-```java
-@Saga
-public class PaymentSaga {
-    @Autowired
-    private transient CommandGateway commandGateway;
-    
-    @StartSaga
-    @SagaEventHandler(associationProperty = "paymentId")
-    public void on(PaymentInitiatedEvent event) {
-        commandGateway.send(new AuthorizeCardCommand(event.getCardToken()));
-    }
-}
-```
+Thiết kế thường đặt bước compensable trước, pivot càng muộn càng tốt, rồi các bước
+retryable sau pivot.
 
-### Uber (Cadence/Temporal Workflow)
-- **Temporal:** Durable workflow engine cho distributed transactions
-- Workflows persist state, auto-retry, handle failures
-- Alternative to SAGA manual implementation
-
-```java
-// Temporal Workflow
-@WorkflowInterface
-public interface OrderWorkflow {
-    @WorkflowMethod
-    void processOrder(OrderRequest request);
-}
-
-public class OrderWorkflowImpl implements OrderWorkflow {
-    private final InventoryActivity inventory = newActivityStub(InventoryActivity.class);
-    private final PaymentActivity payment = newActivityStub(PaymentActivity.class);
-    
-    @Override
-    public void processOrder(OrderRequest request) {
-        inventory.reserve(request.getItems());  // auto-retry on failure
-        try {
-            payment.charge(request.getAmount());
-        } catch (Exception e) {
-            inventory.release(request.getItems()); // compensation
-            throw e;
-        }
-    }
-}
-```
+Email, SMS, notification không thực sự rollback được. Nếu gửi sớm rồi workflow
+thất bại, cần gửi thông báo sửa sai chứ không thể “unsend”.
 
 ---
 
-## Ghi chú
+## 8. Saga không có isolation như ACID
 
-**Sub-topic tiếp theo:**
-- `api_design.md` – REST, gRPC, API versioning strategies
-- `saas/multi_tenancy.md` – Multi-tenant transactions và isolation
-- **Keywords:** Compensating transaction, Pivot transaction, Semantic lock, Countermeasures (SAGA), Business transaction, Long-running process (LRP), Temporal (Cadence), Exactly-once semantics, Optimistic locking, Pessimistic locking, Distributed lock (Redis Redlock)
+Hai Saga có thể thấy state trung gian của nhau:
+
+```text
+Saga A reserve 7/10 sản phẩm
+Saga B đọc còn 3 và bị từ chối
+Saga A sau đó payment fail rồi release 7
+```
+
+Các anomaly:
+
+- lost update;
+- dirty/stale read;
+- non-repeatable read;
+- write skew;
+- overselling do check-then-act.
+
+Biện pháp:
+
+- optimistic version/compare-and-set;
+- semantic lock: trạng thái `PENDING`, `RESERVED`;
+- reservation có TTL;
+- commutative update như `available >= quantity`;
+- single-writer theo aggregate key;
+- reread trước pivot;
+- escrow/quota partitioning.
+
+Saga bảo vệ **atomicity nghiệp vụ theo thời gian**, không tự cung cấp isolation.
+
+---
+
+## 9. Choreography hay orchestration
+
+### 9.1 Choreography
+
+```text
+OrderPlaced
+  → InventoryReserved
+    → PaymentCaptured
+      → OrderConfirmed
+```
+
+Ưu: không có coordinator riêng, subscriber độc lập. Nhược: flow nằm rải trong
+nhiều service, khó thấy timeout/compensation và dễ tạo event cycle.
+
+Phù hợp workflow ngắn, ít nhánh và mỗi reaction có ý nghĩa domain tự nhiên.
+
+### 9.2 Orchestration
+
+```text
+CheckoutWorkflow
+  ├─ ReserveInventory command
+  ├─ CapturePayment command
+  ├─ ConfirmOrder command
+  └─ khi lỗi: Refund / Release / Cancel
+```
+
+Orchestrator lưu durable state và quyết định bước tiếp theo. Nó không nên thực hiện
+thay domain logic của participant.
+
+Phù hợp workflow nhiều bước, timeout, parallel branch, compensation hoặc manual
+approval. Orchestrator phải chạy HA và state phải phục hồi được; một object trong
+memory không phải workflow engine.
+
+Đọc [Event-Driven Architecture](event_driven_architecture.md) mục 13–14 để so sánh
+chi tiết.
+
+---
+
+## 10. State machine bền vững
+
+Không biểu diễn Saga bằng chuỗi callback không lưu trạng thái. Dùng state machine:
+
+```text
+CREATED
+  → INVENTORY_PENDING
+      → PAYMENT_PENDING
+          → CONFIRMED
+          → PAYMENT_UNKNOWN
+      → RELEASING
+  → CANCELLED
+  → MANUAL_REVIEW
+```
+
+Mỗi transition cần:
+
+- `workflow_id`/business key ổn định;
+- current state + version;
+- command/event ID;
+- deadline và retry count;
+- kết quả/exception đã chuẩn hóa;
+- audit lịch sử transition;
+- expected-version để một state chỉ chuyển một lần.
+
+```sql
+UPDATE checkout_workflow
+SET state = 'PAYMENT_PENDING', version = version + 1
+WHERE id = :id
+  AND state = 'INVENTORY_RESERVED'
+  AND version = :expected_version;
+```
+
+`updated_rows = 0` nghĩa là command trùng hoặc state đã thay đổi; không được tiếp
+tục mù.
+
+---
+
+## 11. Thiết kế compensation
+
+Một compensation tốt:
+
+- idempotent;
+- có business key liên kết forward action;
+- xử lý được forward action có kết quả `UNKNOWN`;
+- không phụ thuộc payload tạm trong memory;
+- có retry riêng và timeout;
+- có đường manual recovery;
+- ghi audit, không xóa lịch sử gốc.
+
+```text
+Forward: CapturePayment(orderId, paymentAttemptId)
+Compensation: RefundPayment(paymentAttemptId, refundId)
+```
+
+Không dùng `RefundPayment(orderId)` nếu một order có thể có nhiều payment attempt;
+compensation phải trỏ đúng tác động đã xảy ra.
+
+Một số compensation có thể thất bại vĩnh viễn, ví dụ provider từ chối refund.
+Workflow phải chuyển `REFUND_FAILED`/`MANUAL_REVIEW`, không giả vờ rollback xong.
+
+---
+
+## 12. Idempotency đúng cách
+
+### 12.1 Idempotency key là hợp đồng
+
+Client tạo key cho **một ý định nghiệp vụ**:
+
+```http
+POST /payments
+Idempotency-Key: checkout-ord-123-capture-v1
+```
+
+Server lưu:
+
+```text
+(scope, key) → request_hash, state, status_code, response, expires_at
+```
+
+Quy tắc:
+
+- cùng key + cùng request → trả kết quả cũ hoặc trạng thái đang xử lý;
+- cùng key + payload khác → `409 Conflict`;
+- insert key và business mutation phải atomic khi cùng DB;
+- key có scope theo tenant/operation;
+- TTL dài hơn retry window và thời gian client có thể reconnect;
+- lưu cả kết quả thành công lẫn outcome cần replay theo policy.
+
+### 12.2 Tránh race `exists → execute → insert`
+
+```text
+Worker A: exists? no ─┐
+Worker B: exists? no ─┼─▶ cả hai charge
+```
+
+Dùng unique constraint và state machine:
+
+```sql
+INSERT INTO idempotency_record(scope, key, request_hash, state)
+VALUES ('payment', :key, :hash, 'PROCESSING')
+ON CONFLICT DO NOTHING;
+```
+
+Chỉ owner của record mới thực hiện. Nếu process crash ở `PROCESSING`, cần lease,
+fencing/version hoặc recovery query — không tự động coi là chưa chạy.
+
+### 12.3 Idempotent business update
+
+```sql
+UPDATE inventory
+SET reserved = reserved + :qty
+WHERE sku = :sku
+  AND available - reserved >= :qty
+  AND NOT EXISTS (
+    SELECT 1 FROM reservation WHERE reservation_id = :reservation_id
+  );
+```
+
+Thực tế nên thêm reservation và update stock trong cùng local transaction với
+unique `reservation_id`.
+
+---
+
+## 13. Transactional Outbox
+
+Outbox giải dual-write giữa database và broker:
+
+```sql
+BEGIN;
+
+INSERT INTO orders(id, status) VALUES (:id, 'PLACED');
+INSERT INTO outbox(event_id, aggregate_id, type, payload)
+VALUES (:event_id, :id, 'OrderPlaced', :payload);
+
+COMMIT;
+```
+
+Relay:
+
+```text
+orders + outbox ─same DB transaction─▶ polling relay hoặc CDC
+                                         │
+                                         ▼
+                                       broker
+```
+
+Outbox bảo đảm: nếu business transaction commit thì **ý định publish** cũng tồn tại.
+Nó không bảo đảm broker chỉ nhận đúng một lần:
+
+```text
+publish thành công → relay crash trước mark-published → publish lại
+```
+
+Consumer vẫn phải idempotent.
+
+Theo dõi:
+
+- tuổi record outbox chưa publish lâu nhất;
+- publish error/retry;
+- kích thước bảng và cleanup;
+- ordering theo aggregate;
+- schema serialization failure;
+- relay ownership/partitioning.
+
+---
+
+## 14. Inbox và atomic consume
+
+Consumer lưu message ID và business update trong cùng transaction:
+
+```sql
+BEGIN;
+
+WITH accepted AS (
+  INSERT INTO inbox(consumer, event_id)
+  VALUES ('order-projector', :event_id)
+  ON CONFLICT DO NOTHING
+  RETURNING 1
+)
+UPDATE order_view
+SET status = :status, version = :event_version
+WHERE order_id = :order_id
+  AND EXISTS (SELECT 1 FROM accepted);
+
+COMMIT;
+```
+
+Sau commit mới ack/commit offset. Nếu crash trước ack, broker giao lại nhưng unique
+key ngăn side effect lần hai.
+
+Inbox không giải tác động ngoài database. Với email/payment API, truyền idempotency
+key xuống provider hoặc lưu state + reconciliation.
+
+---
+
+## 15. CDC-based Outbox
+
+Change Data Capture đọc database log/WAL thay vì polling table trực tiếp:
+
+```text
+DB transaction → WAL/binlog → CDC connector → broker
+```
+
+Ưu:
+
+- ít polling query;
+- gần realtime;
+- thứ tự commit rõ hơn trong một log.
+
+Đánh đổi:
+
+- vận hành connector và schema mapping;
+- snapshot/restart/offset;
+- quyền đọc transaction log;
+- DDL/schema evolution;
+- vẫn có duplicate end-to-end.
+
+Đừng publish raw database row như public domain event. Dùng Outbox record có
+contract rõ để không rò schema lưu trữ.
+
+---
+
+## 16. Try–Confirm/Cancel (TCC)
+
+TCC yêu cầu participant cung cấp ba operation:
+
+```text
+TRY     : giữ tài nguyên tạm thời
+CONFIRM : chốt giữ chỗ
+CANCEL  : giải phóng
+```
+
+Ví dụ booking:
+
+```text
+TrySeat(seat-7, hold-123, expires=10m)
+TryCredit(user-9, 500k, hold-123)
+  nếu tất cả thành công:
+ConfirmSeat + ConfirmCredit
+  nếu có lỗi:
+CancelSeat + CancelCredit
+```
+
+TCC phù hợp tài nguyên có thể reservation và cần giảm oversell. Giá phải trả:
+
+- API participant phức tạp hơn;
+- giữ tài nguyên làm giảm availability cho người khác;
+- cần TTL/reaper cho hold bị bỏ quên;
+- confirm/cancel phải idempotent;
+- vẫn cần xử lý coordinator mất liên lạc.
+
+---
+
+## 17. Reservation, escrow và TTL
+
+Reservation chuyển invariant “trừ ngay” thành “giữ rồi quyết định”:
+
+```text
+available = on_hand - active_reservations
+```
+
+Mỗi reservation:
+
+- có `reservation_id` unique;
+- trạng thái `HELD | CONFIRMED | RELEASED | EXPIRED`;
+- deadline dùng clock server;
+- transition có compare-and-set;
+- reaper hết hạn idempotent;
+- confirm sau expiry có policy rõ.
+
+TTL không tự đủ: job expiry có thể chậm. Read/write path phải coi reservation đã
+hết hạn theo timestamp ngay cả khi record chưa được cleanup.
+
+---
+
+## 18. Kafka transaction và phạm vi exactly-once
+
+Kafka hỗ trợ idempotent producer và transaction cho luồng:
+
+```text
+consume Kafka → xử lý → produce Kafka + commit offset
+```
+
+trong phạm vi Kafka transaction. Nó không biến:
+
+```text
+consume Kafka → charge REST provider → ghi database ngoài
+```
+
+thành exactly-once. Khi có external side effect, vẫn cần idempotency, Outbox/Inbox
+hoặc reconciliation.
+
+Luôn hỏi:
+
+1. Exactly-once cho record nào?
+2. Giữa những resource nào?
+3. Khi process crash ở từng điểm thì sao?
+4. Side effect ngoài transaction được phục hồi thế nào?
+
+---
+
+## 19. Retry, timeout và deadline
+
+Retry chỉ dành cho lỗi tạm thời và operation idempotent:
+
+```text
+deadline tổng: 30s
+attempt 1 → timeout 3s
+backoff + jitter
+attempt 2 → timeout 3s
+không vượt deadline tổng
+```
+
+Không retry:
+
+- validation/business rejection;
+- payment `UNKNOWN` mà provider không có idempotency/query;
+- compensation cần manual approval;
+- conflict phải reread và tính lại.
+
+Mỗi workflow cần timeout nghiệp vụ, không chỉ network timeout:
+
+- inventory hold hết hạn;
+- payment pending quá lâu;
+- shipment chưa tạo;
+- compensation stuck.
+
+Timer phải durable; `Thread.sleep` hoặc scheduler trong một pod không đủ.
+
+---
+
+## 20. Reconciliation: lớp an toàn cuối cùng
+
+Ngay cả thiết kế tốt vẫn có bug, operator mistake và provider mismatch.
+Reconciliation so sánh hai source:
+
+```text
+Internal payment attempts
+          ↕ compare by provider_reference
+Provider settlement/report/API
+          ↓
+missing | duplicate | amount mismatch | unknown
+```
+
+Một reconciliation job cần:
+
+- checkpoint và khoảng thời gian quét chồng lấn;
+- idempotent repair;
+- phân loại tự sửa vs manual review;
+- audit trước/sau;
+- alert theo giá trị tiền và tuổi sai lệch;
+- không dùng một nguồn lỗi để tự xác nhận chính nó.
+
+Với payment/ledger, reconciliation không phải giải pháp phụ; nó là một phần của
+correctness.
+
+---
+
+## 21. Ví dụ đầy đủ: checkout
+
+### 21.1 Thành phần
+
+| Thành phần | Source of truth |
+|---|---|
+| Order | trạng thái đơn |
+| Inventory | stock và reservation |
+| Payment | payment attempt + provider reference |
+| Checkout orchestrator | workflow state |
+
+### 21.2 Happy path
+
+```text
+1. CreateOrder(idempotency=checkout-123)
+2. ReserveInventory(reservation=checkout-123, TTL=15m)
+3. CapturePayment(attempt=checkout-123)
+4. ConfirmInventory(reservation=checkout-123)
+5. ConfirmOrder(order=123)
+```
+
+### 21.3 Payment timeout
+
+```text
+CAPTURE_REQUESTED
+  → provider timeout
+  → PAYMENT_UNKNOWN
+  → query provider by idempotency/reference
+       ├─ captured → continue confirm
+       ├─ not found → retry capture cùng key
+       └─ still unknown → MANUAL_REVIEW
+```
+
+Không release inventory ngay khi payment timeout nếu payment có thể đã thành công.
+State machine quyết định theo outcome được đối soát.
+
+### 21.4 Crash sau mỗi bước
+
+| Điểm crash | Recovery |
+|---|---|
+| Sau DB update, trước publish | Outbox relay publish |
+| Sau publish, trước mark | Có duplicate; consumer dedup |
+| Sau provider charge, trước save | Query bằng idempotency/reference |
+| Sau compensation, trước ack | Compensation idempotent |
+| Orchestrator restart | Load durable state + resume timer/command |
+
+---
+
+## 22. Quan sát và vận hành workflow
+
+Metric/kênh vận hành quan trọng:
+
+- workflow started/completed/failed theo type;
+- duration p95/p99 và tuổi workflow đang chạy;
+- số workflow theo state;
+- retry/compensation/manual-review rate;
+- outbox oldest unpublished;
+- inbox duplicate rate;
+- provider unknown/mismatch;
+- reservation expired;
+- giá trị tiền đang `UNKNOWN`, không chỉ số lượng.
+
+Metadata:
+
+```text
+workflow_id, order_id, event_id,
+correlation_id, causation_id,
+idempotency_key, participant, transition, version
+```
+
+Dashboard phải cho phép tìm một order và thấy timeline end-to-end. Alert kỹ thuật
+không thay thế alert invariant, ví dụ “payment captured nhưng order chưa confirmed”.
+
+---
+
+## 23. Bảo mật
+
+- Idempotency key không phải secret và không thay authentication.
+- Scope key theo tenant/account để tránh collision hoặc đọc chéo response.
+- Không log card token, access token hay payload PII.
+- Orchestrator chỉ được gọi command cần thiết; participant vẫn authorization.
+- Outbox/Inbox/DLQ có retention và quyền truy cập vì chứa dữ liệu nghiệp vụ.
+- Manual repair cần approval, audit và nguyên tắc four-eyes với tiền.
+- Webhook/provider callback phải verify signature, timestamp và chống replay.
+
+---
+
+## 24. So sánh nhanh
+
+| Câu hỏi | 2PC | Saga | TCC | Outbox |
+|---|---|---|---|---|
+| Atomic commit kỹ thuật | Có | Không | Không | Chỉ DB + ý định publish |
+| Giữ lock | Thường có | Không xuyên service | Giữ reservation | Không xuyên service |
+| External API | Chỉ nếu hỗ trợ participant | Có, qua action/bù | Cần Try/Confirm/Cancel | Chỉ truyền message |
+| Workflow dài | Không phù hợp | Phù hợp | Phù hợp có reservation | Là building block |
+| Isolation | Theo resource/transaction | Phải tự thiết kế | Reservation giảm conflict | Không cung cấp |
+| Duplicate | TM/protocol xử lý trong phạm vi | Participant idempotent | API idempotent | Consumer idempotent |
+
+Các pattern thường kết hợp: Saga orchestration + Outbox + Inbox + idempotency +
+reservation + reconciliation.
+
+---
+
+## 25. Failure modes thường gặp
+
+| Anti-pattern/sự cố | Hậu quả | Thay bằng |
+|---|---|---|
+| Shared DB gọi là “microservices” | Coupling schema/transaction | Sửa boundary hoặc ownership |
+| Check-then-insert idempotency | Race, side effect lặp | Unique key + atomic state |
+| Timeout = failed | Retry tạo duplicate | Trạng thái `UNKNOWN` + query/reconcile |
+| Compensation như `DELETE` lịch sử | Mất audit, sai domain | State transition + action bù |
+| Outbox = exactly-once | Consumer vẫn nhận duplicate | Inbox/idempotent consumer |
+| Saga chỉ có happy path | Workflow stuck | Timeout, retry, bù, manual state |
+| Choreography quá dài | Logic vòng và không owner | Durable orchestrator |
+| Reservation chỉ dựa cleanup job | Giữ quá TTL | Check expiry trong read/write path |
+| 2PC transaction kéo dài | Lock và availability thấp | Local tx/Saga hoặc rút ngắn |
+| Không reconciliation | Sai lệch âm thầm | Đối soát độc lập |
+
+---
+
+## 26. Decision checklist
+
+- [ ] Invariant và source of truth được viết rõ.
+- [ ] Đã thử đặt thay đổi atomic vào cùng service/database.
+- [ ] Đã định nghĩa `SUCCESS`, `FAILURE`, `UNKNOWN`.
+- [ ] Chọn consistency window chấp nhận được.
+- [ ] Mỗi action/compensation có idempotency key và scope.
+- [ ] Không có race `exists → side effect → insert`.
+- [ ] Dual-write dùng Outbox/CDC hoặc atomic mechanism.
+- [ ] Consumer dùng Inbox/unique key khi cần.
+- [ ] Saga có state machine bền vững, version và timer.
+- [ ] Compensation trỏ đúng forward action và có manual fallback.
+- [ ] Isolation anomaly được xử lý bằng reservation/version/semantic lock.
+- [ ] Có reconciliation cho external side effect.
+- [ ] Metric theo state, tuổi workflow và invariant.
+- [ ] Runbook repair có audit và authorization.
+
+---
+
+## 27. Câu hỏi phỏng vấn thường gặp
+
+1. Vì sao timeout không đồng nghĩa thất bại?
+2. Participant 2PC vote `YES` rồi mất coordinator thì làm gì?
+3. Saga khác rollback ACID như thế nào?
+4. Saga thiếu isolation gây anomaly gì?
+5. Choreography và orchestration phù hợp trường hợp nào?
+6. Vì sao Outbox vẫn có thể publish duplicate?
+7. Làm idempotency sao cho không có race condition?
+8. TCC khác Saga compensation ở đâu?
+9. Kafka exactly-once có bảo vệ payment API không?
+10. Reconciliation bổ sung correctness thế nào?
+11. Bạn phục hồi workflow crash sau khi provider đã charge ra sao?
+12. Khi nào nên gộp service thay vì thêm distributed transaction?
+
+---
+
+## 28. Nguồn và chủ đề tiếp theo
+
+Nguồn tham khảo chính:
+
+- [PostgreSQL – PREPARE TRANSACTION](https://www.postgresql.org/docs/current/sql-prepare-transaction.html)
+- [AWS Prescriptive Guidance – Saga patterns](https://docs.aws.amazon.com/prescriptive-guidance/latest/cloud-design-patterns/saga-patterns.html)
+- [AWS Prescriptive Guidance – Transactional Outbox](https://docs.aws.amazon.com/prescriptive-guidance/latest/cloud-design-patterns/transactional-outbox.html)
+- [Stripe – Idempotent requests](https://docs.stripe.com/api/idempotent_requests)
+- [Apache Kafka – Message delivery semantics](https://kafka.apache.org/documentation/#semantics)
+
+Đọc tiếp:
+
+- [Event-Driven Architecture](event_driven_architecture.md) – delivery, ordering,
+  retry, Outbox/Inbox và replay.
+- [Microservices](microservices.md) – boundary và data ownership.
+- [API Design](api_design.md) – idempotency contract, status code và webhook.
+- [Payment/Ledger case study](../case_studies/platform_designs.md) – double-entry
+  ledger và reconciliation.
+
+---
+
+*Cập nhật lần cuối: 2026-07-31*

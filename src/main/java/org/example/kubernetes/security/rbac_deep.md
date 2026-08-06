@@ -676,9 +676,11 @@ kubectl get clusterpolicy -o json | jq '
   "\(.metadata.name): enforce=\(.spec.validationFailureAction)"'
 ```
 
-### Ghi chú – Chủ đề tiếp theo
-> Observability Deep – kube-prometheus-stack chi tiết, custom Grafana dashboards, OpenTelemetry Collector, distributed tracing với Jaeger/Tempo
+### Học tiếp
+
+1. [Container & Kubernetes Runtime Security](../../security/runtime/container_kubernetes_runtime_security.md) – nối RBAC/admission với SecurityContext, kernel boundary, node hardening và runtime response.
+2. [Kubernetes Networking Deep Dive](../networking/networking_deep.md) – CNI, NetworkPolicy và kiểm thử luồng mạng.
 
 ---
 
-*Cập nhật lần cuối: 2026-05-06*
+*Cập nhật lần cuối: 2026-08-02.*

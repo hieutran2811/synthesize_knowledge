@@ -40,6 +40,7 @@ Kafka mạnh ở throughput, khả năng replay và fan-out. Tuy nhiên, Kafka k
 | 10 | ksqlDB & Stream Processing SQL | [ksqldb.md](ecosystem/ksqldb.md) | ✅ |
 | 11 | Event-Driven Architecture & Data Modeling | [event_driven_architecture.md](patterns/event_driven_architecture.md) | ✅ |
 | 12 | Cluster Operations Advanced (Day-2) | [cluster_operations.md](operations/cluster_operations.md) | ✅ |
+| 13 | Messaging & Kafka Observability | [messaging_kafka_observability.md](../prometheus_grafana/observability/messaging_kafka_observability.md) | ✅ |
 
 ---
 
@@ -65,7 +66,7 @@ Mục tiêu: thiết kế key/partition, state store, window, join, retry, Outbo
 
 ### 4. Production và Day-2
 
-[Production Operations](operations/production.md) → [Cluster Operations](operations/cluster_operations.md)
+[Production Operations](operations/production.md) → [Cluster Operations](operations/cluster_operations.md) → [Messaging & Kafka Observability](../prometheus_grafana/observability/messaging_kafka_observability.md)
 
 Mục tiêu: biết monitoring, security, quota, reassignment, rolling upgrade, capacity planning và disaster recovery.
 
@@ -83,7 +84,8 @@ Mục tiêu: biết monitoring, security, quota, reassignment, rolling upgrade, 
 | Schema thay đổi làm consumer lỗi | [Schema Registry](ecosystem/schema_registry.md) |
 | Aggregate, join hoặc xử lý theo thời gian | [Kafka Streams](streams/kafka_streams.md), [ksqlDB](ecosystem/ksqldb.md) |
 | Thiết kế Outbox, Saga, retry/DLQ | [Event-Driven Architecture](patterns/event_driven_architecture.md) |
+| Cần nối producer, broker, consumer lag với freshness và business outcome | [Messaging & Kafka Observability](../prometheus_grafana/observability/messaging_kafka_observability.md) |
 
 ---
 
-*Cập nhật lần cuối: 2026-07-27*
+*Cập nhật lần cuối: 2026-07-30*

@@ -2111,9 +2111,32 @@ Hướng mở rộng:
 - [continuous profiling với Pyroscope/Parca](continuous_profiling.md);
 - [eBPF observability](ebpf_observability.md);
 - [Grafana Mimir](grafana_mimir.md);
-- telemetry governance và FinOps;
-- chaos engineering cho observability pipeline.
+- [telemetry governance và FinOps](telemetry_governance_finops.md);
+- [chaos engineering cho observability pipeline](chaos_engineering_observability.md);
+- [observability platform engineering](observability_platform_engineering.md);
+- [incident response với observability](incident_response_observability.md);
+- [database observability và performance engineering](database_observability_performance.md);
+- [Redis và cache observability](redis_cache_observability.md);
+- [Kubernetes observability deep dive](kubernetes_observability.md);
+- [messaging và Kafka observability](messaging_kafka_observability.md);
+- [API và HTTP observability](api_http_observability.md);
+- [frontend và Real User Monitoring](frontend_rum_observability.md);
+- [mobile app observability](mobile_app_observability.md);
+- [serverless và functions observability](serverless_functions_observability.md);
+- [LLM và Generative AI observability](llm_generative_ai_observability.md);
+- [data pipeline và ETL observability](data_pipeline_etl_observability.md);
+- [machine learning model observability](machine_learning_model_observability.md);
+- [security observability và detection engineering](security_observability_detection_engineering.md);
+- [network observability và traffic analysis](network_observability_traffic_analysis.md);
+- [CI/CD và software delivery observability](cicd_software_delivery_observability.md);
+- [change, configuration và feature flag observability](change_configuration_feature_flag_observability.md);
+- [business và product observability](business_product_observability.md);
+- [multi-tenant và SaaS observability](multi_tenant_saas_observability.md);
+- [cloud cost và sustainability observability](cloud_cost_sustainability_observability.md);
+- [capacity planning và performance efficiency](capacity_planning_performance_efficiency.md);
+- [storage và object storage observability](storage_object_storage_observability.md);
+- [search và indexing observability](search_indexing_observability.md).
 
 ---
 
-*Cập nhật lần cuối: 2026-07-29*
+*Cập nhật lần cuối: 2026-07-30*

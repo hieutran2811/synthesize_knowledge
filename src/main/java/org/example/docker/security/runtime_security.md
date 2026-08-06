@@ -406,9 +406,11 @@ docker run --rm --net host --pid host \
   docker/docker-bench-security 2>&1 | grep -E "WARN|FAIL"
 ```
 
-### Ghi chú – Chủ đề tiếp theo
-> Secrets Management – HashiCorp Vault, AWS Secrets Manager, external-secrets-operator
+### Học tiếp
+
+1. [Container & Kubernetes Runtime Security](../../security/runtime/container_kubernetes_runtime_security.md) – áp capabilities, seccomp, LSM và sandbox runtime vào admission, node và incident response của Kubernetes.
+2. [Secrets & Key Management](../../security/secrets/secrets_key_management.md) – workload identity, dynamic credential, rotation và revoke.
 
 ---
 
-*Cập nhật lần cuối: 2026-05-06*
+*Cập nhật lần cuối: 2026-08-02.*
