@@ -1,0 +1,21 @@
+# Generated documentation site
+site/
+
+# Python/MkDocs
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.cache/
+
+# Editors and local agent settings
+.idea/
+.vscode/
+.claude/settings.local.json
+.agents/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+

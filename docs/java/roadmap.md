@@ -1,0 +1,296 @@
+---
+title: "Roadmap Tổng Hợp Kiến Thức Java"
+topic: java
+level: mixed
+review_status: needs_review
+content_updated: null
+last_verified: null
+version_scope: "unspecified"
+source_count: 0
+---
+# Roadmap Tổng Hợp Kiến Thức Java
+
+## Cấu trúc thư mục
+```
+java/
+├── roadmap.md                      ← file này
+├── glossary.md                     ← bảng thuật ngữ Java dùng chung, sắp xếp A–Z
+├── java_knowledge.md               ← overview tổng quan
+├── oop/                            ← OOP deep dive
+│   ├── encapsulation.md
+│   ├── inheritance.md
+│   ├── polymorphism.md
+│   ├── abstraction.md
+│   ├── solid.md
+│   └── composition.md
+├── core/                           ← Java Core API deep dive
+│   ├── collections.md
+│   ├── generics.md
+│   ├── lambda.md
+│   ├── streams.md
+│   ├── exceptions.md
+│   ├── concurrency.md
+│   ├── io_nio.md
+│   ├── reflection_annotations.md
+│   ├── datetime.md
+│   ├── strings.md
+│   ├── concurrency_advanced.md
+│   ├── collections_internals.md
+│   ├── errors.md
+│   ├── nested_classes.md          ← static/member/local/anonymous, synthetic this$0, memory leak
+│   ├── enums.md                   ← enum internals, strategy enum, EnumSet/EnumMap, singleton
+│   ├── object_methods.md          ← equals/hashCode/Comparable/Comparator/clone contracts
+│   ├── serialization.md           ← Serializable, insecure deserialization (RCE), JEP 290
+│   ├── json_jackson.md            ← ObjectMapper, annotations, custom (de)serializer, polymorphic
+│   ├── bean_validation.md         ← Jakarta Validation, @Valid/@Validated, custom constraint
+│   └── networking_http.md         ← Socket, java.net.http.HttpClient, RestClient/WebClient/Feign
+├── patterns/                       ← Design Patterns deep dive
+│   ├── creational.md
+│   ├── structural.md
+│   ├── behavioral.md
+│   ├── patterns_modern_java.md
+│   ├── patterns_enterprise.md
+│   └── antipatterns.md
+├── jvm/                            ← JVM Internals deep dive
+│   ├── classloader.md
+│   ├── jit_compiler.md
+│   ├── gc.md
+│   ├── java_memory_model.md
+│   └── runtime_data_areas.md
+├── modern/                         ← Modern Java (16-21) deep dive
+│   ├── records.md
+│   ├── sealed_classes.md
+│   ├── pattern_matching.md
+│   ├── virtual_threads.md
+│   └── java_modules.md             ← JPMS, module-info.java, jlink
+├── spring/                         ← Spring Framework deep dive
+│   ├── spring_core.md
+│   ├── spring_aop.md
+│   ├── spring_boot.md
+│   ├── spring_mvc_transaction.md
+│   ├── spring_security.md          ← JWT, OAuth2, method security
+│   ├── spring_cloud.md             ← Config/Eureka/Gateway/OpenFeign/Resilience4j
+│   └── spring_cache_scheduling.md  ← @Cacheable, @Scheduled, @Async, ShedLock
+├── build/                          ← Build tools deep dive
+│   └── build_tools.md              ← Maven (lifecycle/BOM/multi-module) & Gradle (DSL/cache)
+├── core/ (bổ sung)
+│   ├── testing.md                  ← JUnit 5, Mockito, Testcontainers
+│   ├── reactive.md                 ← Project Reactor, WebFlux, R2DBC
+│   └── performance_tuning.md       ← JMH, JFR, async-profiler, HikariCP
+└── data/                           ← Data Access deep dive
+    ├── jdbc.md
+    ├── jpa_hibernate.md
+    └── spring_data_jpa.md
+```
+
+---
+
+## Mục lục đã hoàn thành ✅
+
+### Nền tảng Java
+| STT | Chủ đề | File | Trạng thái |
+|-----|--------|------|-----------|
+| 1 | Java Overview – JVM, JRE, JDK, WORA, compile flow | java_knowledge.md | ✅ |
+| 2 | Data Types & Variables – primitives, autoboxing, Integer cache | java_knowledge.md | ✅ |
+| 3 | Control Flow – if/else, switch expression (Java 14+), loops | java_knowledge.md | ✅ |
+| 4 | Arrays & Strings – String Pool, immutability, StringBuilder | java_knowledge.md | ✅ |
+
+### OOP – Hướng Đối Tượng
+| STT | Chủ đề | File | Trạng thái |
+|-----|--------|------|-----------|
+| 5.1 | Encapsulation – access modifiers, immutable object, Records, defensive copy, Tell Don't Ask | oop/encapsulation.md | ✅ |
+| 5.2 | Inheritance – constructor chaining, vtable, dynamic dispatch, equals/hashCode, LSP, Fragile Base Class | oop/inheritance.md | ✅ |
+| 5.3 | Polymorphism – overloading rules, overriding rules, sealed class, pattern matching switch (Java 21) | oop/polymorphism.md | ✅ |
+| 5.4 | Abstraction – abstract class, interface evolution (Java 7/8/9), diamond problem, marker interface, functional interface | oop/abstraction.md | ✅ |
+| 5.5 | SOLID Principles – SRP, OCP, LSP, ISP, DIP | oop/solid.md | ✅ |
+| 5.6 | Composition over Inheritance – delegation, mixin, Strategy, DI as composition | oop/composition.md | ✅ |
+
+### Java Core API
+| STT | Chủ đề | File | Trạng thái |
+|-----|--------|------|-----------|
+| 6 | Collections Framework – ArrayList/LinkedList internals, HashMap (bucket, treeify), ConcurrentHashMap, Fail-fast/Fail-safe | core/collections.md | ✅ |
+| 7 | Generics – type params, bounded wildcards, PECS, type erasure, heap pollution, @SafeVarargs | core/generics.md | ✅ |
+| 8 | Lambda & Functional Interface – 4 method reference types, closure, effectively final, composing, currying | core/lambda.md | ✅ |
+| 9 | Stream API – lazy eval, intermediate/terminal ops, Collectors (groupingBy, teeing), Optional, parallel stream | core/streams.md | ✅ |
+| 10 | Exception Handling – hierarchy, checked/unchecked, try-with-resources, suppressed, chaining, anti-patterns | core/exceptions.md | ✅ |
+| 11 | Concurrency & Multithreading – thread lifecycle, synchronized, volatile, atomic, ReentrantLock, CompletableFuture, utilities | core/concurrency.md | ✅ |
+| 12 | I/O & NIO – byte/char streams, ByteBuffer state machine, NIO Selector, NIO.2 Path/Files, WatchService, memory-mapped | core/io_nio.md | ✅ |
+| 13 | Reflection & Annotations – Class/Field/Method API, @Retention/@Target, AnnotationProcessor, Dynamic Proxy, MethodHandle | core/reflection_annotations.md | ✅ |
+| 14 | Date/Time API – Instant/LocalDate/ZonedDateTime/Duration/Period, DateTimeFormatter, Clock, DST pitfalls | core/datetime.md | ✅ |
+| 15 | String Deep Dive – String Pool, immutability, Compact Strings, StringBuilder, regex (Pattern/Matcher), text blocks, Charset | core/strings.md | ✅ |
+| 16 | Concurrency Advanced – Fork/Join (work-stealing), ThreadLocal internals (memory leak), Lock-free/CAS/ABA, Phaser/Exchanger, CompletableFuture advanced, Flow API | core/concurrency_advanced.md | ✅ |
+| 17 | Collections Internals – PriorityQueue (binary heap/sift-up/sift-down), ArrayDeque (circular buffer), EnumSet/EnumMap, WeakHashMap, IdentityHashMap, Spliterator, immutable collections (Java 9+) | core/collections_internals.md | ✅ |
+| 18 | Java Error – Error hierarchy, OOM (heap/metaspace/GC overhead/native thread), StackOverflow, LinkageError, AssertionError, ExceptionInInitializerError, chẩn đoán JVM, tuning production | core/errors.md | ✅ |
+
+### Design Patterns (GoF)
+| STT | Chủ đề | File | Trạng thái |
+|-----|--------|------|-----------|
+| 13.1 | Creational – Singleton (5 variants), Builder, Factory Method, Abstract Factory, Prototype | patterns/creational.md | ✅ |
+| 13.2 | Structural – Adapter, Bridge, Composite, Decorator, Facade, Flyweight, Proxy (JDK/CGLIB/AOP) | patterns/structural.md | ✅ |
+| 13.3 | Behavioral – Strategy, Observer, Template Method, Command, Chain of Responsibility, State, Visitor, Mediator, Iterator | patterns/behavioral.md | ✅ |
+| 13.4 | Modern Java Patterns – GoF với Lambda/Records/Sealed Classes, Result monad, Event Sourcing với sealed events | patterns/patterns_modern_java.md | ✅ |
+| 13.5 | Enterprise Patterns – Repository, Unit of Work, CQRS, Event Sourcing, Saga, Outbox, Circuit Breaker, Bulkhead | patterns/patterns_enterprise.md | ✅ |
+| 13.6 | Anti-patterns – God Object, Anemic Domain, Primitive Obsession, Service Locator, Singleton overuse, Exception swallowing, N+1 | patterns/antipatterns.md | ✅ |
+
+### JVM Internals
+| STT | Chủ đề | File | Trạng thái |
+|-----|--------|------|-----------|
+| 14 | Java Memory Model & GC – overview | java_knowledge.md | ✅ |
+| 14.1 | ClassLoader – hierarchy, parent delegation, custom ClassLoader, class loading phases, isolation | jvm/classloader.md | ✅ |
+| 14.2 | JIT Compiler – tiered compilation, inlining, escape analysis, devirtualization, OSR, GraalVM, profiling | jvm/jit_compiler.md | ✅ |
+| 14.3 | Garbage Collection – heap layout (Eden/Survivor/Old), GC algorithms, Serial/Parallel/G1/ZGC, reference types, memory leaks | jvm/gc.md | ✅ |
+| 14.4 | Java Memory Model (JMM) – happens-before, volatile semantics, synchronized, safe publication, DCL, VarHandle | jvm/java_memory_model.md | ✅ |
+| 14.5 | JVM Runtime Data Areas – Metaspace, heap, stack frames, bytecode instructions, invokedynamic, stack trace reading | jvm/runtime_data_areas.md | ✅ |
+
+### Modern Java (16–21)
+| STT | Chủ đề | File | Trạng thái |
+|-----|--------|------|-----------|
+| 17.1 | Records (Java 16) – value objects, compact canonical constructor, limitations, deconstruction pattern | modern/records.md | ✅ |
+| 17.2 | Sealed Classes (Java 17) – ADT/sum types, permits, exhaustive switch, Result<T> monad | modern/sealed_classes.md | ✅ |
+| 17.3 | Pattern Matching – instanceof (Java 16), switch patterns (Java 21), guarded, deconstruction, unnamed `_` | modern/pattern_matching.md | ✅ |
+| 17.4 | Virtual Threads (Java 21) – Project Loom, mount/unmount, StructuredTaskScope, pinning, ScopedValue | modern/virtual_threads.md | ✅ |
+| 17.5 | Java Modules (JPMS) – module-info.java (requires/exports/opens/uses/provides), module types, ServiceLoader SPI, jlink custom JRE, migration từ classpath | modern/java_modules.md | ✅ |
+
+### Spring Framework
+| STT | Chủ đề | File | Trạng thái |
+|-----|--------|------|-----------|
+| 15.1 | Spring Core – IoC Container, Bean lifecycle (8 steps), DI types, scopes, @Conditional, @Profile, events | spring/spring_core.md | ✅ |
+| 15.2 | Spring AOP – proxy-based (JDK/CGLIB), 5 advice types, pointcut expressions, self-invocation problem | spring/spring_aop.md | ✅ |
+| 15.3 | Spring Boot – auto-configuration, @ConditionalOn*, starters, @ConfigurationProperties, profiles, Actuator | spring/spring_boot.md | ✅ |
+| 15.4 | Spring MVC – DispatcherServlet lifecycle, request binding, ResponseEntity, @ControllerAdvice | spring/spring_mvc_transaction.md | ✅ |
+| 15.5 | Spring Transaction – 7 propagation types, 4 isolation levels, rollback rules, @TransactionalEventListener, pitfalls | spring/spring_mvc_transaction.md | ✅ |
+| 15.6 | Spring Security – SecurityFilterChain (lambda DSL), JWT (JJWT, OncePerRequestFilter), OAuth2 (Resource Server, Client), method security (@PreAuthorize SpEL), CSRF/CORS, password encoding | spring/spring_security.md | ✅ |
+
+### Data Access
+| STT | Chủ đề | File | Trạng thái |
+|-----|--------|------|-----------|
+| 16.1 | JDBC – Connection, PreparedStatement (SQL injection), ResultSet, batch ops, HikariCP pool, JdbcTemplate | data/jdbc.md | ✅ |
+| 16.2 | JPA & Hibernate – Entity lifecycle, persistence context, N+1 fix (JOIN FETCH/@BatchSize/@EntityGraph), JPQL/Criteria/Native, locking | data/jpa_hibernate.md | ✅ |
+| 16.3 | Spring Data JPA – Repository hierarchy, query derivation, @Query, Specification, Pageable, Auditing, projections | data/spring_data_jpa.md | ✅ |
+
+### Advanced Topics (bổ sung)
+| STT | Chủ đề | File | Trạng thái |
+|-----|--------|------|-----------|
+| 18.1 | Spring Security – Authentication (JWT/Session), Authorization (@PreAuthorize, method security), CSRF, CORS | spring/spring_security.md | ✅ |
+| 18.2 | Testing – JUnit 5 (@ParameterizedTest/@TestFactory, Extension API), Mockito (mock/spy/ArgumentCaptor/MockedStatic), AssertJ, @WebMvcTest/@DataJpaTest, Testcontainers | core/testing.md | ✅ |
+| 18.3 | Reactive Programming – Project Reactor (Mono/Flux, cold/hot, backpressure), operators (flatMap/switchMap/zip), Schedulers, WebFlux, R2DBC, StepVerifier | core/reactive.md | ✅ |
+| 18.4 | Java Modules (JPMS) – module-info.java, requires/exports/opens, migration from classpath | modern/java_modules.md | ✅ |
+| 18.5 | Performance Tuning & Profiling – JVM flags (ZGC/G1, container-aware), JFR, async-profiler, JMH microbenchmarking, HikariCP, Foreign Memory API | core/performance_tuning.md | ✅ |
+
+---
+
+### Production & Infrastructure (bổ sung)
+| STT | Chủ đề | File | Trạng thái |
+|-----|--------|------|-----------|
+| 19.1 | Logging – SLF4J/Logback, structured logging (JSON), MDC, async appender, ELK/Loki | core/logging.md | ✅ |
+| 19.2 | Observability – Micrometer, Prometheus, distributed tracing (OpenTelemetry, Zipkin/Jaeger) | core/observability.md | ✅ |
+| 19.3 | Messaging – Spring Kafka (producer/consumer/transactions/DLT), Spring AMQP, Outbox pattern | core/messaging.md | ✅ |
+| 19.4 | gRPC & Protobuf – code generation, all 4 streaming types, interceptors, deadline/retry | core/grpc_protobuf.md | ✅ |
+| 19.5 | GraalVM Native Image – AOT compilation, reflection config, native hints, Spring Native, PGO | modern/graalvm_native.md | ✅ |
+
+### Bổ sung 2026-06 – Core Language, Data, Cloud, Build (lấp gap chuyên gia)
+
+**Cụm A – Core Language Completeness**
+| STT | Chủ đề | File | Trạng thái |
+|-----|--------|------|-----------|
+| 20.1 | Nested & Inner Classes – static/member/local/anonymous, synthetic `this$0`, capture & effectively final, Nestmates (JEP 181), memory leak, anonymous vs lambda | core/nested_classes.md | ✅ |
+| 20.2 | Enums Deep Dive – compiler internals (extends Enum), constant-specific body, strategy enum, enum implements interface, EnumSet (bit vector)/EnumMap (array), singleton, ordinal pitfalls | core/enums.md | ✅ |
+| 20.3 | Object Contract Methods – equals (5 quy tắc, getClass vs instanceof), hashCode (3 quy tắc), Comparable vs Comparator, clone/Cloneable vs copy constructor, toString | core/object_methods.md | ✅ |
+
+**Cụm B – Serialization, JSON & Validation**
+| STT | Chủ đề | File | Trạng thái |
+|-----|--------|------|-----------|
+| 20.4 | Java Serialization – serialVersionUID, transient, writeObject/readObject, Externalizable, readResolve, record serialization, **insecure deserialization (RCE, gadget chain, ysoserial), JEP 290 ObjectInputFilter** | core/serialization.md | ✅ |
+| 20.5 | JSON với Jackson – ObjectMapper (thread-safe, reuse), data binding/tree/streaming, annotations, custom (de)serializer, polymorphic typing, **default typing RCE**, so sánh Gson/JSON-B | core/json_jackson.md | ✅ |
+| 20.6 | Bean Validation – Jakarta/Hibernate Validator, NotNull/NotEmpty/NotBlank, @Valid (cascade) vs @Validated (groups), custom ConstraintValidator, cross-field, method validation, i18n | core/bean_validation.md | ✅ |
+
+**Cụm C – HTTP & Spring Cloud**
+| STT | Chủ đề | File | Trạng thái |
+|-----|--------|------|-----------|
+| 20.7 | Networking & HTTP Client – TCP/UDP Socket, thread-per-connection vs NIO vs virtual threads, java.net.http.HttpClient (HTTP/2, async, WebSocket), so sánh RestTemplate/WebClient/RestClient/Feign, timeout/pool/resilience | core/networking_http.md | ✅ |
+| 20.8 | Spring Cloud & Microservices – Config Server (@RefreshScope), Service Discovery (Eureka), LoadBalancer, OpenFeign, **Resilience4j** (CircuitBreaker 3 trạng thái/Retry/RateLimiter/Bulkhead/TimeLimiter), Gateway, tracing, vs Service Mesh | spring/spring_cloud.md | ✅ |
+
+**Cụm D – Spring Features & Build Tools**
+| STT | Chủ đề | File | Trạng thái |
+|-----|--------|------|-----------|
+| 20.9 | Spring Cache + Scheduling + Async – @Cacheable/@CachePut/@CacheEvict, CacheManager (Caffeine/Redis), @Scheduled (cron/fixedRate/fixedDelay), @Async (TaskExecutor), self-invocation, ShedLock, virtual threads | spring/spring_cache_scheduling.md | ✅ |
+| 20.10 | Build Tools – Maven (lifecycle/phase/goal, scopes, mediation nearest-wins, dependencyManagement/BOM, multi-module) & Gradle (DSL, api vs implementation, build cache/daemon/incremental, version catalog), so sánh + bảo mật dependency | build/build_tools.md | ✅ |
+
+---
+
+## Chú thích trạng thái
+- ✅ Hoàn thành – đã có file deep dive
+- 🔄 Đang làm
+- ⬜ Chưa làm
+
+---
+
+<!-- AUTO-GENERATED-DOC-INDEX:START -->
+
+## Tài liệu trong chủ đề
+
+- [Build Tools: Maven & Gradle (Deep Dive)](build/build_tools.md)
+- [Bean Validation / Hibernate Validator (Deep Dive)](core/bean_validation.md)
+- [Collections Framework (Deep Dive)](core/collections.md)
+- [Collections Internals – Advanced Deep Dive](core/collections_internals.md)
+- [Concurrency & Multithreading (Deep Dive)](core/concurrency.md)
+- [Concurrency Advanced – Fork/Join, Lock-free, Patterns](core/concurrency_advanced.md)
+- [Date/Time API (java.time)](core/datetime.md)
+- [Enums Deep Dive](core/enums.md)
+- [Java Error – Deep Dive](core/errors.md)
+- [Exception Handling (Deep Dive)](core/exceptions.md)
+- [Generics (Deep Dive)](core/generics.md)
+- [gRPC & Protobuf – Java](core/grpc_protobuf.md)
+- [Java I/O & NIO (Deep Dive)](core/io_nio.md)
+- [JSON Processing với Jackson (Deep Dive)](core/json_jackson.md)
+- [Lambda & Functional Interface (Deep Dive)](core/lambda.md)
+- [Logging – Java/Spring](core/logging.md)
+- [Messaging – Spring Kafka & Spring AMQP](core/messaging.md)
+- [Nested & Inner Classes (Deep Dive)](core/nested_classes.md)
+- [Networking & HTTP Client (Deep Dive)](core/networking_http.md)
+- [Object Contract Methods: equals / hashCode / Comparable / clone (Deep Dive)](core/object_methods.md)
+- [Observability – Micrometer, Prometheus, OpenTelemetry](core/observability.md)
+- [Java Performance Tuning & Profiling](core/performance_tuning.md)
+- [Reactive Programming – Project Reactor & Spring WebFlux](core/reactive.md)
+- [Reflection & Annotations](core/reflection_annotations.md)
+- [Java Serialization & Insecure Deserialization (Deep Dive)](core/serialization.md)
+- [Stream API (Deep Dive)](core/streams.md)
+- [String – Deep Dive](core/strings.md)
+- [Java Testing – JUnit 5, Mockito, Integration Testing](core/testing.md)
+- [JDBC & Connection Pooling](data/jdbc.md)
+- [JPA & Hibernate](data/jpa_hibernate.md)
+- [Spring Data JPA](data/spring_data_jpa.md)
+- [📖 Glossary – Bảng thuật ngữ Java](glossary.md)
+- [Tổng Hợp Kiến Thức Java](java_knowledge.md)
+- [JVM ClassLoader (Deep Dive)](jvm/classloader.md)
+- [Garbage Collection (GC) – JVM Memory Management](jvm/gc.md)
+- [Java Memory Model (JMM)](jvm/java_memory_model.md)
+- [JIT Compiler & JVM Performance (Deep Dive)](jvm/jit_compiler.md)
+- [JVM Runtime Data Areas & Bytecode](jvm/runtime_data_areas.md)
+- [GraalVM Native Image – Java](modern/graalvm_native.md)
+- [Java Module System (JPMS) – Java 9+](modern/java_modules.md)
+- [Pattern Matching (Java 16 → 21)](modern/pattern_matching.md)
+- [Records (Java 16)](modern/records.md)
+- [Sealed Classes & Interfaces (Java 17)](modern/sealed_classes.md)
+- [Virtual Threads – Project Loom (Java 21)](modern/virtual_threads.md)
+- [Abstraction (Trừu Tượng)](oop/abstraction.md)
+- [Composition over Inheritance](oop/composition.md)
+- [Encapsulation (Đóng Gói)](oop/encapsulation.md)
+- [Inheritance (Kế Thừa)](oop/inheritance.md)
+- [Polymorphism (Đa Hình)](oop/polymorphism.md)
+- [SOLID Principles](oop/solid.md)
+- [Anti-patterns trong Java](patterns/antipatterns.md)
+- [Design Patterns – Behavioral (Hành vi)](patterns/behavioral.md)
+- [Design Patterns – Creational (Khởi tạo)](patterns/creational.md)
+- [Enterprise & Architectural Patterns](patterns/patterns_enterprise.md)
+- [Design Patterns với Modern Java (Java 16–21)](patterns/patterns_modern_java.md)
+- [Design Patterns – Structural (Cấu trúc)](patterns/structural.md)
+- [Spring AOP (Aspect-Oriented Programming)](spring/spring_aop.md)
+- [Spring Boot (Auto-configuration, Starters, Actuator)](spring/spring_boot.md)
+- [Spring Cache, Scheduling & Async (Deep Dive)](spring/spring_cache_scheduling.md)
+- [Spring Cloud & Microservices (Deep Dive)](spring/spring_cloud.md)
+- [Spring Core – IoC & Dependency Injection](spring/spring_core.md)
+- [Spring MVC & Spring Transaction](spring/spring_mvc_transaction.md)
+- [Spring Security – Authentication & Authorization](spring/spring_security.md)
+
+<!-- AUTO-GENERATED-DOC-INDEX:END -->
