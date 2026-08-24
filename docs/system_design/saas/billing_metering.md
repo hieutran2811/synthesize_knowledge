@@ -857,6 +857,10 @@ Nguồn tham khảo chính:
 Đọc tiếp:
 
 - [Multi-tenancy](multi_tenancy.md) – tenant/account và lifecycle.
+- [Product Catalog & Entitlements](product_catalog_entitlements.md) – capability,
+  effective grant, seat, quota và commercial enforcement.
+- [Integration Platform](integration_platform.md) – webhook delivery, API contract,
+  connector và customer-facing replay/diagnostics.
 - [Rate Limiting](rate_limiting.md) – quota realtime và cost control.
 - [Feature Flags](feature_flags.md) – entitlement/rollout nhưng không thay billing.
 - [Event-Driven Architecture](../advanced/event_driven_architecture.md) – Outbox,

@@ -73,9 +73,13 @@ Chín chiều này **xung đột với nhau**, và đó là lý do system design
 | | [event_driven_architecture](advanced/event_driven_architecture.md) | Khi nào bất đồng bộ? |
 | | [distributed_transactions](advanced/distributed_transactions.md) | Transaction vượt ranh giới thì làm sao? |
 | **SaaS** | [multi_tenancy](saas/multi_tenancy.md) | Nhiều khách hàng trên một hệ thống thế nào? |
+| | [control_plane_tenant_lifecycle](saas/control_plane_tenant_lifecycle.md) | Provision, đặt cell, migrate và offboard tenant thế nào? |
+| | [b2b_identity_authorization](saas/b2b_identity_authorization.md) | SSO, SCIM và quyền theo organization/resource thế nào? |
+| | [product_catalog_entitlements](saas/product_catalog_entitlements.md) | Tenant đã mua và được dùng capability/quota nào? |
 | | [rate_limiting](saas/rate_limiting.md) | Bảo vệ khỏi lạm dụng ra sao? |
 | | [feature_flags](saas/feature_flags.md) | Ra tính năng an toàn thế nào? |
 | | [billing_metering](saas/billing_metering.md) | Đo và tính tiền ra sao? |
+| | [integration_platform](saas/integration_platform.md) | API, webhook, connector và marketplace vận hành thế nào? |
 | | [observability_saas](saas/observability_saas.md) | Biết hệ thống đang thế nào bằng cách nào? |
 | **Áp dụng** | [foundational_designs](case_studies/foundational_designs.md) | URL shortener, ID, rate limiter |
 | | [realtime_scale_designs](case_studies/realtime_scale_designs.md) | Feed, chat, geo |
@@ -137,10 +141,14 @@ Nếu chỉ nhớ được một danh sách, đây là danh sách đó — mỗi
 | Hai client cùng sửa và ghi đè dữ liệu | Thiếu optimistic concurrency/ETag | [api_design](advanced/api_design.md) mục 9 |
 | API tạo duplicate sau khi client retry | Mutation không có idempotency contract | [api_design](advanced/api_design.md) mục 8 |
 | User tenant A đọc được dữ liệu tenant B | Tenant context/key/query không được scope end-to-end | [multi_tenancy](saas/multi_tenancy.md) mục 6–15 |
+| Tenant tạo dở dang hoặc route vào cell chưa sẵn sàng | Onboarding không có persisted workflow/activation gate | [control_plane_tenant_lifecycle](saas/control_plane_tenant_lifecycle.md) mục 3–9 |
+| User bị xóa ở IdP nhưng session vẫn dùng được | Nhầm SSO với deprovisioning, thiếu SCIM/revoke | [b2b_identity_authorization](saas/b2b_identity_authorization.md) mục 7–11 |
 | Tenant lớn làm tenant nhỏ chậm | Noisy neighbor, thiếu fair rate/concurrency/queue | [multi_tenancy](saas/multi_tenancy.md) mục 16; [rate_limiting](saas/rate_limiting.md) mục 10–13, 21 |
 | Scale thêm gateway làm tổng quota tăng | Đang dùng local limit nhưng tưởng global | [rate_limiting](saas/rate_limiting.md) mục 13 |
 | Invoice tính trùng usage sau khi consumer retry | Usage event thiếu idempotency/immutable ledger | [billing_metering](saas/billing_metering.md) mục 5–8 |
 | Hóa đơn cũ đổi khi cập nhật bảng giá | Catalog không version theo effective time | [billing_metering](saas/billing_metering.md) mục 11–15 |
+| Tenant chưa mua vẫn dùng feature hoặc user thường làm admin action | Trộn entitlement, flag và authorization | [product_catalog_entitlements](saas/product_catalog_entitlements.md) mục 1–7 |
+| Webhook trùng hoặc connector bỏ mất page dữ liệu | Thiếu at-least-once/idempotency/checkpoint contract | [integration_platform](saas/integration_platform.md) mục 9–19 |
 | User lúc thấy v1, lúc thấy v2 | Percentage rollout dùng random/session key | [feature_flags](saas/feature_flags.md) mục 9 |
 | Flag service lỗi kéo sập mọi request | Remote evaluation trên hot path, thiếu last-known-good | [feature_flags](saas/feature_flags.md) mục 5, 12–13 |
 | Thanh toán bị trừ hai lần | Thiếu idempotency key đúng cách | [platform_designs](case_studies/platform_designs.md) mục 3.2 |

@@ -865,6 +865,10 @@ Nguồn tham khảo chính:
 
 Đọc tiếp:
 
+- [Control Plane & Tenant Lifecycle](control_plane_tenant_lifecycle.md) – provisioning,
+  placement, cell routing, migration, suspension và deletion evidence.
+- [B2B Identity & Authorization](b2b_identity_authorization.md) – organization membership,
+  SSO, SCIM, resource authorization và support access.
 - [Rate Limiting](rate_limiting.md) – fairness, quota và bảo vệ noisy neighbor.
 - [Billing & Metering](billing_metering.md) – entitlement, usage và tính tiền.
 - [Feature Flags](feature_flags.md) – cấu hình/rollout theo tenant.

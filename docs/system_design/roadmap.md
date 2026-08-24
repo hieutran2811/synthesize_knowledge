@@ -84,14 +84,18 @@ system_design/
 | 16 | Rate Limiting – fixed/sliding/token/GCRA, weighted cost, concurrency, hierarchical local/global limit, Redis atomicity, failure mode và fairness | [saas/rate_limiting.md](saas/rate_limiting.md) | ✅ Chuẩn hóa | Trung cấp |
 | 17 | Feature Flags – flag category, control/evaluation plane, trusted context, deterministic rollout, kill switch, experiment, data migration, OpenFeature và lifecycle debt | [saas/feature_flags.md](saas/feature_flags.md) | ✅ Chuẩn hóa | Trung cấp |
 | 18 | SaaS Observability – multi-tenant metric, cost attribution, alerting | [saas/observability_saas.md](saas/observability_saas.md) | 🟡 Chờ chuẩn hóa | Nâng cao |
+| 19 | Control Plane & Tenant Lifecycle – tenant catalog, provisioning Saga, placement, cell routing, migration, suspension và deletion evidence | [saas/control_plane_tenant_lifecycle.md](saas/control_plane_tenant_lifecycle.md) | ✅ Mới 2026-08 | Nâng cao |
+| 20 | B2B Identity & Authorization – organization membership, OIDC/SAML, SCIM, RBAC/ABAC/ReBAC, service account và support impersonation | [saas/b2b_identity_authorization.md](saas/b2b_identity_authorization.md) | ✅ Mới 2026-08 | Nâng cao |
+| 21 | Product Catalog & Entitlements – capability, catalog revision, effective grant, seat, quota, reservation, downgrade và reconciliation | [saas/product_catalog_entitlements.md](saas/product_catalog_entitlements.md) | ✅ Mới 2026-08 | Nâng cao |
+| 22 | Integration Platform – public API, async job, webhook delivery, connector runtime, bulk transfer, OAuth app và marketplace | [saas/integration_platform.md](saas/integration_platform.md) | ✅ Mới 2026-08 | Nâng cao |
 
 ### Case studies – áp dụng
 
 | # | Chủ đề | File | Trạng thái | Level |
 |---|---|---|---|---|
-| 19 | Foundational – **URL shortener** (Zipf, 301 vs 302, song ánh base62), **distributed ID** (Snowflake + 4 vấn đề thật), **rate limiter** (Lua atomic, local bucket, fail-open/closed) | [case_studies/foundational_designs.md](case_studies/foundational_designs.md) | ✅ Chuẩn hóa | Trung cấp |
-| 20 | Real-time & Scale – **news feed** (fan-out hybrid, celebrity), **chat** (seq vs timestamp, session registry, presence), **proximity/geo** (geohash + ô lân cận, static vs dynamic) | [case_studies/realtime_scale_designs.md](case_studies/realtime_scale_designs.md) | ✅ Chuẩn hóa | Nâng cao |
-| 21 | Platform – **object storage** (erasure coding, failure domain, scrubbing), **typeahead** (precompute, filter-then-rank), **payment/ledger** (idempotency key, double-entry, đối soát), **notification** (3 tầng dedup, tách campaign/transactional) | [case_studies/platform_designs.md](case_studies/platform_designs.md) | ✅ **Mới 2026-07** | Nâng cao |
+| 23 | Foundational – **URL shortener** (Zipf, 301 vs 302, song ánh base62), **distributed ID** (Snowflake + 4 vấn đề thật), **rate limiter** (Lua atomic, local bucket, fail-open/closed) | [case_studies/foundational_designs.md](case_studies/foundational_designs.md) | ✅ Chuẩn hóa | Trung cấp |
+| 24 | Real-time & Scale – **news feed** (fan-out hybrid, celebrity), **chat** (seq vs timestamp, session registry, presence), **proximity/geo** (geohash + ô lân cận, static vs dynamic) | [case_studies/realtime_scale_designs.md](case_studies/realtime_scale_designs.md) | ✅ Chuẩn hóa | Nâng cao |
+| 25 | Platform – **object storage** (erasure coding, failure domain, scrubbing), **typeahead** (precompute, filter-then-rank), **payment/ledger** (idempotency key, double-entry, đối soát), **notification** (3 tầng dedup, tách campaign/transactional) | [case_studies/platform_designs.md](case_studies/platform_designs.md) | ✅ **Mới 2026-07** | Nâng cao |
 
 ---
 
@@ -114,7 +118,9 @@ Bước 4 – Kiến trúc
   api_design → microservices → event_driven_architecture → distributed_transactions
 
 Bước 5 – Thực chiến SaaS
-  multi_tenancy → rate_limiting → feature_flags → billing_metering → observability_saas
+  multi_tenancy → control_plane_tenant_lifecycle → b2b_identity_authorization
+  → product_catalog_entitlements → rate_limiting → feature_flags
+  → billing_metering → integration_platform → observability_saas
 
 Bước 6 – Áp dụng
   foundational_designs → realtime_scale_designs → platform_designs
@@ -127,7 +133,7 @@ Bước 6 – Áp dụng
 | **Chuẩn bị phỏng vấn** | interview_framework_estimation → 3 file case_studies → scalability/caching/databases_design → distributed_systems_theory |
 | **Java backend developer** | databases_design → caching → networking_protocols → api_design → distributed_transactions |
 | **DevOps / SRE** | availability_reliability → load_balancing → scalability → observability_saas → distributed_systems_theory |
-| **Xây SaaS multi-tenant** | multi_tenancy → rate_limiting → billing_metering → feature_flags → observability_saas |
+| **Xây SaaS multi-tenant** | multi_tenancy → control_plane_tenant_lifecycle → b2b_identity_authorization → product_catalog_entitlements → integration_platform → observability_saas |
 | **Data / platform engineer** | storage_retrieval → databases_design → event_driven_architecture → platform_designs |
 
 ---
@@ -153,9 +159,13 @@ api_design ──→ microservices ──→ event_driven_architecture ──→
                                                         storage_retrieval (schema evolution)
 
 multi_tenancy ──┬─→ databases_design, caching
+                ├─→ control_plane_tenant_lifecycle ──→ availability_reliability
+                ├─→ b2b_identity_authorization ──────→ api_design
                 ├─→ rate_limiting
                 └─→ observability_saas
+product_catalog_entitlements ──→ billing_metering, rate_limiting, feature_flags
 billing_metering ──→ event_driven_architecture
+integration_platform ──→ api_design, event_driven_architecture, b2b_identity_authorization
 feature_flags ──→ multi_tenancy, api_design
 
 case_studies ──→ áp dụng toàn bộ nhóm trên
@@ -181,6 +191,10 @@ case_studies ──→ áp dụng toàn bộ nhóm trên
 | Invariant, unknown outcome, 2PC, Saga, TCC, Outbox/Inbox, reconciliation | [distributed_transactions.md](advanced/distributed_transactions.md) |
 | HTTP semantics, Problem Details, idempotency, ETag, cursor, gRPC, GraphQL, OAuth | [api_design.md](advanced/api_design.md) |
 | Tenant identity/context, silo/pool/bridge, RLS, stamps, data lifecycle | [multi_tenancy.md](saas/multi_tenancy.md) |
+| Tenant catalog, provisioning Saga, placement, cell routing, migration, suspension, deletion | [control_plane_tenant_lifecycle.md](saas/control_plane_tenant_lifecycle.md) |
+| Organization membership, OIDC/SAML, SCIM, RBAC/ABAC/ReBAC, impersonation | [b2b_identity_authorization.md](saas/b2b_identity_authorization.md) |
+| Capability, catalog revision, entitlement snapshot, seat/quota reservation, downgrade | [product_catalog_entitlements.md](saas/product_catalog_entitlements.md) |
+| Public API, async job, webhook, connector, bulk transfer, OAuth app, marketplace | [integration_platform.md](saas/integration_platform.md) |
 | Fixed/sliding/token/GCRA, concurrency, local/global, fairness, Redis atomicity | [rate_limiting.md](saas/rate_limiting.md) |
 | Usage ledger, rating, price version, invoice/payment state, correction, reconciliation | [billing_metering.md](saas/billing_metering.md) |
 | Release/ops/experiment flag, deterministic rollout, kill switch, migration, OpenFeature | [feature_flags.md](saas/feature_flags.md) |
@@ -196,7 +210,7 @@ case_studies ──→ áp dụng toàn bộ nhóm trên
 - 🔄 Đang làm
 - ⬜ Chưa làm
 
-**Tổng: 21 file** (19 gốc + 2 mới: `storage_retrieval.md`, `platform_designs.md`), trong đó **20/21 đã chuẩn hóa**; ngoài ra có `glossary.md`, `roadmap.md` và `system_design_knowledge.md`.
+**Tổng: 25 file nội dung**, trong đó **24/25 đã chuẩn hóa hoặc kiểm chứng theo quy trình hiện tại**; `observability_saas.md` đang chờ chuẩn hóa. Ngoài ra có `glossary.md`, `roadmap.md` và `system_design_knowledge.md`.
 
 ---
 
@@ -243,10 +257,14 @@ case_studies ──→ áp dụng toàn bộ nhóm trên
 - [Scalability – Mở rộng hệ thống](fundamentals/scalability.md)
 - [Storage & Retrieval – Bên trong storage engine, encoding & schema evolution](fundamentals/storage_retrieval.md)
 - [System Design Glossary](glossary.md)
+- [B2B SaaS Identity, SSO, SCIM & Authorization](saas/b2b_identity_authorization.md)
 - [Billing & Metering – đo usage và tính tiền có thể kiểm chứng](saas/billing_metering.md)
+- [SaaS Control Plane & Tenant Lifecycle](saas/control_plane_tenant_lifecycle.md)
 - [Feature Flags – tách deploy khỏi release một cách có kỷ luật](saas/feature_flags.md)
+- [SaaS Integration Platform – APIs, Webhooks & Connectors](saas/integration_platform.md)
 - [Multi-tenancy – thiết kế SaaS phục vụ nhiều tenant an toàn](saas/multi_tenancy.md)
 - [SaaS Observability – Giám sát hệ thống SaaS đa thuê bao](saas/observability_saas.md)
+- [SaaS Product Catalog, Entitlements & Quotas](saas/product_catalog_entitlements.md)
 - [Rate Limiting – giới hạn công bằng và bảo vệ công suất](saas/rate_limiting.md)
 - [System Design – Tổng hợp kiến thức](system_design_knowledge.md)
 

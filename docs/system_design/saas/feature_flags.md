@@ -767,6 +767,8 @@ Nguồn tham khảo chính:
 Đọc tiếp:
 
 - [Multi-tenancy](multi_tenancy.md) – trusted tenant context và configuration.
+- [Product Catalog & Entitlements](product_catalog_entitlements.md) – capability và
+  commercial grant; feature flag không thay entitlement.
 - [Billing & Metering](billing_metering.md) – entitlement/plan source.
 - [Rate Limiting](rate_limiting.md) – rollout policy và tenant limits.
 - [Databases Design](../fundamentals/databases_design.md) – expand–migrate–contract.

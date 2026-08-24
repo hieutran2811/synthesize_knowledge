@@ -19,6 +19,7 @@ source_count: 0
 | **Amdahl's Law** | Phần tuần tự giới hạn tăng tốc khi thêm node | S = 5% → speedup tối đa 20× dù thêm bao nhiêu máy |
 | **Anycast** | Cùng một IP announce từ nhiều PoP, BGP chọn đường gần nhất | Failover nhanh hơn DNS vì không phụ thuộc TTL |
 | **Availability** | `Uptime / (Uptime + Downtime)` | Nhân lên qua chuỗi phụ thuộc; dự phòng phá vỡ phép nhân |
+| **Authorization** | Quyết định principal được làm action gì trên resource | Khác authentication và khác entitlement thương mại |
 | **Backpressure** | Báo ngược lên producer để nó chậm lại | Khác load shedding (từ chối); dùng khi kiểm soát được producer |
 | **Bloom filter** | Cấu trúc xác suất kiểm tra "chắc chắn không có" | Có sai dương, **không** sai âm → an toàn làm cửa chặn |
 | **Bulkhead** | Cách ly tài nguyên (thread/connection pool riêng theo dependency) | Biến "sập cả service" thành "một tính năng suy giảm" |
@@ -26,10 +27,13 @@ source_count: 0
 | **Cell-based architecture** | Nhiều bản sao stack độc lập, mỗi cell phục vụ một tập khách hàng | Giới hạn blast radius; đổi lấy chi phí × N |
 | **Circuit breaker** | Fail fast khi dependency lỗi, cho nó thời gian hồi phục | Phải có `minimumNumberOfCalls` và ngưỡng gọi **chậm** |
 | **Consistent hashing** | Hash key lên ring; thêm/bớt node chỉ dịch ~1/N key | Cần virtual node để phân bố đều; không giải quyết hot key |
+| **Control plane** | Tầng quản lý desired state, policy, placement và lifecycle | Hỏng control plane không nên kéo data plane đang ổn định xuống |
 | **CQRS** | Tách model đọc và model ghi | Cho scale độc lập; đổi lấy eventual consistency giữa hai bên |
 | **CRDT** | Cấu trúc dữ liệu tự hội tụ khi merge | Đảm bảo hội tụ, **không** đảm bảo ràng buộc nghiệp vụ (số dư có thể âm) |
 | **Deadline propagation** | Truyền thời gian còn lại xuống các hop sau | Không có nó, hop cuối làm việc vô ích cho request đã bị hủy |
+| **Deployment stamp** | Một bản sao stack độc lập phục vụ tập tenant | Còn gọi scale unit/cell; giới hạn blast radius nhưng tăng fleet cost |
 | **Durability** | Xác suất không mất dữ liệu đã ghi | Khác availability và khác fault tolerance |
+| **Entitlement** | Quyền dùng capability/limit phát sinh từ contract/plan | Không thay authorization và không đồng nghĩa feature flag |
 | **Erasure coding** | Chia dữ liệu thành k phần + m parity | Overhead ~50% thay vì 200% của replication; sửa lỗi đắt hơn |
 | **Error budget** | `(1 - SLO) × cửa sổ thời gian` | Công cụ quản trị: hết budget → đóng băng feature |
 | **Eventual consistency** | Ngừng ghi thì cuối cùng mọi replica giống nhau | Cần "vá" bằng client-centric guarantee cho UX chấp nhận được |
@@ -58,11 +62,13 @@ source_count: 0
 | **Quorum (R+W>N)** | Vùng đọc và vùng ghi giao nhau | **Không** cho linearizability, chỉ cho vùng giao |
 | **Raft** | Thuật toán consensus có leader mạnh | Dùng số node **lẻ**; throughput bị chặn bởi leader |
 | **Read-your-writes** | Đọc thấy ghi của chính mình | Cách thực dụng: đọc từ leader trong N giây sau khi ghi |
+| **ReBAC** | Authorization dựa quan hệ subject–resource | Phù hợp sharing/hierarchy; cần model và tuple versioned |
 | **Reliability** | Xác suất hoạt động **đúng** trong một khoảng thời gian | Khác availability (trả lời được ≠ trả lời đúng) |
 | **RPO / RTO** | Lượng dữ liệu / thời gian tối đa được phép mất | RPO → tần suất backup; RTO → chiến lược restore |
 | **RUM conjecture** | Read–Update–Memory: chỉ tối ưu được 2 trong 3 | Khung để hiểu vì sao không có engine "tốt nhất" |
 | **Saga** | Chuỗi transaction cục bộ + bước bù trừ | Thay cho 2PC khi vượt ranh giới service |
 | **Scale cube (X/Y/Z)** | Nhân bản / chia chức năng / chia dữ liệu | **Kiệt trục X trước** khi sang Y hoặc Z |
+| **SCIM** | Giao thức provisioning user/group giữa các domain identity | SSO không thay SCIM; deprovision phải revoke session/quyền |
 | **Serializability** | Kết quả tương đương một thứ tự tuần tự nào đó | Thuộc tính của transaction, không phải của thao tác đơn |
 | **Service mesh** | Sidecar proxy xử lý mTLS, retry, observability | Thêm ~1ms mỗi hop + độ phức tạp vận hành |
 | **Sharding** | Chia dữ liệu ngang thành nhiều shard | Quyết định gần như **không thể lùi**; loại trừ mọi cách khác trước |
@@ -76,6 +82,7 @@ source_count: 0
 | **Stateless** | Node không giữ state riêng cho request | Điều kiện của horizontal scaling; state chuyển ra store dùng chung |
 | **Sticky session** | Ghim client vào một node | Nên tránh; nếu cần thì dùng consistent hashing, không IP hash |
 | **Tail latency amplification** | Fan-out N service làm p99 con thành p50 cha | N=100, p99 con 1% → 63% request cha gặp tail |
+| **Tenant catalog** | Source of truth cho tenant state, placement và revision | Routing không được tin tenant/cell do client tự khai |
 | **Thundering herd** | Nhiều client cùng hành động một lúc | Chống bằng jitter ở mọi chỗ: TTL, retry, reconnect |
 | **Trie** | Cây theo ký tự cho prefix lookup | Dùng cho typeahead; hash map prefix→top-K thường đơn giản hơn và đủ |
 | **Two Generals** | Không thể biết chắc bên kia đã nhận | Vì vậy **exactly-once delivery không tồn tại**; chỉ có at-least-once + idempotency |
@@ -83,6 +90,7 @@ source_count: 0
 | **Vector clock** | Theo dõi nhân quả, phát hiện thao tác đồng thời | Kích thước O(số node); Lamport clock không phát hiện được đồng thời |
 | **Versioned key** | Đưa version vào cache key | Giải quyết "một thay đổi ảnh hưởng nhiều key không liệt kê được" |
 | **WAL (Write-Ahead Log)** | Ghi log tuần tự trước khi sửa dữ liệu | Durability đến từ log, **không** từ data file |
+| **Webhook** | HTTP callback bất đồng bộ từ provider tới consumer | Mặc định at-least-once: ký payload, dedupe, retry và replay |
 | **WebSocket** | Kết nối song công bền | Stateful: cần registry, backplane, heartbeat, kế hoạch drain |
 | **Write amplification** | Một byte logic → nhiều byte thật xuống disk | Một trong ba amplification (write/read/space) của LSM |
 | **Zipf distribution** | Truy cập rất lệch: 1% khóa chiếm >50% lưu lượng | Vì sao cache nhỏ vẫn đạt hit ratio cao |
